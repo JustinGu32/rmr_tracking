@@ -27,52 +27,92 @@ if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
 
+MUJOCO_JOINT_NAMES = [
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+    "right_hip_pitch_joint",
+    "right_hip_roll_joint",
+    "right_hip_yaw_joint",
+    "right_knee_joint",
+    "right_ankle_pitch_joint",
+    "right_ankle_roll_joint",
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+    "right_shoulder_pitch_joint",
+    "right_shoulder_roll_joint",
+    "right_shoulder_yaw_joint",
+    "right_elbow_joint",
+    "right_wrist_roll_joint",
+    "right_wrist_pitch_joint",
+    "right_wrist_yaw_joint",
+]
+
+    # From LAFAN:
+    # root_joint(XYZQXQYQZQW)
+    # left_hip_pitch_joint
+    # left_hip_roll_joint
+    # left_hip_yaw_joint
+    # left_knee_joint
+    # left_ankle_pitch_joint
+    # left_ankle_roll_joint
+    # right_hip_pitch_joint
+    # right_hip_roll_joint
+    # right_hip_yaw_joint
+    # right_knee_joint
+    # right_ankle_pitch_joint
+    # right_ankle_roll_joint
+    # waist_yaw_joint
+    # waist_roll_joint
+    # waist_pitch_joint
+    # left_shoulder_pitch_joint
+    # left_shoulder_roll_joint
+    # left_shoulder_yaw_joint
+    # left_elbow_joint
+    # left_wrist_roll_joint
+    # left_wrist_pitch_joint
+    # left_wrist_yaw_joint
+    # right_shoulder_pitch_joint
+    # right_shoulder_roll_joint
+    # right_shoulder_yaw_joint
+    # right_elbow_joint
+    # right_wrist_roll_joint
+    # right_wrist_pitch_joint
+    # right_wrist_yaw_joint
+
+
+
 class MotionLoader:
-    def __init__(self, motion_file: str, body_indexes: Sequence[int], device: str = "cpu"):
+    def __init__(
+        self, motion_file: str, body_indexes: Sequence[int], target_joint_names: Sequence[str], device: str = "cpu"
+    ):
         assert os.path.isfile(motion_file), f"Invalid file path: {motion_file}"
         data = np.load(motion_file)
         self.fps = data["fps"]
         self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
         self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
-
-        # # Expected joint ordering for IsaacLab
-        # isaac_joint_names = [
-        #     'left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint',
-        #     'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint',
-        #     'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint',
-        #     'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint',
-        #     'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint',
-        #     'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint',
-        #     'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint',
-        #     'left_wrist_pitch_joint', 'right_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_wrist_yaw_joint'
-        # ]
-
-        # # Source joint ordering from MuJoCo
-        # mujoco_joint_names = [
-        #     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
-        #     "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint",
-        #     "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        #     "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint", "left_shoulder_pitch_joint",
-        #     "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint",
-        #     "left_wrist_pitch_joint", "left_wrist_yaw_joint", "right_shoulder_pitch_joint",
-        #     "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
-        #     "right_wrist_pitch_joint", "right_wrist_yaw_joint",
-        # ]
-
-        # # Map MuJoCo indices to IsaacLab indices
-        # mapping = [mujoco_joint_names.index(name) for name in isaac_joint_names]
-
-        # print("TRACKING JOINT ORDER (what IsaacLab is getting):", isaac_joint_names)
-
-        # self.joint_pos = torch.tensor(data["joint_pos"][:, mapping], dtype=torch.float32, device=device)
-        # self.joint_vel = torch.tensor(data["joint_vel"][:, mapping], dtype=torch.float32, device=device)
-
         self._body_pos_w = torch.tensor(data["body_pos_w"], dtype=torch.float32, device=device)
         self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
         self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
         self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
         self._body_indexes = body_indexes
         self.time_step_total = self.joint_pos.shape[0]
+
+        # Reorder joints to match IsaacLab
+        mujoco2isaaclab = [MUJOCO_JOINT_NAMES.index(name) for name in target_joint_names]
+        self.joint_pos = self.joint_pos[:, mujoco2isaaclab]
+        self.joint_vel = self.joint_vel[:, mujoco2isaaclab]
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -98,15 +138,16 @@ class MotionCommand(CommandTerm):
         super().__init__(cfg, env)
 
         self.robot: Articulation = env.scene[cfg.asset_name]
-        print("TRACKING JOINT ORDER (what IsaacLab expects):", self.robot.joint_names, flush=True)
-        print("TRACKING BODY ORDER (what IsaacLab expects):", self.robot.body_names, flush=True)
+        print("JOINT ORDER:", self.robot.joint_names)
         self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body_name)
         self.motion_anchor_body_index = self.cfg.body_names.index(self.cfg.anchor_body_name)
         self.body_indexes = torch.tensor(
             self.robot.find_bodies(self.cfg.body_names, preserve_order=True)[0], dtype=torch.long, device=self.device
         )
 
-        self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
+        self.motion = MotionLoader(
+            self.cfg.motion_file, self.body_indexes, target_joint_names=self.robot.joint_names, device=self.device
+        )
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.body_pos_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 3, device=self.device)
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
