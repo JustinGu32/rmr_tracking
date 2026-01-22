@@ -14,6 +14,8 @@ cd /move/u/justingu/whole_body_tracking/
 source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab
 
+export WANDB_ENTITY=kkarenvoo
+
 python scripts/rsl_rl/train.py \
   --task=Tracking-Flat-G1-v0 \
   --registry_name justingu-stanford-university-org/wandb-registry-motions/takara_walk_isaac:v0 \
