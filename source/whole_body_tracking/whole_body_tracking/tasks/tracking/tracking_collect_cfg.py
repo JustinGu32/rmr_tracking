@@ -169,9 +169,38 @@ class ObservationsCfg:
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
-            self.enable_corruption = True
+            self.enable_corruption = False
             self.concatenate_terms = True
 
+
+    @configclass
+    class PrivilegedPolicyCfg(ObsGroup):
+        command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        
+        motion_anchor_pos_b = ObsTerm(
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        )
+        motion_anchor_ori_b = ObsTerm(
+            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
+        )
+        
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+
+        actions = ObsTerm(func=mdp.last_action)
+
+        def __post_init__(self):
+            self.enable_corruption = True
+        #     self.concatenate_terms = True
+            
     @configclass
     class PrivilegedCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
@@ -233,16 +262,16 @@ class EventCfg:
             "operation": "add",
         },
     )
-    # teleport = EventTerm(
-    #     func=mdp.teleport_root_with_noise,
-    #     mode='interval',
-    #     interval_range_s=(0.0, .1),
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "root_pos_noise_range": (-0.01, 0.01),
-    #         "root_rot_noise_range": (-0.02, 0.02),
-    #     },
-    # )
+    teleport = EventTerm(
+        func=mdp.teleport_root_with_noise,
+        mode='interval',
+        interval_range_s=(0.0, .1),
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "root_pos_noise_range": (-0.01, 0.01),
+            "root_rot_noise_range": (-0.02, 0.02),
+        },
+    )
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -252,22 +281,14 @@ class EventCfg:
         },
     )
 
-    #train 
-    # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
-
+    
     # collect
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(0, .1),
-    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(0, .1),
+        params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    )
 
     # random_body_forces = EventTerm(
     #     func=mdp.apply_random_body_forces,

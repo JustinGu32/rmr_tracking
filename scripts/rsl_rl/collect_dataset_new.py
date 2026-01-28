@@ -389,8 +389,7 @@ def main():
                                 "act": recorded_acs[i][:],
                                 # "img": recorded_img[i][:],
                             })
-
-
+                        
                         buff.save_to_path(SAVE_FILE_NAME)
                         print('saved to:', SAVE_FILE_NAME)
                         env.close()
