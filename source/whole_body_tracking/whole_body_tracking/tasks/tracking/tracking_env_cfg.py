@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -12,7 +13,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.terrains import TerrainImporterCfg
 
 ##
@@ -34,6 +35,35 @@ VELOCITY_RANGE = {
     "roll": (-0.52, 0.52),
     "pitch": (-0.52, 0.52),
     "yaw": (-0.78, 0.78),
+}
+
+VELOCITY_RANGE_Null = {
+    "x":  (-0.0, 0.0),
+    "y":  (-0.0, 0.0),
+    "z":  (-0.0, 0.0),
+    "roll": (-0.0, 0.0),
+    "pitch":(-.0, 0.0),
+    "yaw":  (-0.0, 0.0),
+}
+
+
+VELOCITY_RANGE_COLLECT = {
+    "x": (-0.05, 0.05),
+    "y": (-0.05, 0.05),
+    "z": (-0.025, 0.025),
+    "roll": (-0.02, 0.02),
+    "pitch": (-0.02, 0.02),
+    "yaw": (-0.02, 0.02),
+}
+
+
+VELOCITY_RANGE_COLLECT2= {
+    "x": (-0.1, 0.1),
+    "y": (-0.1, 0.1),
+    "z": (-0.05, 0.05),
+    "roll": (-0.02, 0.02),
+    "pitch": (-0.02, 0.02),
+    "yaw": (-0.02, 0.02),
 }
 
 
@@ -72,6 +102,30 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
+    # Depth camera mounted on the D435 link (head)
+    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
+    depth_camera: TiledCameraCfg | None = (
+        TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            update_period=0.1,  # 10Hz
+            height=480,
+            width=848,
+            data_types=["rgb", "depth"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=1.93,  # D435i: ~87° HFOV
+                horizontal_aperture=3.6,
+                clipping_range=(0.1, 5.0),
+            ),
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                convention="ros",
+            ),
+        )
+        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+        else None
+    )
+
 
 ##
 # MDP settings
@@ -86,6 +140,7 @@ class CommandsCfg:
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
+        # Todo: define as parameter instead
         pose_range={
             "x": (-0.05, 0.05),
             "y": (-0.05, 0.05),
@@ -96,6 +151,17 @@ class CommandsCfg:
         },
         velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
+        # diffusion collect
+        # pose_range={
+        #     "x": (0.0, 0.0),
+        #     "y": (0.0, 0.0),
+        #     "z": (0.0, 0.0),
+        #     "roll":  (0.0, 0.0),
+        #     "pitch": (0.0, 0.0),
+        #     "yaw":   (0.0, 0.0),
+        # },
+        # velocity_range=VELOCITY_RANGE_Null,
+        # joint_position_range=(-.1, .1),
     )
 
 
@@ -116,22 +182,24 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        motion_anchor_pos_b = ObsTerm(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        )
+        # motion_anchor_pos_b = ObsTerm(
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
         actions = ObsTerm(func=mdp.last_action)
 
+        # FOR COLLECT TURN OFF CORRUPTION
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
 
+            
     @configclass
     class PrivilegedCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
@@ -144,10 +212,26 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
+    @configclass
+    class DiffusionCollect(ObsGroup):
+        """New policy observations."""
 
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.02, n_max=0.02))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
+        # comment these two when exporting
+        dof_pos = ObsTerm(func=mdp.joint_pos_rel)
+        dof_vel = ObsTerm(func=mdp.joint_vel_rel) 
+        
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
     # observation groups
     policy: PolicyCfg = PolicyCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
+    diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
 
 @configclass
@@ -176,7 +260,16 @@ class EventCfg:
             "operation": "add",
         },
     )
-
+    # teleport = EventTerm(
+    #     func=mdp.teleport_root_with_noise,
+    #     mode='interval',
+    #     interval_range_s=(0.0, .1),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "root_pos_noise_range": (-0.01, 0.01),
+    #         "root_rot_noise_range": (-0.02, 0.02),
+    #     },
+    # )
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -186,6 +279,7 @@ class EventCfg:
         },
     )
 
+    # train
     # interval
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
@@ -194,6 +288,28 @@ class EventCfg:
         params={"velocity_range": VELOCITY_RANGE},
     )
 
+    # collect
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(0, .1),
+    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    # )
+
+    # random_body_forces = EventTerm(
+    #     func=mdp.apply_random_body_forces,
+    #     mode="interval",
+    #     interval_range_s=(0.0, .1),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "command_name": "motion",
+    #         "body_names": ["left_ankle_roll_link", 'right_ankle_roll_link'],
+    #         "force_std": (20.0, 20.0, 45.0),
+    #         # "force_std": (50.0, 50.0, 45.0),
+
+    #         "torque_std": (5.0, 5.0, 5.0),
+    #     },
+    # )
 
 @configclass
 class RewardsCfg:
@@ -254,7 +370,10 @@ class RewardsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    # time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    time_out = DoneTerm(func=mdp.my_time_out, 
+                        params={"command_name": "motion",},
+                        time_out=True)
     anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
@@ -309,8 +428,9 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
+        # Todo: define with WandB/data collection
         self.decimation = 4
-        self.episode_length_s = 10.0
+        self.episode_length_s = 100.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation

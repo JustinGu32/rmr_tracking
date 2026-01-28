@@ -218,7 +218,11 @@ def main():
     # import ipdb; ipdb.set_trace()
     # reset environment
     obs = env.get_observations()
+
+    # import ipdb; ipdb.set_trace()
     # obs = obs['diffusion_collect']
+    all_obs = obs[0]
+    obs = TensorDict.from_dict(obs[1], batch_size=[num_envs], device=device)['observations']
     obs_diffusion = obs['diffusion_collect']
     timestep = 0
     # simulate environment
@@ -276,7 +280,7 @@ def main():
     while simulation_app.is_running():
         with torch.inference_mode():
             # import ipdb; ipdb.set_trace()
-            actions = policy(obs.select('policy', 'critic'))
+            actions = policy(obs['policy'])
             # actions = policy(env.get_observations()['policy'])
             clean_actions = actions.clone()
             

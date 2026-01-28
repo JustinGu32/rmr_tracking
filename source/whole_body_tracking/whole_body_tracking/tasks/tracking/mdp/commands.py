@@ -35,38 +35,7 @@ class MotionLoader:
         self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
         self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
 
-        # # Expected joint ordering for IsaacLab
-        # isaac_joint_names = [
-        #     'left_hip_pitch_joint', 'right_hip_pitch_joint', 'waist_yaw_joint', 'left_hip_roll_joint',
-        #     'right_hip_roll_joint', 'waist_roll_joint', 'left_hip_yaw_joint', 'right_hip_yaw_joint',
-        #     'waist_pitch_joint', 'left_knee_joint', 'right_knee_joint', 'left_shoulder_pitch_joint',
-        #     'right_shoulder_pitch_joint', 'left_ankle_pitch_joint', 'right_ankle_pitch_joint',
-        #     'left_shoulder_roll_joint', 'right_shoulder_roll_joint', 'left_ankle_roll_joint',
-        #     'right_ankle_roll_joint', 'left_shoulder_yaw_joint', 'right_shoulder_yaw_joint',
-        #     'left_elbow_joint', 'right_elbow_joint', 'left_wrist_roll_joint', 'right_wrist_roll_joint',
-        #     'left_wrist_pitch_joint', 'right_wrist_pitch_joint', 'left_wrist_yaw_joint', 'right_wrist_yaw_joint'
-        # ]
-
-        # # Source joint ordering from MuJoCo
-        # mujoco_joint_names = [
-        #     "left_hip_pitch_joint", "left_hip_roll_joint", "left_hip_yaw_joint", "left_knee_joint",
-        #     "left_ankle_pitch_joint", "left_ankle_roll_joint", "right_hip_pitch_joint", "right_hip_roll_joint",
-        #     "right_hip_yaw_joint", "right_knee_joint", "right_ankle_pitch_joint", "right_ankle_roll_joint",
-        #     "waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint", "left_shoulder_pitch_joint",
-        #     "left_shoulder_roll_joint", "left_shoulder_yaw_joint", "left_elbow_joint", "left_wrist_roll_joint",
-        #     "left_wrist_pitch_joint", "left_wrist_yaw_joint", "right_shoulder_pitch_joint",
-        #     "right_shoulder_roll_joint", "right_shoulder_yaw_joint", "right_elbow_joint", "right_wrist_roll_joint",
-        #     "right_wrist_pitch_joint", "right_wrist_yaw_joint",
-        # ]
-
-        # # Map MuJoCo indices to IsaacLab indices
-        # mapping = [mujoco_joint_names.index(name) for name in isaac_joint_names]
-
-        # print("TRACKING JOINT ORDER (what IsaacLab is getting):", isaac_joint_names)
-
-        # self.joint_pos = torch.tensor(data["joint_pos"][:, mapping], dtype=torch.float32, device=device)
-        # self.joint_vel = torch.tensor(data["joint_vel"][:, mapping], dtype=torch.float32, device=device)
-
+        # import ipdb; ipdb.set_trace()
         self._body_pos_w = torch.tensor(data["body_pos_w"], dtype=torch.float32, device=device)
         self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
         self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
@@ -90,7 +59,6 @@ class MotionLoader:
     def body_ang_vel_w(self) -> torch.Tensor:
         return self._body_ang_vel_w[:, self._body_indexes]
 
-
 class MotionCommand(CommandTerm):
     cfg: MotionCommandCfg
 
@@ -98,13 +66,14 @@ class MotionCommand(CommandTerm):
         super().__init__(cfg, env)
 
         self.robot: Articulation = env.scene[cfg.asset_name]
-        print("TRACKING JOINT ORDER (what IsaacLab expects):", self.robot.joint_names, flush=True)
-        print("TRACKING BODY ORDER (what IsaacLab expects):", self.robot.body_names, flush=True)
         self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body_name)
         self.motion_anchor_body_index = self.cfg.body_names.index(self.cfg.anchor_body_name)
         self.body_indexes = torch.tensor(
             self.robot.find_bodies(self.cfg.body_names, preserve_order=True)[0], dtype=torch.long, device=self.device
         )
+        self.min_sample_idx = cfg.min_sample_idx
+        self.max_sample_idx = cfg.max_sample_idx
+        self.steps_collect = cfg.steps_collect
 
         self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -131,6 +100,22 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+
+    # Takara 
+    def reload_motion(self):
+        # import ipdb; ipdb.set_trace() 
+        self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
+
+    # TODO: may not need?
+    @property
+    def joint_pos_ref(self) -> torch.Tensor:
+        return self.motion.joint_pos #[self.time_steps]
+    
+    # TODO: may not need?
+    @property
+    def joint_vel_ref(self) -> torch.Tensor:
+        return self.motion.joint_vel #[self.time_steps]
+
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
@@ -167,6 +152,27 @@ class MotionCommand(CommandTerm):
     @property
     def anchor_quat_w(self) -> torch.Tensor:
         return self.motion.body_quat_w[self.time_steps, self.motion_anchor_body_index]
+
+    # TODO: may not need?
+    #Takara
+    @property
+    def ref_pos_w(self) -> torch.Tensor:
+        # import ipdb; ipdb.set_trace()
+        return self.motion._body_pos_w[self.time_steps] + self._env.scene.env_origins[:,None,:]
+    # TODO: may not need?
+
+    @property
+    def ref_quat_w(self) -> torch.Tensor:
+        return self.motion._body_quat_w[self.time_steps]
+    # TODO: may not need?
+
+    @property
+    def ref_lin_vel_w(self) -> torch.Tensor:
+        return self.motion._body_lin_vel_w[self.time_steps] 
+    # TODO: may not need?
+    @property
+    def ref_ang_vel_w(self) -> torch.Tensor:
+        return self.motion._body_ang_vel_w[self.time_steps]
 
     @property
     def anchor_lin_vel_w(self) -> torch.Tensor:
@@ -274,13 +280,25 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"][:] = H_norm
         self.metrics["sampling_top1_prob"][:] = pmax
         self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
+    def _uniform_sampling(self, env_ids: Sequence[int]):
+        phase = sample_uniform(0.0, 1.0, (len(env_ids),), device=self.device)
+        time_samples = (phase * (self.motion.time_step_total - 1)).long()
+        if self.max_sample_idx is not None and self.steps_collect is not None:
+            sampling_range = (self.max_sample_idx - self.steps_collect) - self.min_sample_idx
+            time_samples = (phase * sampling_range + self.min_sample_idx).long()
+            time_samples = torch.clip(time_samples, min=self.min_sample_idx, max=self.max_sample_idx - self.steps_collect) #.long()
+
+        self.time_steps[env_ids] = time_samples.long()
 
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
+        # TODO: if training, use adaptive sampling (make a command-line flag)
+        #self._adaptive_sampling(env_ids)
 
-        root_pos = self.body_pos_w[:, 0].clone()
+        self._uniform_sampling(env_ids)
+
+        root_pos = self.body_pos_w[:, 0].clone() 
         root_ori = self.body_quat_w[:, 0].clone()
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
@@ -410,3 +428,9 @@ class MotionCommandCfg(CommandTermCfg):
 
     body_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+
+    min_sample_idx: int = 0
+    max_sample_idx: int = 0
+    steps_collect: int  = 0
+
+    # TODO: add config term for sampling (adaptive vs uniform)

@@ -12,7 +12,7 @@ set -euo pipefail
 cd /move/u/justingu/whole_body_tracking/
 
 source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
-conda activate isaaclab
+conda activate env_isaaclab
 
 python scripts/rsl_rl/train.py \
   --task=Tracking-Flat-G1-v0 \
@@ -20,7 +20,7 @@ python scripts/rsl_rl/train.py \
   --headless \
   --logger wandb \
   --log_project_name takara_walk_isaac \
-  --run_name takara_walk_isaac_npz \
+  --run_name takara_walk_isaac_npz_UPDATED_ISAACLAB \
   --video \
   --video_length 500 \
   --video_interval 10000

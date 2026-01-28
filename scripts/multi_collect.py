@@ -49,7 +49,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True)
+        result = subprocess.run( command,  cwd="/move/u/justingu/whole_body_tracking",check=True, capture_output=False, text=True)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True
@@ -79,7 +79,7 @@ def main():
     # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
+            wandb_path= 'robot-mcrobotface/takara_walk_isaac/mz6yl6v2', #'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
             episode_collect_length_s=5,
             num_steps_collect=60,  # 2.5 sec
             num_eps_collect=3000, #8000
