@@ -1,8 +1,12 @@
+import os
+
 import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets.articulation import ArticulationCfg
 
 from whole_body_tracking.assets import ASSET_DIR
+from .actuator import DelayedImplicitActuatorCfg
+
 
 ARMATURE_5020 = 0.003609725
 ARMATURE_7520_14 = 0.010177520
@@ -22,8 +26,12 @@ DAMPING_7520_14 = 2.0 * DAMPING_RATIO * ARMATURE_7520_14 * NATURAL_FREQ
 DAMPING_7520_22 = 2.0 * DAMPING_RATIO * ARMATURE_7520_22 * NATURAL_FREQ
 DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
 
+#JUSTIN HELP 
+MIN_DELAY= 0
+MAX_DELAY= 3
 G1_CYLINDER_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
+        usd_dir=os.path.join(os.path.expanduser("~"), ".cache/isaaclab/usd"),
         fix_base=False,
         replace_cylinders_with_capsules=True,
         asset_path=f"{ASSET_DIR}/unitree_description/urdf/g1/main.urdf",
@@ -60,7 +68,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
     ),
     soft_joint_pos_limit_factor=0.9,
     actuators={
-        "legs": ImplicitActuatorCfg(
+        "legs": DelayedImplicitActuatorCfg(
             joint_names_expr=[
                 ".*_hip_yaw_joint",
                 ".*_hip_roll_joint",
@@ -97,24 +105,30 @@ G1_CYLINDER_CFG = ArticulationCfg(
                 ".*_hip_yaw_joint": ARMATURE_7520_14,
                 ".*_knee_joint": ARMATURE_7520_22,
             },
+            min_delay=MIN_DELAY,
+            max_delay=MAX_DELAY,
         ),
-        "feet": ImplicitActuatorCfg(
+        "feet": DelayedImplicitActuatorCfg(
             effort_limit_sim=50.0,
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
             stiffness=2.0 * STIFFNESS_5020,
             damping=2.0 * DAMPING_5020,
             armature=2.0 * ARMATURE_5020,
+            min_delay=MIN_DELAY,
+            max_delay=MAX_DELAY,
         ),
-        "waist": ImplicitActuatorCfg(
+        "waist": DelayedImplicitActuatorCfg(
             effort_limit_sim=50,
             velocity_limit_sim=37.0,
             joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
             stiffness=2.0 * STIFFNESS_5020,
             damping=2.0 * DAMPING_5020,
             armature=2.0 * ARMATURE_5020,
+            min_delay=MIN_DELAY,
+            max_delay=MAX_DELAY,
         ),
-        "waist_yaw": ImplicitActuatorCfg(
+        "waist_yaw": DelayedImplicitActuatorCfg(
             effort_limit_sim=88,
             velocity_limit_sim=32.0,
             joint_names_expr=["waist_yaw_joint"],
@@ -122,7 +136,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
             damping=DAMPING_7520_14,
             armature=ARMATURE_7520_14,
         ),
-        "arms": ImplicitActuatorCfg(
+        "arms": DelayedImplicitActuatorCfg(
             joint_names_expr=[
                 ".*_shoulder_pitch_joint",
                 ".*_shoulder_roll_joint",
@@ -177,6 +191,8 @@ G1_CYLINDER_CFG = ArticulationCfg(
                 ".*_wrist_pitch_joint": ARMATURE_4010,
                 ".*_wrist_yaw_joint": ARMATURE_4010,
             },
+            min_delay=MIN_DELAY,
+            max_delay=MAX_DELAY,
         ),
     },
 )
