@@ -151,28 +151,56 @@ class ObservationsCfg:
     """Observation specifications for the MDP."""
 
     @configclass
-    class PolicyCfg(ObsGroup):
+    class PolicyDeployCfg(ObsGroup):
         """Observations for policy group."""
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        motion_anchor_pos_b = ObsTerm(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        )
+        # motion_anchor_pos_b = ObsTerm(
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
-            self.enable_corruption = False
+            self.enable_corruption = True
             self.concatenate_terms = True
 
+    @configclass
+    class PolicySimCfg(ObsGroup):
+        command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        
+        motion_anchor_pos_b = ObsTerm(
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        )
+        motion_anchor_ori_b = ObsTerm(
+            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
+        )
+        
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
 
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+
+        actions = ObsTerm(func=mdp.last_action)
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+            
     @configclass
     class PrivilegedPolicyCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
@@ -199,7 +227,7 @@ class ObservationsCfg:
 
         def __post_init__(self):
             self.enable_corruption = True
-        #     self.concatenate_terms = True
+            self.concatenate_terms = True
             
     @configclass
     class PrivilegedCfg(ObsGroup):
@@ -231,7 +259,7 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
     # observation groups
-    policy: PolicyCfg = PolicyCfg()
+    policy: PolicyCfg = PolicyDeployCfg() # PolicySimCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
     diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
@@ -405,7 +433,7 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
+class TrackingCollectCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings

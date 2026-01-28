@@ -151,7 +151,7 @@ class ObservationsCfg:
     """Observation specifications for the MDP."""
 
     @configclass
-    class PolicyCfg(ObsGroup):
+    class PolicySimCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         
         motion_anchor_pos_b = ObsTerm(
@@ -208,7 +208,7 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
     # observation groups
-    policy: PolicyCfg = PolicyCfg()
+    policy: PolicyCfg = PolicySimCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
     diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
@@ -390,7 +390,7 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
+class TrackingSimCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings

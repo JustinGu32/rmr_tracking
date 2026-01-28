@@ -308,7 +308,7 @@ def main():
             
             recorded_obs_episode[np.arange(num_envs), curr_idx, :] = (obs['diffusion_collect'].to("cpu").detach().numpy())
             recorded_acs_episode[np.arange(num_envs), curr_idx, :] = (clean_actions.to("cpu").detach().numpy())
-            #JUSTIN HELP
+            # TODO: JUSTIN HELP
             # get image from env
             # pass through encoder
             # recorded_img_episode[np.arange(num_envs), curr_idx, :] = encoded_image
