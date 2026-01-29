@@ -105,19 +105,19 @@ class MySceneCfg(InteractiveSceneCfg):
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-            update_period=0.1,  # 10Hz
+            prim_path="{ENV_REGEX_NS}/Robot/head_link/depth_camera",
+            update_period=0.1,
             height=480,
             width=848,
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
+                focal_length=1.93,
                 horizontal_aperture=3.6,
                 clipping_range=(0.1, 5.0),
             ),
             offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                pos=(0.09, 0.0, 0.04),
+                rot=(0.422, -0.422, 0.573, -0.573),
                 convention="ros",
             ),
         )
