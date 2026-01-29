@@ -101,6 +101,31 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
+    # Depth camera mounted on the D435 link (head)
+    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
+    depth_camera: TiledCameraCfg | None = (
+        TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            update_period=0.1,  # 10Hz
+            height=480,
+            width=848,
+            data_types=["rgb", "depth"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=1.93,  # D435i: ~87° HFOV
+                horizontal_aperture=3.6,
+                clipping_range=(0.1, 5.0),
+            ),
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                convention="ros",
+            ),
+        )
+        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+        else None
+    )
+
+
 
 ##
 # MDP settings
@@ -260,12 +285,12 @@ class EventCfg:
 
     #train 
     # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 3.0),
+        params={"velocity_range": VELOCITY_RANGE},
+    )
 
     # collect
     # push_robot = EventTerm(
