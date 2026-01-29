@@ -9,12 +9,12 @@
 
 set -euo pipefail
 
-cd /move/u/justingu/whole_body_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
-source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
-conda activate isaaclab
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
+conda activate env_isaaclab
 
-export WANDB_ENTITY=kkarenvoo
+# export WANDB_ENTITY=kkarenvoo
 
 python scripts/rsl_rl/train.py \
   --task=Tracking-Flat-G1-v0 \
@@ -25,4 +25,6 @@ python scripts/rsl_rl/train.py \
   --run_name takara_walk_isaac_npz \
   --video \
   --video_length 500 \
-  --video_interval 10000
+  --video_interval 10000 \
+  --max_iterations 30000
+

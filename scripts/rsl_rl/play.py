@@ -154,6 +154,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
     # reset environment
     obs, _ = env.reset()
+
+    # --- DEBUG: inspect contact sensor ---
+    base_env = env.unwrapped  # ManagerBasedRLEnv
+    print("\n=== SENSOR KEYS ===")
+    print(base_env.scene.sensors.keys())
+
+    print("\n=== CONTACT SENSOR DATA (after reset) ===")
+    cs = base_env.scene.sensors["contact_forces"]
+    print(cs.data)
+
+    # step once to populate contact buffers
+    dummy_actions = torch.zeros_like(policy(obs))
+    obs, _, _, _ = env.step(dummy_actions)
+
+    print("\n=== CONTACT SENSOR DATA (after 1 step) ===")
+    print(cs.data)
+
+    print("\n=== CONTACT SENSOR DATA FIELDS ===")
+    print([k for k in dir(cs.data) if "force" in k or "contact" in k])
+    print("=================================\n")
+
     timestep = 0
     # simulate environment
     while simulation_app.is_running():

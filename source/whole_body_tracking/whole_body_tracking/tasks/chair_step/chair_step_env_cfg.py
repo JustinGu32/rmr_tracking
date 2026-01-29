@@ -83,23 +83,7 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
-    # Box object (17.5" x 16" x 16" = 0.4445m x 0.4064m x 0.4064m)
-    box = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Box",
-        spawn=sim_utils.CuboidCfg(
-            size=(0.4445, 0.4064, 0.4064),  # length x width x height in meters
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
-            mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=0.7,
-                dynamic_friction=0.5,
-            ),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.2032)),  # Center on floor 2m in front
-    )
+    #
 
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
