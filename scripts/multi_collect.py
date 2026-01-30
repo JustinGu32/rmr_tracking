@@ -24,7 +24,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
     # Construct the base command
     command = [
         "python",
-        "scripts/rsl_rl/collect_dataset_new.py",
+        "scripts/rsl_rl/collect_dataset.py",
         f"--task={task}",
         f"--num_envs={num_envs}",
         f"--wandb_path={config.wandb_path}",
@@ -37,7 +37,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         f"--min_sample_idx={config.min_sample_idx}", 
         f"--max_sample_idx={config.max_sample_idx}", 
         f"--save_folder={config.save_folder}",
-        # f"--headless",
+        f"--headless",
     ]
     # import ipdb; ipdb.set_trace() 
 
@@ -48,8 +48,12 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         # Get the repository root directory (assuming this script is in scripts/collect/)
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         
+        # Copopy current environment and set ENABLE_CAMERAS
+        env = os.environ.copy()
+        env["ENABLE_CAMERAS"] = "1"
+
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True)
+        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True, env=env)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True

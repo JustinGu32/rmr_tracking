@@ -14,6 +14,8 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors import TiledCameraCfg
+import os
 
 ##
 # Pre-defined configs
@@ -105,7 +107,7 @@ class MySceneCfg(InteractiveSceneCfg):
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            prim_path="{ENV_REGEX_NS}/Robot/head_link/depth_camera",
             update_period=0.1,  # 10Hz
             height=480,
             width=848,
