@@ -37,7 +37,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         f"--min_sample_idx={config.min_sample_idx}", 
         f"--max_sample_idx={config.max_sample_idx}", 
         f"--save_folder={config.save_folder}",
-        # f"--headless",
+        f"--headless",
     ]
     # import ipdb; ipdb.set_trace() 
 
