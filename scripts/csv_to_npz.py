@@ -3,8 +3,8 @@
 .. code-block:: bash
 
     # Usage
-    python csv_to_npz.py --input_file LAFAN/dance1_subject2.csv --input_fps 30 --frame_range 122 722 \
-    --output_file ./motions/dance1_subject2.npz --output_fps 50
+    python scripts/csv_to_npz.py --input_file ./motions/takara_walk.csv --input_fps 50 \
+    --output_name ./motions/takara_walk_50fps.npz --output_fps 50
 """
 
 """Launch Isaac Sim Simulator first."""
