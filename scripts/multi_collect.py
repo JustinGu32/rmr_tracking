@@ -37,7 +37,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         f"--min_sample_idx={config.min_sample_idx}", 
         f"--max_sample_idx={config.max_sample_idx}", 
         f"--save_folder={config.save_folder}",
-        f"--headless",
+        # f"--headless",
     ]
     # import ipdb; ipdb.set_trace() 
 
@@ -52,7 +52,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", 
         env["ENABLE_CAMERAS"] = "1"
         
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True, env=env)
+        result = subprocess.run( command,  cwd="/move/u/justingu/rmr_tracking",check=True, capture_output=False, text=True, env=env)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True
@@ -82,7 +82,7 @@ def main():
     # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'robot-mcrobotface/takara_walk_isaac/mz6yl6v2',
+            wandb_path= 'robot-mcrobotface/takara_walk_isaac/wt29no25',
             # wandb_path = 'justingu-stanford-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
             episode_collect_length_s=100,

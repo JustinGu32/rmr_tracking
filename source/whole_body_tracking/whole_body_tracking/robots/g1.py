@@ -35,6 +35,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
         fix_base=False,
         replace_cylinders_with_capsules=True,
         asset_path=f"{ASSET_DIR}/unitree_description/urdf/g1/main.urdf",
+        # asset_path=f"{ASSET_DIR}/unitree_ros/robots/g1_description/g1_29dof.urdf",
         activate_contact_sensors=True,
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             disable_gravity=False,
@@ -78,7 +79,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
             effort_limit_sim={
                 ".*_hip_yaw_joint": 88.0,
                 ".*_hip_roll_joint": 139.0,
-                ".*_hip_pitch_joint": 88.0,
+                # ".*_hip_roll_joint": 88.0,  # CHANGED: Lowered from 139.0 to match URDF 
                 ".*_knee_joint": 139.0,
             },
             velocity_limit_sim={
@@ -110,6 +111,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
         ),
         "feet": DelayedImplicitActuatorCfg(
             effort_limit_sim=50.0,
+            # effort_limit_sim=35.0,  # CHANGED: Lowered from 50.0 to match URDF (ankle pitch/roll)
             velocity_limit_sim=37.0,
             joint_names_expr=[".*_ankle_pitch_joint", ".*_ankle_roll_joint"],
             stiffness=2.0 * STIFFNESS_5020,
@@ -120,6 +122,7 @@ G1_CYLINDER_CFG = ArticulationCfg(
         ),
         "waist": DelayedImplicitActuatorCfg(
             effort_limit_sim=50,
+            # effort_limit_sim=35.0,  # CHANGED: Lowered from 50.0 to match URDF (waist roll/pitch)
             velocity_limit_sim=37.0,
             joint_names_expr=["waist_roll_joint", "waist_pitch_joint"],
             stiffness=2.0 * STIFFNESS_5020,

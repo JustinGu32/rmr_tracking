@@ -337,12 +337,12 @@ class EventCfg:
 
     
     # collect
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(0, .1),
-        params={"velocity_range": VELOCITY_RANGE_COLLECT2},
-    )
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(0, .1),
+    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    # )
 
     # random_body_forces = EventTerm(
     #     func=mdp.apply_random_body_forces,

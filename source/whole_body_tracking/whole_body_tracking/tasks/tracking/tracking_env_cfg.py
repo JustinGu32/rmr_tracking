@@ -12,7 +12,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.terrains import TerrainImporterCfg
 import os
 
@@ -104,27 +104,27 @@ class MySceneCfg(InteractiveSceneCfg):
 
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    depth_camera: TiledCameraCfg | None = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/head_link",
-            update_period=0.1,
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.09, 0.0, 0.04),
-                rot=(0.422, -0.422, 0.573, -0.573),
-                convention="ros",
-            ),
-        )
-        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-        else None
-    )
+    # depth_camera: TiledCameraCfg | None = (
+    #     TiledCameraCfg(
+    #         prim_path="{ENV_REGEX_NS}/Robot/head_link",
+    #         update_period=0.1,
+    #         height=480,
+    #         width=848,
+    #         data_types=["rgb", "depth"],
+    #         spawn=sim_utils.PinholeCameraCfg(
+    #             focal_length=1.93,
+    #             horizontal_aperture=3.6,
+    #             clipping_range=(0.1, 5.0),
+    #         ),
+    #         offset=TiledCameraCfg.OffsetCfg(
+    #             pos=(0.09, 0.0, 0.04),
+    #             rot=(0.422, -0.422, 0.573, -0.573),
+    #             convention="ros",
+    #         ),
+    #     )
+    #     if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+    #     else None
+    # )
 
 
 
@@ -280,12 +280,12 @@ class EventCfg:
 
     #train 
     # interval
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(1.0, 3.0),
-        params={"velocity_range": VELOCITY_RANGE},
-    )
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(1.0, 3.0),
+    #     params={"velocity_range": VELOCITY_RANGE},
+    # )
 
     # collect
     # push_robot = EventTerm(

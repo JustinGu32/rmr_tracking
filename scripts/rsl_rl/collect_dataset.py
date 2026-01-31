@@ -309,9 +309,9 @@ def main():
             recorded_obs_episode[np.arange(num_envs), curr_idx, :] = (obs['diffusion_collect'].to("cpu").detach().numpy())
             recorded_acs_episode[np.arange(num_envs), curr_idx, :] = (clean_actions.to("cpu").detach().numpy())
             # TODO: JUSTIN HELP
-            camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
-            rgb_image = camera_sensor.data.output["rgb"] 
-            depth_image = camera_sensor.data.output["depth"] 
+            # camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
+            # rgb_image = camera_sensor.data.output["rgb"] 
+            # depth_image = camera_sensor.data.output["depth"] 
             # get image from env
             # pass through encoder
             # recorded_img_episode[np.arange(num_envs), curr_idx, :] = encoded_image
