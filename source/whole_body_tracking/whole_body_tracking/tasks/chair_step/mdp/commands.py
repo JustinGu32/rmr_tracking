@@ -64,8 +64,8 @@ class MotionCommand(CommandTerm):
         super().__init__(cfg, env)
 
         self.robot: Articulation = env.scene[cfg.asset_name]
-        self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body)
-        self.motion_anchor_body_index = self.cfg.body_names.index(self.cfg.anchor_body)
+        self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body_name)
+        self.motion_anchor_body_index = self.cfg.body_names.index(self.cfg.anchor_body_name)
         self.body_indexes = torch.tensor(
             self.robot.find_bodies(self.cfg.body_names, preserve_order=True)[0], dtype=torch.long, device=self.device
         )
@@ -380,3 +380,8 @@ class MotionCommandCfg(CommandTermCfg):
 
     body_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
+
+    # sampling controls (safe defaults)
+    min_sample_idx: int = 0
+    max_sample_idx: int = 10**9
+    steps_collect: int = 1

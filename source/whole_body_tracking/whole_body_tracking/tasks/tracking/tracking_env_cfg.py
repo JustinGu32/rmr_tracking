@@ -105,27 +105,27 @@ class MySceneCfg(InteractiveSceneCfg):
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     # import ipdb; ipdb.set_trace();
-    depth_camera: TiledCameraCfg | None = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/head_link",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-                convention="ros",
-            ),
-        )
-        # if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-        # else None
-    )
+    # depth_camera: TiledCameraCfg | None = (
+    #     TiledCameraCfg(
+    #         prim_path="{ENV_REGEX_NS}/Robot/head_link",
+    #         update_period=0.1,  # 10Hz
+    #         height=480,
+    #         width=848,
+    #         data_types=["rgb", "depth"],
+    #         spawn=sim_utils.PinholeCameraCfg(
+    #             focal_length=1.93,  # D435i: ~87° HFOV
+    #             horizontal_aperture=3.6,
+    #             clipping_range=(0.1, 5.0),
+    #         ),
+    #         offset=TiledCameraCfg.OffsetCfg(
+    #             pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+    #             rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+    #             convention="ros",
+    #         ),
+    #     )
+    #     # if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+    #     # else None
+    # )
 
 
 
@@ -183,13 +183,13 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        motion_anchor_pos_b = ObsTerm(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        )
+        # motion_anchor_pos_b = ObsTerm(
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))

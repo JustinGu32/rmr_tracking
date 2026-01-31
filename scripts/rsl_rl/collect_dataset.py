@@ -311,9 +311,9 @@ def main():
             # TODO: JUSTIN HELP
 
 
-            camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
-            rgb_image = camera_sensor.data.output["rgb"] 
-            depth_image = camera_sensor.data.output["depth"] 
+            # camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
+            # rgb_image = camera_sensor.data.output["rgb"] 
+            # depth_image = camera_sensor.data.output["depth"] 
 
 
             # get image from env
