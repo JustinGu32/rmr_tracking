@@ -7,6 +7,17 @@ import numcodecs
 import numpy as np
 from functools import cached_property
 
+# Handle Zarr v3 migration where MemoryStore/DirectoryStore are in zarr.storage
+try:
+    if not hasattr(zarr, 'MemoryStore'):
+        from zarr.storage import MemoryStore
+        zarr.MemoryStore = MemoryStore
+    if not hasattr(zarr, 'DirectoryStore'):
+        from zarr.storage import DirectoryStore
+        zarr.DirectoryStore = DirectoryStore
+except ImportError:
+    pass # Fallback or let it fail naturally if zarr is broken
+
 def check_chunks_compatible(chunks: tuple, shape: tuple):
     assert len(shape) == len(chunks)
     for c in chunks:

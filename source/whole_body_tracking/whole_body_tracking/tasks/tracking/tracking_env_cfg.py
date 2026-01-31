@@ -105,27 +105,27 @@ class MySceneCfg(InteractiveSceneCfg):
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     # import ipdb; ipdb.set_trace();
-    # depth_camera: TiledCameraCfg | None = (
-    #     TiledCameraCfg(
-    #         prim_path="{ENV_REGEX_NS}/Robot/head_link",
-    #         update_period=0.1,  # 10Hz
-    #         height=480,
-    #         width=848,
-    #         data_types=["rgb", "depth"],
-    #         spawn=sim_utils.PinholeCameraCfg(
-    #             focal_length=1.93,  # D435i: ~87° HFOV
-    #             horizontal_aperture=3.6,
-    #             clipping_range=(0.1, 5.0),
-    #         ),
-    #         offset=TiledCameraCfg.OffsetCfg(
-    #             pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-    #             rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-    #             convention="ros",
-    #         ),
-    #     )
-    #     # if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-    #     # else None
-    # )
+    depth_camera: TiledCameraCfg | None = (
+        TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/head_link/depth_camera",
+            update_period=0.1,  # 10Hz
+            height=480,
+            width=848,
+            data_types=["rgb", "depth"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=1.93,  # D435i: ~87° HFOV
+                horizontal_aperture=3.6,
+                clipping_range=(0.1, 5.0),
+            ),
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                convention="ros",
+            ),
+        )
+        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+        else None
+    )
 
 
 

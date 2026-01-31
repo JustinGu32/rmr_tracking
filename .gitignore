@@ -40,6 +40,7 @@ _build
 *.zarr
 *.npz
 *.out
+*.zip
 
 **/assets/
 artifacts/

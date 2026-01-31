@@ -11,6 +11,7 @@ from isaaclab.app import AppLauncher
 import cli_args  # isort: skip
 import pathlib 
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -189,11 +190,20 @@ def main():
     # env_cfg 
     recorded_obs = []
     recorded_acs = []
+    recorded_rgb = []
+    recorded_depth = []
     episode_ends = []
 
     num_envs = env.unwrapped.num_envs # type: ignore
     recorded_obs_episode = np.zeros((num_envs, 2000, env.unwrapped.observation_space['diffusion_collect'].shape[-1])) # type: ignore
     recorded_acs_episode = np.zeros((num_envs, 2000, env.unwrapped.action_space.shape[-1])) # type: ignore
+    
+    # Initialize image buffers (assuming 480x848 resolution from config)
+    # RGB: (num_envs, max_steps, H, W, 3), Depth: (num_envs, max_steps, H, W)
+    img_h, img_w = 480, 848
+    recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
+    recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
+
     device = env.unwrapped.device # type: ignore
 
     saved_idx = 0
@@ -218,6 +228,7 @@ def main():
     # import ipdb; ipdb.set_trace()
     # reset environment
     obs, _ = env.reset()
+
     # obs = obs['diffusion_collect']
     # obs_diffusion = env.unwrapped.observations['diffusion_collect']
     obs_diffusion = obs['diffusion_collect']
@@ -235,10 +246,15 @@ def main():
     # knee_noise =  .8 # *0
     # ankle_noise = .8
     
-    noise_level = .5
-    hip_noise = .5 # *0
-    knee_noise = .5 # *0
-    ankle_noise =.7
+    # noise_level = .5
+    # hip_noise = .5 # *0
+    # knee_noise = .5 # *0
+    # ankle_noise =.7
+
+    noise_level = .3
+    hip_noise = .3 # *0
+    knee_noise = .3 # *0
+    ankle_noise =.5
 
     hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
     knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]
@@ -270,7 +286,7 @@ def main():
     noise_state = torch.zeros((num_envs, num_actions), device=device)
 
     # OU parameters
-    theta = 0 #0.4  # mean reversion rate
+    theta = .8 # 0 #0.4  # mean reversion rate
     mu = 0.0      # long-term mean
     dt = 1.0      # time step
     sqrt_dt = torch.sqrt(torch.tensor(dt))  # compute once for efficiency
@@ -302,7 +318,7 @@ def main():
             noise_state = noise_state + theta * (mu - noise_state) * dt + sigma_noise * sqrt_dt
             
             # COMMENT OUT NOISE FOR NOW TO DEBUG
-            actions = actions #+ noise_state
+            actions = actions + noise_state
             # import ipdb; ipdb.set_trace() 
             curr_idx = np.all(recorded_obs_episode == 0, axis=-1).argmax(axis=-1)
             
@@ -311,9 +327,43 @@ def main():
             # TODO: JUSTIN HELP
 
 
-            # camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
-            # rgb_image = camera_sensor.data.output["rgb"] 
-            # depth_image = camera_sensor.data.output["depth"] 
+            camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
+            rgb_image = camera_sensor.data.output["rgb"] 
+            depth_image = camera_sensor.data.output["depth"] 
+
+            # Save images to buffer
+            # Check for alpha channel in RGB
+            if rgb_image.shape[-1] == 4:
+                rgb_to_save = rgb_image[..., :3]
+            else:
+                rgb_to_save = rgb_image
+
+            recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
+            recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
+
+
+            # Visualize the first environment's image every step (as requested)
+            # if step % 1 == 0:
+            #     try:
+            #         # Get image from first env, remove batch dim
+            #         img_tensor = rgb_image[0] 
+            #         # Convert to numpy, ensure it's on CPU
+            #         img_np = img_tensor.cpu().numpy()
+                    
+            #         # Handle alpha channel if present (RGBA -> RGB)
+            #         if img_np.shape[-1] == 4:
+            #             img_np = img_np[:, :, :3]
+                    
+            #         # Use matplotlib for visualization (robust to headless OpenCV)
+            #         plt.imshow(img_np)
+            #         plt.axis('off')
+            #         plt.title("Camera View")
+            #         plt.pause(0.001)
+            #         plt.clf()
+            #     except Exception as e:
+            #         # If even matplotlib fails (e.g. completely headless), catch and print once
+            #         if step == 0:
+            #             print(f"Error visualizing image with matplotlib: {e}") 
 
 
             # get image from env
@@ -362,6 +412,9 @@ def main():
 
                             recorded_obs.append(np.copy(recorded_obs_episode[env_ids[i], :epi_len]))
                             recorded_acs.append(np.copy(recorded_acs_episode[env_ids[i], :epi_len]))
+                            recorded_rgb.append(np.copy(recorded_rgb_episode[env_ids[i], :epi_len]))
+                            recorded_depth.append(np.copy(recorded_depth_episode[env_ids[i], :epi_len]))
+
 
                             saved_idx += epi_len
                             saved_epi += 1
@@ -377,6 +430,9 @@ def main():
                     
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
+                    recorded_rgb_episode[env_ids[i]] = 0
+                    recorded_depth_episode[env_ids[i]] = 0
+
                     
                     
                     if saved_epi > NUM_EPISODE:
@@ -395,8 +451,10 @@ def main():
                                 "root_pos": (recorded_obs[i][:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
                                 "root_rot": (recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
                                 "act": recorded_acs[i][:],
-                                # "img": recorded_img[i][:],
+                                "rgb": recorded_rgb[i][:],
+                                "depth": recorded_depth[i][:],
                             })
+
                         
                         buff.save_to_path(SAVE_FILE_NAME)
                         print('saved to:', SAVE_FILE_NAME)

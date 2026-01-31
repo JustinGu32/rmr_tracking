@@ -1,4 +1,5 @@
 import os
+import sys
 import subprocess
 from dataclasses import dataclass, replace
 from typing import Optional, List
@@ -18,12 +19,12 @@ class ExperimentConfig:
     max_sample_idx: int | None = None
     no_action_noise: bool = False
 
-def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-v0", num_envs: int = 10):
+def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Collect-v0", num_envs: int = 10):
     """Run a single experiment with the given configuration."""
     
     # Construct the base command
     command = [
-        "python",
+        sys.executable,
         "scripts/rsl_rl/collect_dataset.py",
         f"--task={task}",
         f"--num_envs={num_envs}",
@@ -83,15 +84,15 @@ def main():
     # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'robot-mcrobotface/takara_walk_isaac/mz6yl6v2',
-            # wandb_path = 'justingu-stanford-university/takara_walk_isaac/p45lz75q',
+            wandb_path= 'robot-mcrobotface/takara_walk_isaac/nxotitq9',
+            # wandb_path = 'justingu-stanfo`rd-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
-            episode_collect_length_s=100,
-            num_steps_collect=60,  # 2.5 sec
-            num_eps_collect=3000, #8000
+            episode_collect_length_s=4,
+            num_steps_collect=60,  # 1.8 sec
+            num_eps_collect=10, #8000
             # min_sample_idx = 0,
             # max_sample_idx = 16000, #16000,
-            save_folder='takara_walk_fast_baseline_correct', #_OU
+            save_folder='VISION_DATA_TEST_YAY', #_OU
             delays=[0],  
     ),
     # 5333

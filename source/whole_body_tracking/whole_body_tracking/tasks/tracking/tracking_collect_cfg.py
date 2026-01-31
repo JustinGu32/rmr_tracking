@@ -100,14 +100,14 @@ class MySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.13, 0.13, 0.13), intensity=1000.0),
     )
     contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
+        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=False
     )
 
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/head_link/depth_camera",
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/head_link/depth_camera",
             update_period=0.1,  # 10Hz
             height=480,
             width=848,
@@ -141,7 +141,7 @@ class CommandsCfg:
     motion = mdp.MotionCommandCfg(
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
-        debug_vis=True,
+        debug_vis=False,
         # Todo: define as parameter instead
         # pose_range={
         #     "x": (-0.05, 0.05),
@@ -183,13 +183,13 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        motion_anchor_pos_b = ObsTerm(
-            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        )
+        # motion_anchor_pos_b = ObsTerm(
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
@@ -464,7 +464,7 @@ class TrackingCollectCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=20.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
