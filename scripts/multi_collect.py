@@ -38,8 +38,8 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Colle
         f"--min_sample_idx={config.min_sample_idx}", 
         f"--max_sample_idx={config.max_sample_idx}", 
         f"--save_folder={config.save_folder}",
-        f"--headless",
-    ]
+        # f"--headless",
+        ]       
     # import ipdb; ipdb.set_trace() 
 
     print(f"Running command: {' '.join(command)}")
@@ -54,7 +54,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Colle
         env["ENABLE_CAMERAS"] = "1"
 
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True, env=env)
+        result = subprocess.run( command,  cwd="/move/u/justingu/rmr_tracking",check=True, capture_output=False, text=True, env=env)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True

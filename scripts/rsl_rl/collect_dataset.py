@@ -343,33 +343,33 @@ def main():
 
 
             # Visualize the first environment's image every step (as requested)
-            # if step % 1 == 0:
-            #     try:
-            #         # Get image from first env, remove batch dim
-            #         img_tensor = rgb_image[0] 
-            #         # Convert to numpy, ensure it's on CPU
-            #         img_np = img_tensor.cpu().numpy()
+            if step % 1 == 0:
+                try:
+                    # Get image from first env, remove batch dim
+                    img_tensor = rgb_image[0] 
+                    # Convert to numpy, ensure it's on CPU
+                    img_np = img_tensor.cpu().numpy()
                     
-            #         # Handle alpha channel if present (RGBA -> RGB)
-            #         if img_np.shape[-1] == 4:
-            #             img_np = img_np[:, :, :3]
+                    # Handle alpha channel if present (RGBA -> RGB)
+                    if img_np.shape[-1] == 4:
+                        img_np = img_np[:, :, :3]
                     
-            #         # Use matplotlib for visualization (robust to headless OpenCV)
-            #         plt.imshow(img_np)
-            #         plt.axis('off')
-            #         plt.title("Camera View")
-            #         plt.pause(0.001)
-            #         plt.clf()
-            #     except Exception as e:
-            #         # If even matplotlib fails (e.g. completely headless), catch and print once
-            #         if step == 0:
-            #             print(f"Error visualizing image with matplotlib: {e}") 
+                    # Use matplotlib for visualization (robust to headless OpenCV)
+                    plt.imshow(img_np)
+                    plt.axis('off')
+                    plt.title("Camera View")
+                    plt.pause(0.001)
+                    plt.clf()
+                except Exception as e:
+                    # If even matplotlib fails (e.g. completely headless), catch and print once
+                    if step == 0:
+                        print(f"Error visualizing image with matplotlib: {e}") 
 
 
             # get image from env
             # pass through encoder
             # recorded_img_episode[np.arange(num_envs), curr_idx, :] = encoded_image
-
+            # import ipdb; ipdb.set_trace()
             # env stepping
             obs, rews, dones, extra = env.step(actions)
             

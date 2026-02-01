@@ -107,8 +107,9 @@ class MySceneCfg(InteractiveSceneCfg):
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/head_link/depth_camera",
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
             update_period=0.1,  # 10Hz
+            debug_vis=False,
             height=480,
             width=848,
             data_types=["rgb", "depth"],
