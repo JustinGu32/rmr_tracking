@@ -12,6 +12,7 @@ import cli_args  # isort: skip
 import pathlib 
 from pathlib import Path
 import matplotlib.pyplot as plt
+import traceback
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -93,6 +94,12 @@ from torch.distributions import Normal
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
+from transformers import AutoImageProcessor, SiglipModel
+from transformers import AutoImageProcessor, SiglipModel
+import torch.nn.functional as F
+
+from whole_body_tracking.utils.defm_utils import preprocess_depth_batch
+from PIL import Image
 
 
 def main():
@@ -203,6 +210,47 @@ def main():
     img_h, img_w = 480, 848
     recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
     recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
+
+    # Initialize Siglip2 Model
+    print("[INFO] Initializing Siglip2 Vision Model...")
+    model_id = "google/siglip2-so400m-patch14-384" 
+    # Use AutoImageProcessor to avoid tokenizer issues
+    processor = AutoImageProcessor.from_pretrained(model_id)
+    # Use SiglipModel (explicit) with Flash Attention 2 and Float16
+    siglip_model = SiglipModel.from_pretrained(
+        model_id,
+        attn_implementation="flash_attention_2",
+        torch_dtype=torch.float16,
+    )
+    siglip_model.to(device=args_cli.device).eval()
+    
+    # Siglip2 Embeddings Storage
+    # Get hidden size from the vision component properly
+    rgb_embed_dim = siglip_model.vision_model.config.hidden_size
+    recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+
+    # DeFM Embeddings Storage
+    # Initialize DeFM Model
+    print("[INFO] Initializing DeFM Depth Model...")
+    torch.hub.set_dir(os.path.expanduser("~/.cache/torch/hub"))
+    defm_model = torch.hub.load(
+        "leggedrobotics/defm:main",
+        "defm_vit_l14",
+        pretrained=True,
+        trust_repo=True,
+    )
+    defm_model = defm_model.eval().to(device=args_cli.device)
+    depth_embed_dim = 1024 # DeFM ViT-L14 class token size
+    recorded_depth_embed_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
+
+    # OU parameters
+    theta = .8 # 0 #0.4  # mean reversion rate
+    mu = 0.0      # long-term mean
+    dt = 1.0      # time step
+    sqrt_dt = torch.sqrt(torch.tensor(dt))  # compute once for efficiency
+    
+    recorded_rgb_embed = []
+    recorded_depth_embed = []
 
     device = env.unwrapped.device # type: ignore
 
@@ -341,6 +389,65 @@ def main():
             recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
             recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
 
+            # --- Process and Embed Images with Siglip2 ---
+            
+            # Convert tensors to list of PIL images for the processor
+            # rgb_to_save: (B, H, W, 3) 
+            rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
+            rgb_images = [Image.fromarray(img) for img in rgb_np]
+
+            # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
+            depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
+            # Normalize depth for visualization-like input if needed, or just replicate channels
+            # Here we replicate channels to make it (H, W, 3) grayscale-like
+            # depth_images = []
+
+
+            try:
+                # Batch processing
+                with torch.no_grad():
+                    # Process RGB
+                    inputs_rgb = processor(images=rgb_images, return_tensors="pt").to(device)
+                    # Cast to float16
+                    inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
+                    
+                    # Use vision_model explicitly
+                    outputs_rgb = siglip_model.vision_model(**inputs_rgb)
+                    rgb_embeds = outputs_rgb.pooler_output # (B, hidden_size)
+
+                    # Process Depth with DeFM
+                    # depth_image shape is (B, H, W, 1) -> squeeze to (B, H, W)
+                    batch_depth = depth_image.squeeze(-1).float() # Ensure float tensor
+                    
+                    # Preprocess for DeFM
+                    # Note: preprocess_depth_batch expects tensor or numpy? 
+                    # The imported util likely handles tensor if written well, but let's check input type.
+                    # add_depth_embeds_to_zarr.py passes numpy. Let's pass tensor if possible or Convert.
+                    # Looking at add_depth_embeds_to_zarr.py: numpy -> preprocess -> torch
+                    # Let's convert to numpy to be safe and match reference implementation exact input type
+                    batch_depth_np = batch_depth.cpu().numpy()
+                    
+                    normalized_depth = preprocess_depth_batch(
+                        batch_depth_np,
+                        target_size=518, 
+                        patch_size=14,
+                        device=device
+                    )
+                    normalized_depth = normalized_depth.float()
+
+                    output = defm_model.get_intermediate_layers(
+                        normalized_depth, n=1, reshape=True, return_class_token=True
+                    )
+                    depth_embeds = output[0][1] # (B, 1024)
+                
+                recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
+                recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
+            except Exception as e:
+                print(f"Error in Siglip2 embedding: {e}")
+                traceback.print_exc()
+
+            # ---------------------------------------------
+
 
             # Visualize the first environment's image every step (as requested)
             if step % 1 == 0:
@@ -414,6 +521,8 @@ def main():
                             recorded_acs.append(np.copy(recorded_acs_episode[env_ids[i], :epi_len]))
                             recorded_rgb.append(np.copy(recorded_rgb_episode[env_ids[i], :epi_len]))
                             recorded_depth.append(np.copy(recorded_depth_episode[env_ids[i], :epi_len]))
+                            recorded_rgb_embed.append(np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len]))
+                            recorded_depth_embed.append(np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len]))
 
 
                             saved_idx += epi_len
@@ -432,6 +541,8 @@ def main():
                     recorded_acs_episode[env_ids[i]] = 0
                     recorded_rgb_episode[env_ids[i]] = 0
                     recorded_depth_episode[env_ids[i]] = 0
+                    recorded_rgb_embed_episode[env_ids[i]] = 0
+                    recorded_depth_embed_episode[env_ids[i]] = 0
 
                     
                     
@@ -441,6 +552,8 @@ def main():
                         num_joints = 29
                          
                         for i in range(min(len(recorded_obs), NUM_EPISODE)):
+                            print("rgb_embed shape", recorded_rgb_embed[i].shape, recorded_rgb_embed[i][0:10])
+                            print("depth_embed shape", recorded_depth_embed[i].shape, recorded_depth_embed[i][0:10])
                             buff.add_episode({
                                 "body_pos": recorded_obs[i][:,: num_bodies * 3],
                                 "body_rot": recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
@@ -451,8 +564,10 @@ def main():
                                 "root_pos": (recorded_obs[i][:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
                                 "root_rot": (recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
                                 "act": recorded_acs[i][:],
-                                "rgb": recorded_rgb[i][:],
-                                "depth": recorded_depth[i][:],
+                                # "rgb": recorded_rgb[i][:],
+                                # "depth": recorded_depth[i][:],
+                                "rgb_embed": recorded_rgb_embed[i],
+                                "depth_embed": recorded_depth_embed[i],
                             })
 
                         
