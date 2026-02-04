@@ -1,0 +1,9 @@
+zarr version for now:
+	zarr = 2.18.3
+	pip install "numcodecs<0.16.0"
+
+
+Assumptions:
+	camera is correct
+
+need to pip install flash-attn for embedding

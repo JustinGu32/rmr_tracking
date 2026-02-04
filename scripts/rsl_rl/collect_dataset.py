@@ -197,9 +197,12 @@ def main():
     # env_cfg 
     recorded_obs = []
     recorded_acs = []
-    recorded_rgb = []
-    recorded_depth = []
+    # recorded_rgb = []
+    # recorded_depth = []
+    recorded_rgb_embed = []
+    recorded_depth_embed = []
     episode_ends = []
+    
 
     num_envs = env.unwrapped.num_envs # type: ignore
     recorded_obs_episode = np.zeros((num_envs, 2000, env.unwrapped.observation_space['diffusion_collect'].shape[-1])) # type: ignore
@@ -208,8 +211,8 @@ def main():
     # Initialize image buffers (assuming 480x848 resolution from config)
     # RGB: (num_envs, max_steps, H, W, 3), Depth: (num_envs, max_steps, H, W)
     img_h, img_w = 480, 848
-    recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
-    recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
+    # recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
+    # recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
 
     # Initialize Siglip2 Model
     print("[INFO] Initializing Siglip2 Vision Model...")
@@ -249,8 +252,6 @@ def main():
     dt = 1.0      # time step
     sqrt_dt = torch.sqrt(torch.tensor(dt))  # compute once for efficiency
     
-    recorded_rgb_embed = []
-    recorded_depth_embed = []
 
     device = env.unwrapped.device # type: ignore
 
@@ -386,8 +387,8 @@ def main():
             else:
                 rgb_to_save = rgb_image
 
-            recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
-            recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
+            # recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
+            # recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
 
             # --- Process and Embed Images with Siglip2 ---
             
@@ -449,28 +450,28 @@ def main():
             # ---------------------------------------------
 
 
-            # Visualize the first environment's image every step (as requested)
-            if step % 1 == 0:
-                try:
-                    # Get image from first env, remove batch dim
-                    img_tensor = rgb_image[0] 
-                    # Convert to numpy, ensure it's on CPU
-                    img_np = img_tensor.cpu().numpy()
+            # # Visualize the first environment's image every step (as requested)
+            # if step % 1 == 0:
+            #     try:
+            #         # Get image from first env, remove batch dim
+            #         img_tensor = rgb_image[0] 
+            #         # Convert to numpy, ensure it's on CPU
+            #         img_np = img_tensor.cpu().numpy()
                     
-                    # Handle alpha channel if present (RGBA -> RGB)
-                    if img_np.shape[-1] == 4:
-                        img_np = img_np[:, :, :3]
+            #         # Handle alpha channel if present (RGBA -> RGB)
+            #         if img_np.shape[-1] == 4:
+            #             img_np = img_np[:, :, :3]
                     
-                    # Use matplotlib for visualization (robust to headless OpenCV)
-                    plt.imshow(img_np)
-                    plt.axis('off')
-                    plt.title("Camera View")
-                    plt.pause(0.001)
-                    plt.clf()
-                except Exception as e:
-                    # If even matplotlib fails (e.g. completely headless), catch and print once
-                    if step == 0:
-                        print(f"Error visualizing image with matplotlib: {e}") 
+            #         # Use matplotlib for visualization (robust to headless OpenCV)
+            #         plt.imshow(img_np)
+            #         plt.axis('off')
+            #         plt.title("Camera View")
+            #         plt.pause(0.001)
+            #         plt.clf()
+            #     except Exception as e:
+            #         # If even matplotlib fails (e.g. completely headless), catch and print once
+            #         if step == 0:
+            #             print(f"Error visualizing image with matplotlib: {e}") 
 
 
             # get image from env
@@ -519,8 +520,8 @@ def main():
 
                             recorded_obs.append(np.copy(recorded_obs_episode[env_ids[i], :epi_len]))
                             recorded_acs.append(np.copy(recorded_acs_episode[env_ids[i], :epi_len]))
-                            recorded_rgb.append(np.copy(recorded_rgb_episode[env_ids[i], :epi_len]))
-                            recorded_depth.append(np.copy(recorded_depth_episode[env_ids[i], :epi_len]))
+                            # recorded_rgb.append(np.copy(recorded_rgb_episode[env_ids[i], :epi_len]))
+                            # recorded_depth.append(np.copy(recorded_depth_episode[env_ids[i], :epi_len]))
                             recorded_rgb_embed.append(np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len]))
                             recorded_depth_embed.append(np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len]))
 
@@ -539,8 +540,8 @@ def main():
                     
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
-                    recorded_rgb_episode[env_ids[i]] = 0
-                    recorded_depth_episode[env_ids[i]] = 0
+                    # recorded_rgb_episode[env_ids[i]] = 0
+                    # recorded_depth_episode[env_ids[i]] = 0
                     recorded_rgb_embed_episode[env_ids[i]] = 0
                     recorded_depth_embed_episode[env_ids[i]] = 0
 
@@ -552,8 +553,8 @@ def main():
                         num_joints = 29
                          
                         for i in range(min(len(recorded_obs), NUM_EPISODE)):
-                            print("rgb_embed shape", recorded_rgb_embed[i].shape, recorded_rgb_embed[i][0:10])
-                            print("depth_embed shape", recorded_depth_embed[i].shape, recorded_depth_embed[i][0:10])
+                            print("rgb_embed shape", recorded_rgb_embed[i].shape, recorded_rgb_embed[i][0][0:10])
+                            print("depth_embed shape", recorded_depth_embed[i].shape, recorded_depth_embed[i][0][0:10])
                             buff.add_episode({
                                 "body_pos": recorded_obs[i][:,: num_bodies * 3],
                                 "body_rot": recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
