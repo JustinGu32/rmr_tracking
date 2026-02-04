@@ -3,7 +3,7 @@
 #SBATCH --time=72:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=100G
+#SBATCH --mem=150G
 #SBATCH --gres=gpu:rtxpro6000:1 
 #SBATCH --job-name=takara_walk_isaac_collect
 #SBATCH --output=slurm_outputs/slurm-%j.out

@@ -195,13 +195,41 @@ def main():
     )
     
     # env_cfg 
-    recorded_obs = []
-    recorded_acs = []
-    # recorded_rgb = []
-    # recorded_depth = []
-    recorded_rgb_embed = []
-    recorded_depth_embed = []
+    # recorded_obs = []
+    # recorded_acs = []
+    # recorded_rgb_embed = []
+    # recorded_depth_embed = []
     episode_ends = []
+    
+    # Initialize ReplayBuffer to save directly to disk
+    COLLECT_STEPS = int(args_cli.num_steps_collect)
+    NUM_EPISODE = int(args_cli.num_eps_collect)
+    
+    # Noise params for filename
+    noise_level = .3
+    hip_noise = .3
+    knee_noise = .3 
+    ankle_noise =.5
+
+    hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
+    knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]
+    ankle_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if  'ankle' in name]
+
+    
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%d_%H%M")
+    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
+    save_path = Path(args_cli.save_folder) if args_cli.save_folder else Path.cwd()
+    save_path.mkdir(parents=True, exist_ok=True)
+    SAVE_FILE_NAME = str(save_path / base_filename)
+    
+    print(f"[INFO] Initializing ReplayBuffer at: {SAVE_FILE_NAME}")
+    buff = ReplayBuffer.create_empty_zarr(
+        storage=zarr.DirectoryStore(SAVE_FILE_NAME)
+    )
+    
+    num_bodies = 30
+    num_joints = 29
     
 
     num_envs = env.unwrapped.num_envs # type: ignore
@@ -217,6 +245,8 @@ def main():
     # Initialize Siglip2 Model
     print("[INFO] Initializing Siglip2 Vision Model...")
     model_id = "google/siglip2-so400m-patch14-384" 
+    # model_id = "google/siglip2-base-patch16-384" 
+    
     # Use AutoImageProcessor to avoid tokenizer issues
     processor = AutoImageProcessor.from_pretrained(model_id)
     # Use SiglipModel (explicit) with Flash Attention 2 and Float16
@@ -300,29 +330,8 @@ def main():
     # knee_noise = .5 # *0
     # ankle_noise =.7
 
-    noise_level = .3
-    hip_noise = .3 # *0
-    knee_noise = .3 # *0
-    ankle_noise =.5
-
-    hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
-    knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]
-    ankle_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if  'ankle' in name]
-
-
-    COLLECT_STEPS = int(args_cli.num_steps_collect)
-    NUM_EPISODE = int(args_cli.num_eps_collect)
-    from datetime import datetime
-
-    # Day, hours, and minutes
-    timestamp = datetime.now().strftime("%d_%H%M")
-
-    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
-    
-    # base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_roll_noise}.zarr'
-    save_path = Path(args_cli.save_folder) if args_cli.save_folder else Path.cwd()
-    save_path.mkdir(parents=True, exist_ok=True)
-    SAVE_FILE_NAME = str(save_path / base_filename)
+    # print('total tuples collected', COLLECT_STEPS*NUM_EPISODE)
+    # print('baseline:', 100*20/.02) # 100k 
 
     print('total tuples collected', COLLECT_STEPS*NUM_EPISODE)
     print('baseline:', 100*20/.02) # 100k 
@@ -407,40 +416,59 @@ def main():
             try:
                 # Batch processing
                 with torch.no_grad():
-                    # Process RGB
-                    inputs_rgb = processor(images=rgb_images, return_tensors="pt").to(device)
-                    # Cast to float16
-                    inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
+                    VISION_BATCH_SIZE = 10 # Process in batches to avoid OOM
                     
-                    # Use vision_model explicitly
-                    outputs_rgb = siglip_model.vision_model(**inputs_rgb)
-                    rgb_embeds = outputs_rgb.pooler_output # (B, hidden_size)
+                    # --- Process RGB in batches ---
+                    rgb_embeds_list = []
+                    for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
+                        batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
+                        inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
+                        inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
+                        
+                        outputs_rgb = siglip_model.vision_model(**inputs_rgb)
+                        rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
+                        
+                        # Cleanup
+                        del inputs_rgb, outputs_rgb
+                        # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
+                    
+                    rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
+                    
+                    # For saving, we want numpy anyway, so keeping on CPU is perfect.
+                    # But the code below expects `rgb_embeds` to have a .cpu() method or be a tensor.
+                    # rgb_embeds_list contains cpu tensors now.
+                    # rgb_embeds will be a CPU tensor.
 
-                    # Process Depth with DeFM
+                    # --- Process Depth in batches ---
                     # depth_image shape is (B, H, W, 1) -> squeeze to (B, H, W)
-                    batch_depth = depth_image.squeeze(-1).float() # Ensure float tensor
-                    
-                    # Preprocess for DeFM
-                    # Note: preprocess_depth_batch expects tensor or numpy? 
-                    # The imported util likely handles tensor if written well, but let's check input type.
-                    # add_depth_embeds_to_zarr.py passes numpy. Let's pass tensor if possible or Convert.
-                    # Looking at add_depth_embeds_to_zarr.py: numpy -> preprocess -> torch
-                    # Let's convert to numpy to be safe and match reference implementation exact input type
+                    batch_depth = depth_image.squeeze(-1).float() 
                     batch_depth_np = batch_depth.cpu().numpy()
                     
-                    normalized_depth = preprocess_depth_batch(
-                        batch_depth_np,
-                        target_size=518, 
-                        patch_size=14,
-                        device=device
-                    )
-                    normalized_depth = normalized_depth.float()
+                    for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
+                        # 1. Get chunk of raw depth (numpy, CPU)
+                        batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]
+                        
+                        # 2. Preprocess just this chunk (moves to GPU inside function)
+                        normalized_depth_chunk = preprocess_depth_batch(
+                            batch_depth_chunk_np,
+                            target_size=518, 
+                            patch_size=14,
+                            device=device
+                        )
+                        normalized_depth_chunk = normalized_depth_chunk.float()
 
-                    output = defm_model.get_intermediate_layers(
-                        normalized_depth, n=1, reshape=True, return_class_token=True
-                    )
-                    depth_embeds = output[0][1] # (B, 1024)
+                        # 3. Run Inference
+                        output = defm_model.get_intermediate_layers(
+                            normalized_depth_chunk, n=1, reshape=True, return_class_token=True
+                        )
+                        depth_embeds_list.append(output[0][1].cpu()) # Move result to CPU immediately
+                        
+                        # 4. Cleanup GPU tensors for this chunk
+                        del normalized_depth_chunk, output
+                        
+                    depth_embeds = torch.cat(depth_embeds_list, dim=0)
                 
+                # Arrays are already on CPU if we used .cpu() above, but .cpu() is safe to call on CPU tensors too.
                 recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
                 recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
             except Exception as e:
@@ -518,86 +546,50 @@ def main():
                                 import ipdb; ipdb.set_trace() 
                             
 
-                            recorded_obs.append(np.copy(recorded_obs_episode[env_ids[i], :epi_len]))
-                            recorded_acs.append(np.copy(recorded_acs_episode[env_ids[i], :epi_len]))
-                            # recorded_rgb.append(np.copy(recorded_rgb_episode[env_ids[i], :epi_len]))
-                            # recorded_depth.append(np.copy(recorded_depth_episode[env_ids[i], :epi_len]))
-                            recorded_rgb_embed.append(np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len]))
-                            recorded_depth_embed.append(np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len]))
+                            # Extract data for this episode
+                            ep_obs = np.copy(recorded_obs_episode[env_ids[i], :epi_len])
+                            ep_acs = np.copy(recorded_acs_episode[env_ids[i], :epi_len])
+                            ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
+                            ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
 
+                            # Save to Zarr immediately
+                            print(f"[INFO] Saving episode for env {env_ids[i]} to ReplayBuffer...")
+                            buff.add_episode({
+                                "body_pos": ep_obs[:,: num_bodies * 3],
+                                "body_rot": ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
+                                "body_lin_vel": ep_obs[:, num_bodies * 7 : num_bodies * 10],
+                                "body_ang_vel": ep_obs[:, num_bodies * 10 : num_bodies * 13],
+                                "joint_pos": ep_obs[:, num_bodies * 13 : num_bodies * 13 + num_joints],
+                                "joint_vel": ep_obs[:,num_bodies * 13 + num_joints : num_bodies * 13 + num_joints * 2,],
+                                "root_pos": (ep_obs[:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
+                                "root_rot": (ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
+                                "act": ep_acs[:],
+                                "rgb_embed": ep_rgb_embed,
+                                "depth_embed": ep_depth_embed,
+                            })
 
                             saved_idx += epi_len
                             saved_epi += 1
-
                             episode_ends.append(saved_idx)
 
                             print("SAVED: ", env_ids[i], "LEN: ", epi_len, "EPISODES: ",saved_epi,)
                         else:
                             print("SKIP DONE: ", env_ids[i], "DUE TO NOT LONG ENOUGH EPISODE", epi_len)
-
+                            
                     else:
                         print("SKIP DONE: ", env_ids[i], "DUE TO BAD REWARD")
                     
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
-                    # recorded_rgb_episode[env_ids[i]] = 0
-                    # recorded_depth_episode[env_ids[i]] = 0
                     recorded_rgb_embed_episode[env_ids[i]] = 0
                     recorded_depth_embed_episode[env_ids[i]] = 0
 
-                    
-                    
-                    if saved_epi > NUM_EPISODE:
-                        buff = ReplayBuffer.create_empty_zarr()
-                        num_bodies = 30
-                        num_joints = 29
-                         
-                        for i in range(min(len(recorded_obs), NUM_EPISODE)):
-                            print("rgb_embed shape", recorded_rgb_embed[i].shape, recorded_rgb_embed[i][0][0:10])
-                            print("depth_embed shape", recorded_depth_embed[i].shape, recorded_depth_embed[i][0][0:10])
-                            buff.add_episode({
-                                "body_pos": recorded_obs[i][:,: num_bodies * 3],
-                                "body_rot": recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
-                                "body_lin_vel": recorded_obs[i][:, num_bodies * 7 : num_bodies * 10],
-                                "body_ang_vel": recorded_obs[i][:, num_bodies * 10 : num_bodies * 13],
-                                "joint_pos": recorded_obs[i][:, num_bodies * 13 : num_bodies * 13 + num_joints],
-                                "joint_vel": recorded_obs[i][:,num_bodies * 13 + num_joints : num_bodies * 13 + num_joints * 2,],
-                                "root_pos": (recorded_obs[i][:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
-                                "root_rot": (recorded_obs[i][:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
-                                "act": recorded_acs[i][:],
-                                # "rgb": recorded_rgb[i][:],
-                                # "depth": recorded_depth[i][:],
-                                "rgb_embed": recorded_rgb_embed[i],
-                                "depth_embed": recorded_depth_embed[i],
-                            })
-
-                        
-                        buff.save_to_path(SAVE_FILE_NAME)
+                    if saved_epi >= NUM_EPISODE:
+                        print(f"Collected {saved_epi} episodes. Usage limit reached.")
                         print('saved to:', SAVE_FILE_NAME)
                         env.close()
                         simulation_app.close()
                         exit()
-                        
-                        # recorded_obs = np.concatenate(recorded_obs[:NUM_EPISODE])
-                        # recorded_acs = np.concatenate(recorded_acs[:NUM_EPISODE])
-                        # episode_ends = np.array(episode_ends[:NUM_EPISODE])
-
-                        # num_bodies = 30
-                        # num_joints = 29
-                        # zdata["body_pos"] = recorded_obs[:, : num_bodies * 3]
-                        # zdata["body_rot"] = recorded_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4]
-                        # zdata["body_lin_vel"] = recorded_obs[:, num_bodies * 7 : num_bodies * 10]
-                        # zdata["body_ang_vel"] = recorded_obs[:, num_bodies * 10 : num_bodies * 13]
-                        # zdata["joint_pos"] = recorded_obs[:, num_bodies * 13 : num_bodies * 13 + num_joints]
-                        # zdata["joint_vel"] = recorded_obs[:,num_bodies * 13 + num_joints : num_bodies * 13 + num_joints * 2,]
-                        # zdata["root_pos"] = (recorded_obs[:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3))
-                        # zdata["root_rot"] = (recorded_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4))
-                        # zdata["act"] = recorded_acs
-                        # zmeta["episode_ends"] = episode_ends
-                        
-                        # print(zroot.tree())
-                        # print('saved to:', SAVE_FILE_NAME)
-                        # exit()
 
     # close the simulator
     env.close()
