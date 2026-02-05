@@ -47,6 +47,9 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
+# Box definition
+BOX_POSITION = [-0.1, 0.6, 0.2075]  # Guess and checked in sim
+BOX_SIZE = [0.4572, 0.4064, 0.415]  # 17.5" x 16" x 16"
 
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
@@ -83,12 +86,12 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
-    # Box object (17.5" x 16" x 16" = 0.4445m x 0.4064m x 0.4064m)
+    # Box object
     box = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Box",
         spawn=sim_utils.CuboidCfg(
-            size=(0.4445, 0.4064, 0.4064),  # length x width x height in meters
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            size=BOX_SIZE,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), # added
             mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
@@ -98,7 +101,7 @@ class MySceneCfg(InteractiveSceneCfg):
             ),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=(0.5, 0.0, 0.2032)),  # Center on floor 2m in front
+        init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POSITION),
     )
 
     # Depth camera mounted on the D435 link (head)
@@ -149,6 +152,7 @@ class CommandsCfg:
         },
         velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
+        box_position=BOX_POSITION,
     )
 
 
@@ -170,7 +174,7 @@ class ObservationsCfg:
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
         # motion_anchor_pos_b = ObsTerm(
-            # func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
         # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
@@ -301,6 +305,28 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
+    # shin_box_collision = RewTerm(
+    #     func=mdp.shin_box_collision_penalty,
+    #     weight=-2.0,  # Strong negative weight
+    #     params={
+    #         "sensor_cfg": SceneEntityCfg(
+    #             "contact_forces",
+    #             body_names=["left_knee_link", "right_knee_link"],
+    #         ),
+    #         "box_position": BOX_POSITION,
+    #         "box_size": BOX_SIZE,
+    #         "contact_threshold": 5.0,  # 5N of force
+    #     },
+    # )
+    # feet_on_box = RewTerm(
+    #     func=mdp.feet_above_box_reward,
+    #     weight=0.5,
+    #     params={
+    #         "box_position": BOX_POSITION,
+    #         "box_size": BOX_SIZE,
+    #         "height_threshold": 0.0,  # 0cm clearance (just be above box top)
+    #     },
+    # )
 
 
 @configclass

@@ -38,6 +38,25 @@ class MotionLoader:
         self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
         self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
         self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
+
+        # Load object data if available, otherwise default to origin
+        if "object_pos_w" in data:
+            self._object_pos_w = torch.tensor(data["object_pos_w"], dtype=torch.float32, device=device)
+            self._object_quat_w = torch.tensor(data["object_quat_w"], dtype=torch.float32, device=device)
+            # Load velocities if available (optional for backward compatibility)
+            if "object_lin_vel_w" in data:
+                self._object_lin_vel_w = torch.tensor(data["object_lin_vel_w"], dtype=torch.float32, device=device)
+                self._object_ang_vel_w = torch.tensor(data["object_ang_vel_w"], dtype=torch.float32, device=device)
+            else:
+                self._object_lin_vel_w = torch.zeros_like(self._object_pos_w)
+                self._object_ang_vel_w = torch.zeros_like(self._object_pos_w)
+        else:
+            self._object_pos_w = torch.zeros_like(self._body_pos_w[:, 0, :])
+            self._object_quat_w = torch.zeros_like(self._body_quat_w[:, 0, :])
+            self._object_quat_w[:, 0] = 1.0
+            self._object_lin_vel_w = torch.zeros_like(self._object_pos_w)
+            self._object_ang_vel_w = torch.zeros_like(self._object_pos_w)
+
         self._body_indexes = body_indexes
         self.time_step_total = self.joint_pos.shape[0]
 
@@ -56,6 +75,22 @@ class MotionLoader:
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
         return self._body_ang_vel_w[:, self._body_indexes]
+
+    @property
+    def object_pos_w(self) -> torch.Tensor:
+        return self._object_pos_w
+
+    @property
+    def object_quat_w(self) -> torch.Tensor:
+        return self._object_quat_w
+    
+    @property
+    def object_lin_vel_w(self) -> torch.Tensor:
+        return self._object_lin_vel_w
+
+    @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        return self._object_ang_vel_w
         
 class MotionCommand(CommandTerm):
     cfg: MotionCommandCfg
@@ -89,6 +124,9 @@ class MotionCommand(CommandTerm):
             [self.cfg.adaptive_lambda**i for i in range(self.cfg.adaptive_kernel_size)], device=self.device
         )
         self.kernel = self.kernel / self.kernel.sum()
+        
+        # Store box position
+        self.box_position = torch.tensor(self.cfg.box_position, device=self.device)
 
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
@@ -108,11 +146,21 @@ class MotionCommand(CommandTerm):
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self.motion.joint_pos[self.time_steps]
+        pos = self.motion.joint_pos[self.time_steps]
+        # Truncate to match robot DOF if necessary (e.g. 36 -> 29)
+        robot_dof = self.robot.data.soft_joint_pos_limits.shape[1]
+        if pos.shape[1] > robot_dof:
+            return pos[:, :robot_dof]
+        return pos
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        return self.motion.joint_vel[self.time_steps]
+        vel = self.motion.joint_vel[self.time_steps]
+        # Truncate to match robot DOF if necessary
+        robot_dof = self.robot.data.soft_joint_pos_limits.shape[1]
+        if vel.shape[1] > robot_dof:
+            return vel[:, :robot_dof]
+        return vel
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -270,6 +318,14 @@ class MotionCommand(CommandTerm):
         joint_pos = self.joint_pos.clone()
         joint_vel = self.joint_vel.clone()
 
+        # Handle size mismatch (e.g. 36 in motion vs 29 in robot)
+        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
+        robot_dof = soft_joint_pos_limits.shape[1]
+        
+        if joint_pos.shape[1] > robot_dof:
+            joint_pos = joint_pos[:, :robot_dof]
+            joint_vel = joint_vel[:, :robot_dof]
+
         joint_pos += sample_uniform(*self.cfg.joint_position_range, joint_pos.shape, joint_pos.device)
         soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
         joint_pos[env_ids] = torch.clip(
@@ -315,31 +371,31 @@ class MotionCommand(CommandTerm):
 
                 self.current_body_visualizers = []
                 self.goal_body_visualizers = []
-                for name in self.cfg.body_names:
-                    self.current_body_visualizers.append(
-                        VisualizationMarkers(
-                            self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/current/" + name)
-                        )
-                    )
-                    self.goal_body_visualizers.append(
-                        VisualizationMarkers(
-                            self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/goal/" + name)
-                        )
-                    )
+                # for name in self.cfg.body_names:
+                #     self.current_body_visualizers.append(
+                #         VisualizationMarkers(
+                #             self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/current/" + name)
+                #         )
+                #     )
+                #     self.goal_body_visualizers.append(
+                #         VisualizationMarkers(
+                #             self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/goal/" + name)
+                #         )
+                #     )
 
             self.current_anchor_visualizer.set_visibility(True)
             self.goal_anchor_visualizer.set_visibility(True)
-            for i in range(len(self.cfg.body_names)):
-                self.current_body_visualizers[i].set_visibility(True)
-                self.goal_body_visualizers[i].set_visibility(True)
+            # for i in range(len(self.cfg.body_names)):
+            #     self.current_body_visualizers[i].set_visibility(True)
+            #     self.goal_body_visualizers[i].set_visibility(True)
 
         else:
             if hasattr(self, "current_anchor_visualizer"):
                 self.current_anchor_visualizer.set_visibility(False)
                 self.goal_anchor_visualizer.set_visibility(False)
-                for i in range(len(self.cfg.body_names)):
-                    self.current_body_visualizers[i].set_visibility(False)
-                    self.goal_body_visualizers[i].set_visibility(False)
+                # for i in range(len(self.cfg.body_names)):
+                #     self.current_body_visualizers[i].set_visibility(False)
+                #     self.goal_body_visualizers[i].set_visibility(False)
 
     def _debug_vis_callback(self, event):
         if not self.robot.is_initialized:
@@ -348,9 +404,9 @@ class MotionCommand(CommandTerm):
         self.current_anchor_visualizer.visualize(self.robot_anchor_pos_w, self.robot_anchor_quat_w)
         self.goal_anchor_visualizer.visualize(self.anchor_pos_w, self.anchor_quat_w)
 
-        for i in range(len(self.cfg.body_names)):
-            self.current_body_visualizers[i].visualize(self.robot_body_pos_w[:, i], self.robot_body_quat_w[:, i])
-            self.goal_body_visualizers[i].visualize(self.body_pos_relative_w[:, i], self.body_quat_relative_w[:, i])
+        # for i in range(len(self.cfg.body_names)):
+        #     self.current_body_visualizers[i].visualize(self.robot_body_pos_w[:, i], self.robot_body_quat_w[:, i])
+        #     self.goal_body_visualizers[i].visualize(self.body_pos_relative_w[:, i], self.body_quat_relative_w[:, i])
 
 
 @configclass
@@ -364,6 +420,8 @@ class MotionCommandCfg(CommandTermCfg):
     motion_file: str = MISSING
     anchor_body_name: str = MISSING
     body_names: list[str] = MISSING
+
+    box_position: list[float] = [0.0, 0.0, 0.0]
 
     pose_range: dict[str, tuple[float, float]] = {}
     velocity_range: dict[str, tuple[float, float]] = {}

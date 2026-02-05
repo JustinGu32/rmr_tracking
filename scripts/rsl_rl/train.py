@@ -236,6 +236,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if ":" not in registry_name:  # Check if the registry name includes alias, if not, append ":latest"
         registry_name += ":latest"
     import pathlib
+    print(f"DEBUG: registry_name is {registry_name}")
 
     import wandb
 
