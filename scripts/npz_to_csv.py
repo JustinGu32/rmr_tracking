@@ -51,12 +51,6 @@ def main():
     # Ensure rotation is w, x, y, z (Isaac convention)
     # csv_to_npz expects [x, y, z, w] in CSV and converts to [w, x, y, z]
     # So we should save as [x, y, z, w]
-    # Wait, csv_to_npz does: 
-    # self.motion_base_rots_input = motion[:, 3:7] (4 cols)
-    # self.motion_base_rots_input = self.motion_base_rots_input[:, [3, 0, 1, 2]] (w,x,y,z)
-    # This implies input CSV index 3 (last) is w. So CSV is [x, y, z, w].
-    # But Isaac usually stores [w, x, y, z].
-    # So if root_rot is [w, x, y, z], we need to swap to [x, y, z, w].
     
     # Assuming standard Isaac [w, x, y, z]
     root_rot_xyzw = root_rot[:, [1, 2, 3, 0]]
@@ -65,9 +59,6 @@ def main():
     if 'joint_pos' in data:
         joint_pos = data['joint_pos']
     elif 'qpos' in data:
-         # Mujoco format might differ, use qpos but need to be careful about root
-         # qpos usually includes root, need to offset? 
-         # Isaac joint_pos is usually just DOFs.
          print("Warning: Using 'qpos', verify if this includes root.")
          joint_pos = data['qpos']
     else:
