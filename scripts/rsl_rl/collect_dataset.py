@@ -1,5 +1,20 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
+"""example command: 
+python scripts/rsl_rl/collect_dataset.py \
+    --task Tracking-Flat-G1-Collect-v0   \
+    --num_envs 1 \
+    --wandb_path robot-mcrobotface/takara_walk_isaac/nxotitq9 \
+    --num_steps_collect 60 \
+    --num_eps_collect 10000 \
+    --episode_collect_length 4 \
+    --min_delay 0 \
+    --max_delay 0 \
+    --min_sample_idx 0 \
+    --max_sample_idx 1000 
+    --enable_cameras
+"""
+
 """Launch Isaac Sim Simulator first."""
 
 import argparse
@@ -444,6 +459,7 @@ def main():
                     batch_depth = depth_image.squeeze(-1).float() 
                     batch_depth_np = batch_depth.cpu().numpy()
                     
+                    depth_embeds_list = []
                     for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
                         # 1. Get chunk of raw depth (numpy, CPU)
                         batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]
