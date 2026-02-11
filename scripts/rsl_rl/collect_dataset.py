@@ -233,7 +233,7 @@ def main():
     
     from datetime import datetime
     timestamp = datetime.now().strftime("%d_%H%M")
-    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
+    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_dec-{env_cfg.decimation}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
     save_path = Path(args_cli.save_folder) if args_cli.save_folder else Path.cwd()
     save_path.mkdir(parents=True, exist_ok=True)
     SAVE_FILE_NAME = str(save_path / base_filename)
@@ -242,6 +242,21 @@ def main():
     buff = ReplayBuffer.create_empty_zarr(
         storage=zarr.DirectoryStore(SAVE_FILE_NAME)
     )
+
+    metadata = {
+        'wandb_run': wandb_run.name,
+        'num_episodes': NUM_EPISODE,
+        'collect_steps': COLLECT_STEPS,
+        'decimation': env_cfg.decimation,
+        'min_delay': args_cli.min_delay,
+        'max_delay': args_cli.max_delay,
+        'noise_level': noise_level,
+        'hip_noise': hip_noise,
+        'knee_noise': knee_noise,
+        'ankle_noise': ankle_noise,
+        'timestamp': timestamp,
+    }
+    buff.update_meta(metadata)
     
     num_bodies = 30
     num_joints = 29
