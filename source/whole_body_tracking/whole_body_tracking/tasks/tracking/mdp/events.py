@@ -225,3 +225,101 @@ def randomize_rigid_body_com(
 
     # Set the new coms
     asset.root_physx_view.set_coms(coms, env_ids)
+
+
+
+def randomize_obstacles_avoiding_path(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    asset_cfg: SceneEntityCfg,
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    min_dist_to_path: float,
+):
+    """
+    Randomize obstacles (cylindrical pillars) such that they do not interfere with the
+    robot's reference motion path for the current episode.
+    """
+    # 1. Access Assets and Command
+    pillars: RigidObject | Articulation = env.scene[asset_cfg.name]
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device)
+
+    # 2. Get Full Reference Motion Path
+    # motion.body_pos_w is (Total_Steps, Num_Bodies, 3)
+    # We strip out the position of the anchor body (root) to check for collisions against it.
+    anchor_idx = command.motion_anchor_body_index
+    raw_motion_pos = command.motion._body_pos_w[:, anchor_idx, :3] # (Total_Steps, 3)
+
+    # 3. Determine Episode Time Slices for Each Environment
+    start_steps = command.time_steps[env_ids]
+    episode_length = command.steps_collect 
+    max_steps = raw_motion_pos.shape[0]
+    
+    device = env.device
+    num_envs_to_reset = len(env_ids)
+    
+    # 4. Generate Valid Positions using Rejection Sampling
+    new_pos = torch.zeros(num_envs_to_reset, 3, device=device)
+    # Initialize all obstacles far away so they don't interfere if not placed.
+    new_pos[:] = 100.0
+    new_pos[..., 2] = 1.0 # Z=1.0 ensures they sit on the ground (height=2.0)
+    
+    max_iters = 100
+    
+    for i in range(num_envs_to_reset):
+        # Identify the time slice for this specific episode
+        t_start = start_steps[i]
+        t_end = min(t_start + episode_length, max_steps)
+
+        print(raw_motion_pos[t_start, :2])
+        
+        # Extract path (T, 2) for collision checking (ignore Z)
+        if t_start < max_steps:
+             path = raw_motion_pos[t_start:t_end, :2] 
+        else:
+             path = torch.empty(0, 2, device=device)
+        
+        placed_count = 0
+        for _ in range(max_iters): 
+            if placed_count >= 1:
+                break
+            
+            # Sample random (x,y) candidate
+            rx = torch.rand(1, device=device) * (x_range[1] - x_range[0]) + x_range[0]
+            ry = torch.rand(1, device=device) * (y_range[1] - y_range[0]) + y_range[0]
+            cand = torch.cat([rx, ry], dim=0)
+            cand = cand + raw_motion_pos[t_start, :2]
+
+            # Check minimum distance to any point on the future path
+            min_dist = float('inf')
+            if path.shape[0] > 0:
+                dists = torch.norm(path - cand, dim=1)
+                min_dist = torch.min(dists)
+            
+            # If safe, accept the position
+            if min_dist > min_dist_to_path:
+                new_pos[i, 0] = rx
+                new_pos[i, 1] = ry
+                placed_count += 1
+                
+    # Add Env Origins to convert local positions to global world coordinates
+    env_origins = env.scene.env_origins[env_ids]
+    global_pos = new_pos + env_origins
+    
+    # 5. Orientation: Identity (No rotation needed for cylinders)
+    quat = torch.zeros(num_envs_to_reset, 4, device=device)
+    quat[..., 0] = 1.0 # (w, x, y, z) -> (1, 0, 0, 0)
+    
+    # 6. Update Simulation State
+    current_states = pillars.data.root_state_w[env_ids].clone() 
+        
+    current_states[:, :3] = global_pos
+    current_states[:, 3:7] = quat
+    current_states[:, 7:] = 0.0 # Reset velocities
+    
+    # Apply changes to the physics engine
+    pillars.write_root_state_to_sim(current_states, env_ids=env_ids)

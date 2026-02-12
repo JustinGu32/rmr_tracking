@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -126,6 +126,43 @@ class MySceneCfg(InteractiveSceneCfg):
         )
         if os.environ.get("ENABLE_CAMERAS", "0") == "1"
         else None
+    )
+
+    # Obstacles
+    # Obstacles
+    # Obstacles
+    pillar_0 = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Pillar_0",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.15,
+            height=2.0,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.1, 0.1)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(100.0, 100.0, 0.0)),
+    )
+    pillar_1 = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Pillar_1",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.15,
+            height=2.0,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.8, 0.1)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(102.0, 100.0, 0.0)),
+    )
+    pillar_2 = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Pillar_2",
+        spawn=sim_utils.CylinderCfg(
+            radius=0.15,
+            height=2.0,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.8)),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(104.0, 100.0, 0.0)),
     )
 
 
@@ -306,6 +343,40 @@ class EventCfg:
             "dynamic_friction_range": (0.3, 1.2),
             "restitution_range": (0.0, 0.5),
             "num_buckets": 64,
+        },
+    )
+
+    randomize_pillar_0 = EventTerm(
+        func=mdp.randomize_obstacles_avoiding_path,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("pillar_0"),
+            "command_name": "motion",
+            "x_range": (-4.0, 4.0),
+            "y_range": (-4.0, 4.0),
+            "min_dist_to_path": 2.0,
+        },
+    )
+    randomize_pillar_1 = EventTerm(
+        func=mdp.randomize_obstacles_avoiding_path,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("pillar_1"),
+            "command_name": "motion",
+            "x_range": (-4.0, 4.0),
+            "y_range": (-4.0, 4.0),
+            "min_dist_to_path": 2.0,
+        },
+    )
+    randomize_pillar_2 = EventTerm(
+        func=mdp.randomize_obstacles_avoiding_path,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("pillar_2"),
+            "command_name": "motion",
+            "x_range": (-4.0, 4.0),
+            "y_range": (-4.0, 4.0),
+            "min_dist_to_path": 2.0,
         },
     )
 

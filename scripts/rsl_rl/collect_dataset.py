@@ -108,6 +108,8 @@ from torch.distributions import Normal
 
 
 # Import extensions to set up environment tasks
+# Set ENABLE_CAMERAS before importing tasks so config files pick it up
+os.environ["ENABLE_CAMERAS"] = "1"
 import whole_body_tracking.tasks  # noqa: F401
 from transformers import AutoImageProcessor, SiglipModel
 from transformers import AutoImageProcessor, SiglipModel
