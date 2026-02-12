@@ -163,7 +163,7 @@ class CommandsCfg:
             "yaw":   (0.0, 0.0),
         },
         velocity_range=VELOCITY_RANGE_Null,
-        joint_position_range=(-.1, .1),
+        joint_position_range=(-0, 0),
     )
 
 
@@ -228,7 +228,7 @@ class ObservationsCfg:
         
         def __post_init__(self):
             self.enable_corruption = False
-            self.concatenate_terms = True
+            self.concatenate_terms = False
     # observation groups
     policy: PolicyCfg = PolicyDeployCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
@@ -282,12 +282,12 @@ class EventCfg:
 
     #train 
     # interval
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(1.0, 3.0),
-        params={"velocity_range": VELOCITY_RANGE},
-    )
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(1.0, 3.0),
+    #     params={"velocity_range": VELOCITY_RANGE},
+    # )
 
     # collect
     # push_robot = EventTerm(

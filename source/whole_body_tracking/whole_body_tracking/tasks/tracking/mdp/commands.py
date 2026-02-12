@@ -289,7 +289,7 @@ class MotionCommand(CommandTerm):
             time_samples = (phase * sampling_range + self.min_sample_idx).long()
             time_samples = torch.clip(time_samples, min=self.min_sample_idx, max=self.max_sample_idx - self.steps_collect) #.long()
 
-        self.time_steps[env_ids] = time_samples.long()
+        self.time_steps[env_ids] = time_samples.long() * 0 + 100
 
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
@@ -324,9 +324,11 @@ class MotionCommand(CommandTerm):
         joint_pos[env_ids] = torch.clip(
             joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
         )
-        self.robot.write_joint_state_to_sim(joint_pos[env_ids], joint_vel[env_ids], env_ids=env_ids)
+        # breakpoint()
+        self.robot.write_joint_state_to_sim(joint_pos[env_ids] * 0, joint_vel[env_ids] * 0, env_ids=env_ids)
         self.robot.write_root_state_to_sim(
-            torch.cat([root_pos[env_ids], root_ori[env_ids], root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
+            # torch.cat([root_pos[env_ids], root_ori[env_ids], root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
+            torch.cat([torch.tensor([[0., 0., 0.793]], device=self.device), torch.tensor([[1., 0., 0., 0.]], device=self.device), root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
             env_ids=env_ids,
         )
 
