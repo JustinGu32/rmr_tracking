@@ -20,6 +20,30 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument(
+    "--export_onnx",
+    action="store_true",
+    default=False,
+    help="Export a holosoma-native ONNX (no adapt_onnx.py needed).",
+)
+parser.add_argument(
+    "--export_onnx_path",
+    type=str,
+    default=None,
+    help="Output directory for the holosoma ONNX export. Defaults to 'exported/' alongside the checkpoint.",
+)
+parser.add_argument(
+    "--ref_body",
+    type=str,
+    default="torso_link",
+    help="Reference body for ref_pos_xyz/ref_quat_xyzw in holosoma export (default: torso_link).",
+)
+parser.add_argument(
+    "--urdf_path",
+    type=str,
+    default=None,
+    help="Path to URDF file to embed in holosoma ONNX metadata. If not set, resolved from robot config.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -60,11 +84,16 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+from whole_body_tracking.utils.holosoma_exporter import (
+    attach_holosoma_metadata,
+    export_holosoma_policy_as_onnx,
+)
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Play with RSL-RL agent."""
+
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
 
@@ -144,14 +173,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
 
-    # export_motion_policy_as_onnx(
-    #     env.unwrapped,
-    #     ppo_runner.alg.policy,
-    #     normalizer=ppo_runner.obs_normalizer,
-    #     path=export_model_dir,
-    #     filename="policy.onnx",
-    # )
-    # attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    export_motion_policy_as_onnx(
+        env.unwrapped,
+        ppo_runner.alg.policy,
+        # normalizer=ppo_runner.obs_normalizer,
+        normalizer=ppo_runner.alg.policy.actor_obs_normalizer,
+        path=export_model_dir,
+        filename="policy.onnx",
+    )
+    attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+
+    # --- Holosoma-native export (optional) ---
+    if args_cli.export_onnx:
+        holosoma_export_dir = args_cli.export_onnx_path if args_cli.export_onnx_path else export_model_dir
+        holosoma_export_dir = os.path.abspath(holosoma_export_dir)
+        holosoma_filename = "policy_holosoma.onnx"
+        export_holosoma_policy_as_onnx(
+            env.unwrapped,
+            ppo_runner.alg.policy,
+            normalizer=ppo_runner.alg.policy.actor_obs_normalizer,
+            ref_body_name=args_cli.ref_body,
+            path=holosoma_export_dir,
+            filename=holosoma_filename,
+        )
+        attach_holosoma_metadata(
+            env.unwrapped,
+            args_cli.wandb_path if args_cli.wandb_path else "none",
+            path=holosoma_export_dir,
+            filename=holosoma_filename,
+            ref_body_name=args_cli.ref_body,
+            urdf_path=args_cli.urdf_path,
+        )
+
     # reset environment
     obs, _ = env.reset()
     timestep = 0

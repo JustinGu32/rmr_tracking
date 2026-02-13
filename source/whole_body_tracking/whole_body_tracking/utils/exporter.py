@@ -78,7 +78,7 @@ class _OnnxMotionPolicyExporter(_OnnxPolicyExporter):
         )
 
 
-def list_to_csv_str(arr, *, decimals: int = 3, delimiter: str = ",") -> str:
+def list_to_csv_str(arr, *, decimals: int = 9, delimiter: str = ",") -> str:
     fmt = f"{{:.{decimals}f}}"
     return delimiter.join(
         fmt.format(x) if isinstance(x, (int, float)) else str(x) for x in arr  # numbers → format, strings → as-is
