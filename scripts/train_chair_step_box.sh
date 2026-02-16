@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=move  --account=move
-#SBATCH --time=48:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=20G
@@ -17,8 +17,8 @@ conda activate env_isaaclab
 export WANDB_ENTITY=robot-mcrobotface
 
 python scripts/rsl_rl/train.py \
-   --task=Chair-Step-G1-v0 \
-   --registry_name robot-mcrobotface/csv_to_npz/chair_step_truncated_converted.npz:latest \
+   --task=Chair-Step-G1-v1 \
+   --registry_name robot-mcrobotface/csv_to_npz/chair_step_climbing_final:latest \
    --headless \
    --logger wandb \
    --log_project_name chair_step \

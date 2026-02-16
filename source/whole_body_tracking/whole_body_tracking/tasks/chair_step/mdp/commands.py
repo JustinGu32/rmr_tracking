@@ -234,6 +234,26 @@ class MotionCommand(CommandTerm):
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_ang_vel_w[:, self.robot_anchor_body_index]
 
+    @property
+    def object_pos_w(self) -> torch.Tensor:
+        """Position of the object in world frame."""
+        return self.motion.object_pos_w[self.time_steps] + self._env.scene.env_origins
+
+    @property
+    def object_quat_w(self) -> torch.Tensor:
+        """Orientation of the object in world frame."""
+        return self.motion.object_quat_w[self.time_steps]
+
+    @property
+    def object_lin_vel_w(self) -> torch.Tensor:
+        """Linear velocity of the object in world frame."""
+        return self.motion.object_lin_vel_w[self.time_steps]
+
+    @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        """Angular velocity of the object in world frame."""
+        return self.motion.object_ang_vel_w[self.time_steps]
+
     def _update_metrics(self):
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
         self.metrics["error_anchor_rot"] = quat_error_magnitude(self.anchor_quat_w, self.robot_anchor_quat_w)
@@ -285,6 +305,13 @@ class MotionCommand(CommandTerm):
             * (self.motion.time_step_total - 1)
         ).long()
 
+        self.time_steps[env_ids] = torch.clamp(
+            self.time_steps[env_ids],
+            min=self.min_sample_idx,
+            max=min(self.max_sample_idx, self.motion.time_step_total - 1),
+        )
+        # Can add stride sampling to avoid near identical samples
+        
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
         H_norm = H / math.log(self.bin_count)
@@ -302,6 +329,10 @@ class MotionCommand(CommandTerm):
         root_ori = self.body_quat_w[:, 0].clone()
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
+
+        # Adjust robot position to be relative to the configured box position
+        # Maintains the relative vector: (Robot - Box)_sim = (Robot - Box)_motion
+        # root_pos[env_ids] += (self.box_position + self._env.scene.env_origins[env_ids]) - self.object_pos_w[env_ids]
 
         range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=self.device)

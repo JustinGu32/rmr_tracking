@@ -47,9 +47,19 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
+VELOCITY_RANGE_Null = {
+    "x": (-0.0, 0.0),
+    "y": (-0.0, 0.0),
+    "z": (-0.0, 0.0),
+    "roll": (-0.0, 0.0),
+    "pitch": (-0.0, 0.0),
+    "yaw": (-0.0, 0.0),
+}
+
 # Box definition
-BOX_POSITION = [-0.1, 0.6, 0.2075]  # Guess and checked in sim
-BOX_SIZE = [0.4572, 0.4064, 0.415]  # 17.5" x 16" x 16"
+BOX_POSITION = [-0.1, 0.50, 0.2075]  # Guess and checked in sim
+# Z was originally 0.6, but TODO: check why height is being doubled when loading motion
+BOX_SIZE = [0.4572, 0.4064, 0.3]  # 18" x 16" x 16.33" (Derived from OBJ)
 
 @configclass
 class MySceneCfg(InteractiveSceneCfg):
@@ -92,7 +102,8 @@ class MySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.CuboidCfg(
             size=BOX_SIZE,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), # added
-            mass_props=sim_utils.MassPropertiesCfg(mass=5.0),
+            collision_props=sim_utils.CollisionPropertiesCfg(), # Enable collision
+            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
                 restitution_combine_mode="multiply",
@@ -143,18 +154,27 @@ class CommandsCfg:
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
         pose_range={
-            "x": (-0.05, 0.05),
-            "y": (-0.05, 0.05),
-            "z": (-0.01, 0.01),
-            "roll": (-0.1, 0.1),
-            "pitch": (-0.1, 0.1),
-            "yaw": (-0.2, 0.2),
+            "x": (-0.0, 0.0),
+            "y": (-0.0, 0.0),
+            "z": (-0.0, 0.0),
+            "roll": (-0.0, 0.0),
+            "pitch": (-0.0, 0.0),
+            "yaw": (-0.0, 0.0),
         },
-        velocity_range=VELOCITY_RANGE,
+        velocity_range=VELOCITY_RANGE_Null,
         joint_position_range=(-0.1, 0.1),
         box_position=BOX_POSITION,
     )
 
+# Aggressive pose
+# pose_range_aggressive={
+#     "x": (-0.05, 0.05),
+#     "y": (-0.05, 0.05),
+#     "z": (-0.01, 0.01),
+#     "roll": (-0.1, 0.1),
+#     "pitch": (-0.1, 0.1),
+#     "yaw": (-0.2, 0.2),
+# }
 
 @configclass
 class ActionsCfg:

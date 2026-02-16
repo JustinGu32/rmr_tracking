@@ -140,8 +140,31 @@ def main():
     
     print(f"Shapes -- Pos: {root_pos.shape}, Rot: {root_rot_xyzw.shape}, Joints: {final_joint_pos.shape}")
     
+    # Extract Object Data
+    object_data = []
+    has_object_data = False
+    
+    if 'object_pos_w' in data and 'object_quat_w' in data:
+         object_pos = data['object_pos_w']
+         object_rot = data['object_quat_w']
+         
+         # Convert rot to x, y, z, w if needed?
+         # Isaac usually expects [w, x, y, z] for quat in code, but CSV convention might be different
+         # Based on root_rot above: "csv_to_npz expects [x, y, z, w] in CSV and converts to [w, x, y, z]"
+         # So we save as [x, y, z, w]
+         object_rot_xyzw = object_rot[:, [1, 2, 3, 0]]
+         
+         print(f"Found object data. Pos: {object_pos.shape}, Rot: {object_rot_xyzw.shape}")
+         object_data = [object_pos, object_rot_xyzw]
+         has_object_data = True
+    else:
+         print("No object data found.")
+
     # Concatenate
-    motion_data = np.concatenate([root_pos, root_rot_xyzw, final_joint_pos], axis=1)
+    if has_object_data:
+        motion_data = np.concatenate([root_pos, root_rot_xyzw, final_joint_pos] + object_data, axis=1)
+    else:
+        motion_data = np.concatenate([root_pos, root_rot_xyzw, final_joint_pos], axis=1)
     
     # Save CSV
     print(f"Saving to {args.output_csv}...")
