@@ -3,7 +3,7 @@
 """example command: 
 python scripts/rsl_rl/collect_dataset.py \
     --task Tracking-Flat-G1-Collect-v0   \
-    --num_envs 1 \
+    --num_envs 2 \
     --wandb_path robot-mcrobotface/takara_walk_isaac/nxotitq9 \
     --num_steps_collect 60 \
     --num_eps_collect 10000 \
@@ -11,8 +11,9 @@ python scripts/rsl_rl/collect_dataset.py \
     --min_delay 0 \
     --max_delay 0 \
     --min_sample_idx 0 \
-    --max_sample_idx 1000 
-    --enable_cameras
+    --max_sample_idx 1000 \
+    --num_obstacles 4 \
+    --video
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -62,6 +63,7 @@ parser.add_argument("--save_folder", type=str, default=None, help="save folder")
 
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
+parser.add_argument("--num_obstacles", type=int, default=3, help="Number of obstacles to generate.")
 
 def none_or_int(value):
     if value.lower() == 'none':
@@ -123,6 +125,9 @@ def main():
     """Play with RSL-RL agent."""
     # parse configuration
 
+
+    # Set environment variable for dynamic obstacles BEFORE parsing config
+    os.environ["NUM_OBSTACLES"] = str(args_cli.num_obstacles)
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -210,6 +215,16 @@ def main():
     env = gym.make(
         args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None
     )
+
+    if args_cli.video:
+        video_kwargs = {
+            "video_folder": os.path.join("videos", args_cli.task),
+            "step_trigger": lambda step: step % args_cli.video_length == 0,
+            "video_length": args_cli.video_length,
+            "name_prefix": "inclusion",
+        }
+        print((f"[INFO] Recording videos to: {video_kwargs['video_folder']}"))
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
     
     # env_cfg 
     # recorded_obs = []

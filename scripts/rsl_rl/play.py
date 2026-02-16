@@ -1,5 +1,9 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
+"""
+python scripts/rsl_rl/play.py --task=Chair-Step-G1-v0 --num_envs=2 --wandb_path=robot-mcrobotface/chair_step/q4yp8tny
+"""
+
 """Launch Isaac Sim Simulator first."""
 
 import argparse

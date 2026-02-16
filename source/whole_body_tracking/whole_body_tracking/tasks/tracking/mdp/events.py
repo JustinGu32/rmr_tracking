@@ -227,22 +227,24 @@ def randomize_rigid_body_com(
     asset.root_physx_view.set_coms(coms, env_ids)
 
 
-
-def randomize_obstacles_avoiding_path(
+def randomize_multiple_obstacles_avoiding_path(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
     command_name: str,
-    asset_cfg: SceneEntityCfg,
+    asset_names: list[str],
     x_range: tuple[float, float],
     y_range: tuple[float, float],
     min_dist_to_path: float,
+    min_dist_between_obstacles: float = 1.0,
 ):
     """
-    Randomize obstacles (cylindrical pillars) such that they do not interfere with the
-    robot's reference motion path for the current episode.
+    Randomize multiple obstacles (cylindrical pillars) such that they do not interfere with the
+    robot's reference motion path for the current episode, and do not overlap with each other.
     """
-    # 1. Access Assets and Command
-    pillars: RigidObject | Articulation = env.scene[asset_cfg.name]
+    if not asset_names:
+        return
+
+    # 1. Access Command
     command: MotionCommand = env.command_manager.get_term(command_name)
     
     if env_ids is None:
@@ -250,7 +252,6 @@ def randomize_obstacles_avoiding_path(
 
     # 2. Get Full Reference Motion Path
     # motion.body_pos_w is (Total_Steps, Num_Bodies, 3)
-    # We strip out the position of the anchor body (root) to check for collisions against it.
     anchor_idx = command.motion_anchor_body_index
     raw_motion_pos = command.motion._body_pos_w[:, anchor_idx, :3] # (Total_Steps, 3)
 
@@ -262,20 +263,21 @@ def randomize_obstacles_avoiding_path(
     device = env.device
     num_envs_to_reset = len(env_ids)
     
-    # 4. Generate Valid Positions using Rejection Sampling
-    new_pos = torch.zeros(num_envs_to_reset, 3, device=device)
-    # Initialize all obstacles far away so they don't interfere if not placed.
-    new_pos[:] = 100.0
-    new_pos[..., 2] = 1.0 # Z=1.0 ensures they sit on the ground (height=2.0)
-    
+    # Pre-fetch all obstacle assets
+    obstacles = [env.scene[name] for name in asset_names]
+    num_obstacles = len(obstacles)
+
+    # Store positions for all obstacles in this batch of envs: (num_envs, num_obstacles, 3)
+    final_positions = torch.zeros(num_envs_to_reset, num_obstacles, 3, device=device)
+    final_positions[..., :] = 100.0 # Default far away
+    final_positions[..., 2] = 1.0   # Z height
+
     max_iters = 100
     
     for i in range(num_envs_to_reset):
         # Identify the time slice for this specific episode
         t_start = start_steps[i]
         t_end = min(t_start + episode_length, max_steps)
-
-        print(raw_motion_pos[t_start, :2])
         
         # Extract path (T, 2) for collision checking (ignore Z)
         if t_start < max_steps:
@@ -283,43 +285,78 @@ def randomize_obstacles_avoiding_path(
         else:
              path = torch.empty(0, 2, device=device)
         
-        placed_count = 0
-        for _ in range(max_iters): 
-            if placed_count >= 1:
+        # Place each obstacle sequentially
+        for obs_idx in range(num_obstacles):
+            placed = False
+            for _ in range(max_iters): 
+                # Sample random (x,y) candidate
+                rx = torch.rand(1, device=device) * (x_range[1] - x_range[0]) + x_range[0]
+                ry = torch.rand(1, device=device) * (y_range[1] - y_range[0]) + y_range[0]
+                cand = torch.cat([rx, ry], dim=0) # (2,)
+                
+                # Shift by path start to center near robot? 
+                # The original code did: cand = cand + raw_motion_pos[t_start, :2]
+                cand_world = cand + raw_motion_pos[t_start, :2]
+
+                # 1. Check distance to Path
+                dist_to_path = float('inf')
+                if path.shape[0] > 0:
+                    dists = torch.norm(path - cand_world, dim=1)
+                    dist_to_path = torch.min(dists)
+                
+                if dist_to_path < min_dist_to_path:
+                    continue # Try again
+
+                # 2. Check distance to previously placed obstacles
+                if obs_idx > 0:
+                    # Get previously placed obstacles for this env
+                    # prev_pos: (obs_idx, 3)
+                    # We only care about x,y. final_positions is (num_envs, num_obstacles, 3)
+                    prev_positions_xy = final_positions[i, :obs_idx, :2] 
+                    
+                    # cand_world is (2,)
+                    # Calculate distances
+                    dists_to_obs = torch.norm(prev_positions_xy - cand_world, dim=1)
+                    min_dist_to_obs = torch.min(dists_to_obs)
+                    
+                    if min_dist_to_obs < min_dist_between_obstacles:
+                        continue # Try again
+                
+                # If we get here, it's valid
+                final_positions[i, obs_idx, 0] = cand_world[0]
+                final_positions[i, obs_idx, 1] = cand_world[1]
+                placed = True
                 break
             
-            # Sample random (x,y) candidate
-            rx = torch.rand(1, device=device) * (x_range[1] - x_range[0]) + x_range[0]
-            ry = torch.rand(1, device=device) * (y_range[1] - y_range[0]) + y_range[0]
-            cand = torch.cat([rx, ry], dim=0)
-            cand = cand + raw_motion_pos[t_start, :2]
+            if not placed:
+                # Could not place obstacle after max_iters. 
+                # It stays at default (100, 100) or we could log a warning.
+                pass
 
-            # Check minimum distance to any point on the future path
-            min_dist = float('inf')
-            if path.shape[0] > 0:
-                dists = torch.norm(path - cand, dim=1)
-                min_dist = torch.min(dists)
-            
-            # If safe, accept the position
-            if min_dist > min_dist_to_path:
-                new_pos[i, 0] = rx
-                new_pos[i, 1] = ry
-                placed_count += 1
-                
     # Add Env Origins to convert local positions to global world coordinates
+    # env_origins: (num_envs, 3)
     env_origins = env.scene.env_origins[env_ids]
-    global_pos = new_pos + env_origins
     
-    # 5. Orientation: Identity (No rotation needed for cylinders)
+    # final_positions is (num_envs, num_obstacles, 3)
+    # broadcase add env_origins (num_envs, 1, 3)
+    global_positions = final_positions + env_origins.unsqueeze(1)
+
+    # 5. Orientation: Identity 
     quat = torch.zeros(num_envs_to_reset, 4, device=device)
-    quat[..., 0] = 1.0 # (w, x, y, z) -> (1, 0, 0, 0)
-    
-    # 6. Update Simulation State
-    current_states = pillars.data.root_state_w[env_ids].clone() 
+    quat[..., 0] = 1.0 
+
+    # 6. Update Simulation State for each obstacle asset
+    for obs_idx, obstacle_asset in enumerate(obstacles):
+        # obstacle_asset is RigidObject or Articulation
+        # We need to write state for 'env_ids'
         
-    current_states[:, :3] = global_pos
-    current_states[:, 3:7] = quat
-    current_states[:, 7:] = 0.0 # Reset velocities
-    
-    # Apply changes to the physics engine
-    pillars.write_root_state_to_sim(current_states, env_ids=env_ids)
+        current_states = obstacle_asset.data.root_state_w[env_ids].clone() 
+        
+        # Set Pos
+        current_states[:, :3] = global_positions[:, obs_idx, :]
+        # Set Rot
+        current_states[:, 3:7] = quat
+        # Set Vel
+        current_states[:, 7:] = 0.0 
+        
+        obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)
