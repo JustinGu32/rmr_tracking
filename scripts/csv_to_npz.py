@@ -284,7 +284,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
     file_saved = False
     # --------------------------------------------------------------------------
 
-    import ipdb; ipdb.set_trace()
     # Simulation loop
     while simulation_app.is_running():
         (
@@ -323,7 +322,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
                   obj_root_states[:, :3] = obj_pos
                   obj_root_states[:, :2] += scene.env_origins[:, :2]
                   obj_root_states[:, 3:7] = obj_rot
-                  object.write_root_state_to_sim(obj_root_states)
+                  # object.write_root_state_to_sim(obj_root_states)
         
         sim.render()  # We don't want physic (sim.step())
         scene.update(sim.get_physics_dt())
