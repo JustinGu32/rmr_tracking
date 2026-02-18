@@ -24,9 +24,9 @@ from threading import Lock
 import numpy as np
 import torch
 
-# Optional: set cameras before any Isaac Lab imports
-if os.environ.get("ENABLE_CAMERAS", "") != "1":
-    os.environ["ENABLE_CAMERAS"] = "0"
+# Vision script needs the depth camera; set before any Isaac Lab imports
+# (tracking_env_cfg adds depth_camera to scene only when ENABLE_CAMERAS=1)
+os.environ["ENABLE_CAMERAS"] = "1"
 
 # Add rmr_tracking for task registration (collect_dataset / play style)
 TML_ROOT = Path(__file__).resolve().parent.parent
@@ -52,13 +52,13 @@ parser.add_argument("--steps", type=int, default=500, help="Number of simulation
 # parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
 parser.add_argument("--deterministic", action="store_true", default=True, help="Deterministic sampling")
 parser.add_argument("--guidance_type", type=str, default=None, help="Guidance type (e.g. joystick, target_heading)")
-parser.add_argument("--guidance_scale", type=float, default=0.0, help="Guidance scale")
+parser.add_argument("--guidance_scale", type=float, default=1.0, help="Guidance scale")
 parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0", help="Isaac Lab task (e.g. Tracking-Flat-G1-v0)")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
 parser.add_argument("--motion_file", type=str, default="/move/u/justingu/whole_body_tracking/motions/takara_walk_isaac/motion.npz", help="Path to motion file for tracking command")
 parser.add_argument("--video", action="store_true", help="Record simulation to a video file (offscreen; use with --headless on servers)")
 parser.add_argument("--video_folder", type=str, default="videos/vision", help="Folder to save video (default: videos/vision)")
-parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record (default: 1000)")
+parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record (default: 500)")
 parser.add_argument("--debug_vision", action="store_true", help="Print and save robot vision (RGB/depth) for debugging")
 # Adds --headless, --device_id, etc. (use --headless on servers without a display)
 AppLauncher.add_app_launcher_args(parser)
@@ -90,49 +90,18 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Register tasks (G1 Tracking-Flat, etc.)
 import whole_body_tracking.tasks  # noqa: E402, F401
 
-# Isaac Lab camera for vision (RGB + depth)
-import isaaclab.sim as sim_utils
-from isaaclab.sensors.camera import Camera
-from isaaclab.sensors.camera.camera_cfg import CameraCfg
-from isaaclab.sensors import TiledCameraCfg
-
 # Diffusion policy (TML-BeyondMimic)
 sys.path.insert(0, str(TML_ROOT))
 from diffusion_policy.inference.guidance import create_guidance_fn  # noqa: E402
 from diffusion_policy.inference.diffusion_agent import DiffusionAgentIsaac  # noqa: E402
 
 # Keyboard joystick for guidance (same as sim2sim.py)
-# try:
-#     from pynput import keyboard
-#     PYNPUT_AVAILABLE = True
-# except ImportError:
-#     PYNPUT_AVAILABLE = False
-#     print("[WARNING] pynput not available - keyboard joystick disabled (pip install pynput)")
-
-# Isaac joint scale and default pose (policy outputs 29 dims; target = action * scale + default)
-ACTION_SCALE_ISAAC = np.array([
-    0.548, 0.548, 0.548, 0.351, 0.351, 0.439, 0.548, 0.548, 0.439,
-    0.351, 0.351, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439,
-    0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075, 0.075, 0.075,
-], dtype=np.float32)
-DEFAULT_POSE_ISAAC = np.array([
-    -0.312, -0.312, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.669, 0.669, 0.2, 0.2, -0.363, -0.363, 0.2, -0.2, 0.0, 0.0,
-    0.0, 0.0, 0.6, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-], dtype=np.float32)
-
-# Isaac body order (from map_npz_mj2isaac) to index robot.data by name
-ISAAC_BODY_NAMES = [
-    "pelvis", "left_hip_pitch_link", "right_hip_pitch_link", "waist_yaw_link",
-    "left_hip_roll_link", "right_hip_roll_link", "waist_roll_link", "left_hip_yaw_link",
-    "right_hip_yaw_link", "torso_link", "left_knee_link", "right_knee_link",
-    "left_shoulder_pitch_link", "right_shoulder_pitch_link", "left_ankle_pitch_link",
-    "right_ankle_pitch_link", "left_shoulder_roll_link", "right_shoulder_roll_link",
-    "left_ankle_roll_link", "right_ankle_roll_link", "left_shoulder_yaw_link",
-    "right_shoulder_yaw_link", "left_elbow_link", "right_elbow_link",
-    "left_wrist_roll_link", "right_wrist_roll_link", "left_wrist_pitch_link",
-    "right_wrist_pitch_link", "left_wrist_yaw_link", "right_wrist_yaw_link",
-]
+try:
+    from pynput import keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    print("[WARNING] pynput not available - keyboard joystick disabled (pip install pynput)")
 
 # Vision embedding dims: SigLIP2 1152 + DeFM 1024
 RGB_EMBED_DIM = 1152
@@ -192,44 +161,6 @@ class KeyboardJoystick:
     def stop(self):
         if PYNPUT_AVAILABLE and hasattr(self, "_listener"):
             self._listener.stop()
-
-
-def _robot_state_isaac(env, env_id=0):
-    """Read robot state from Isaac env in Isaac order for DiffusionAgentIsaac (no MuJoCo conversion)."""
-    robot = env.unwrapped.scene["robot"]
-    body_names = list(robot.body_names)
-    isaac_body_indices = []
-    for name in ISAAC_BODY_NAMES:
-        if name in body_names:
-            isaac_body_indices.append(body_names.index(name))
-        else:
-            raise KeyError(f"Robot missing body {name!r}. Have: {body_names[:5]}...")
-    isaac_body_indices = np.array(isaac_body_indices)
-
-    def get_bodies(x):
-        xi = x[env_id].cpu().numpy()
-        return xi[isaac_body_indices].astype(np.float32)
-
-    body_pos = get_bodies(robot.data.body_pos_w)
-    body_quat = get_bodies(robot.data.body_quat_w)
-    body_lin_vel = get_bodies(robot.data.body_lin_vel_w)
-    body_ang_vel = get_bodies(robot.data.body_ang_vel_w)
-    joint_pos = robot.data.joint_pos[env_id].cpu().numpy().astype(np.float32)
-    joint_vel = robot.data.joint_vel[env_id].cpu().numpy().astype(np.float32)
-    return body_pos, body_quat, body_lin_vel, body_ang_vel, joint_pos, joint_vel
-
-
-def _isaac_action_to_env(action_isaac, env, env_id=0):
-    """Convert policy output (Isaac order, unnormalized target positions) to env action (offset + scale)."""
-    robot = env.unwrapped.scene["robot"]
-    # Policy returns unnormalized action in Isaac order; target = action * scale + default
-    target_isaac = action_isaac * ACTION_SCALE_ISAAC + DEFAULT_POSE_ISAAC
-    target_isaac = torch.tensor(target_isaac, device=robot.device, dtype=torch.float32)
-    action_term = env.unwrapped.action_manager.get_term("joint_pos")
-    scale = action_term._scale[env_id]
-    offset = action_term._offset[env_id]
-    action_env = (target_isaac - offset) / scale
-    return action_env.unsqueeze(0)
 
 
 def load_vision_encoders(device: str = "cuda"):
@@ -327,32 +258,6 @@ def encode_depth(depth: np.ndarray, model, device: str, target_size: int = 518, 
     return class_tok.cpu().numpy().squeeze(0).astype(np.float32)
 
 
-def create_vision_camera(debug_vis: bool = False):
-    """Create an Isaac Lab camera (RGB + depth) for vision policy input."""
-    depth_camera: TiledCameraCfg = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/vision_camera",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            debug_vis=debug_vis,
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                # pos=(0.35, 0.0, 0.5),  # In front of robot (torso height), meters
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-                convention="ros",
-            ),
-        )
-    )
-    return depth_camera
-
-
 def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debug_dir: str) -> None:
     """Print vision stats and save RGB/depth images to debug_dir for inspection.
     Depth is visualized with viridis colormap (same as TML-BeyondMimic orig depth):
@@ -392,13 +297,6 @@ def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debu
     print(f"[VISION] Saved to {debug_dir}/step_{step_count:05d}_*.png", flush=True)
 
 
-def get_rgb_depth_from_camera(camera_data, env_id: int = 0):
-    """Get RGB (H,W,3) uint8 and depth (H,W) float32 in meters from Isaac camera."""
-    rgb_data = camera_data.output["rgb"].detach().cpu().numpy()  # (num_envs, H, W, 3)
-    depth_data = camera_data.output["depth"].detach().cpu().numpy()  # (num_envs, H, W, 1)
-    return rgb_data[env_id], depth_data[env_id]
-
-
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
     """Run diffusion policy in Isaac Lab (same flow as sim2sim.py, sim from collect_dataset/play)."""
@@ -420,25 +318,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Create env (play.py / collect_dataset style); use rgb_array for video (works headless)
     record_video = getattr(args_cli, "video", False)
     video_length = getattr(args_cli, "video_length", 500)
-    # When recording, use one long episode so the video is one continuous trajectory (no resets)
-    if record_video:
-        steps_to_seconds = env_cfg.decimation * env_cfg.sim.dt  # e.g. 4 * 0.005 = 0.02s per step
-        episode_s = (video_length + 200) * steps_to_seconds  # buffer so we don't hit time_out
-        env_cfg.episode_length_s = max(env_cfg.episode_length_s, episode_s)
-        # Relax failure terminations so policy drift doesn't cause resets mid-video
-        if hasattr(env_cfg.terminations, "anchor_pos") and hasattr(env_cfg.terminations.anchor_pos, "params"):
-            env_cfg.terminations.anchor_pos.params["threshold"] = 10.0
-        if hasattr(env_cfg.terminations, "anchor_ori") and hasattr(env_cfg.terminations.anchor_ori, "params"):
-            env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
-        if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
-            env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
-        print(f"[INFO] Video mode: episode_length_s={env_cfg.episode_length_s:.1f} for continuous recording", flush=True)
 
-    render_mode = "rgb_array" if record_video else None
+    # Relax termination thresholds: the diffusion policy generates
+    # its own motion and does NOT track the reference motion file, so the reference-based
+    # terminations (anchor_pos, anchor_ori, ee_body_pos) trigger spurious resets that
+    # corrupt the policy's temporal observation buffer.
+    steps_to_seconds = env_cfg.decimation * env_cfg.sim.dt
+    episode_s = (max(args_cli.steps, video_length) + 200) * steps_to_seconds
+    env_cfg.episode_length_s = max(env_cfg.episode_length_s, episode_s)
+    if hasattr(env_cfg.terminations, "anchor_pos") and hasattr(env_cfg.terminations.anchor_pos, "params"):
+        env_cfg.terminations.anchor_pos.params["threshold"] = 10.0
+    if hasattr(env_cfg.terminations, "anchor_ori") and hasattr(env_cfg.terminations.anchor_ori, "params"):
+        env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
+    if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
+        env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
+    print(f"[INFO] Relaxed termination thresholds for sim2sim (episode_length_s={env_cfg.episode_length_s:.1f})", flush=True)
     
+    render_mode = "rgb_array" if record_video else None
     debug_vision = getattr(args_cli, "debug_vision", False)
-    # Add depth camera to scene config so it is built with the scene (InteractiveScene does not support item assignment).
-    env_cfg.scene.depth_camera = create_vision_camera(debug_vis=debug_vision)
+    
     # Disable debug visuals (contact-force arrows, motion command frames) so they don't appear in the robot's camera view.
     if hasattr(env_cfg.scene, "contact_forces") and hasattr(env_cfg.scene.contact_forces, "debug_vis"):
         env_cfg.scene.contact_forces.debug_vis = False
@@ -483,17 +381,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             deterministic=args_cli.deterministic,
         )
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
-
+    
     # Load encoders (SigLIP2 + DeFM)
     print("[INFO] Loading vision encoders (SigLIP2 + DeFM)...", flush=True)
     siglip_model, siglip_processor, defm_model = load_vision_encoders(device)
     print("[INFO] Vision encoders loaded.", flush=True)
     
-    # Guidance (same as sim2sim.py)
+    # Guidance
     guidance_fn = None
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
-        guidance_config = {"target_velocity": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        guidance_config = {"target_velocity": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]}
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")
@@ -507,7 +405,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     step_count = 0
     max_steps = args_cli.steps
     env_id = 0
-    last_action_isaac = None
+    action = None
     debug_vision_dir = ""
     if debug_vision:
         debug_vision_dir = os.path.abspath(
@@ -516,18 +414,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[VISION] Debug vision enabled: images will be saved to {debug_vision_dir}", flush=True)
 
     while step_count < max_steps and simulation_app.is_running():
-        # Get state in Isaac order (robot order matches DiffusionAgentIsaac)
-        body_pos, body_quat, body_lin_vel, body_ang_vel, joint_pos, joint_vel = _robot_state_isaac(
-            env, env_id
-        )
+        # Get state from diffusion_collect (flattened); reshape to (30, 3), (30, 4) for policy
+        dc = obs['diffusion_collect']
+        _idx = env_id if dc['body_pos'].ndim > 1 else slice(None)
+        body_pos = dc['body_pos'][_idx].float().cpu().numpy().reshape(30, 3)
+        body_quat = dc['body_ori'][_idx].float().cpu().numpy().reshape(30, 4)
+        body_lin_vel = dc['body_lin_vel'][_idx].float().cpu().numpy().reshape(30, 3)
+        body_ang_vel = dc['body_ang_vel'][_idx].float().cpu().numpy().reshape(30, 3)
+        joint_pos = dc['dof_pos'][_idx].float().cpu().numpy()
+        joint_vel = dc['dof_vel'][_idx].float().cpu().numpy()
         
-        # Query policy every env step (same as play.py; no decimation throttle)
+        # Get vision embeds
         camera_data = env.unwrapped.scene["depth_camera"].data
-        rgb, depth = get_rgb_depth_from_camera(camera_data, env_id)
+        rgb = camera_data.output["rgb"].detach().cpu().numpy()
+        depth = camera_data.output["depth"].detach().cpu().numpy()
         # Debug: print and save robot vision at selected steps
-        if debug_vision and debug_vision_dir and (
-            step_count in (0, 100, 200, 500) or (step_count <= 1000 and step_count > 0 and step_count % 200 == 0)
-        ):
+        if debug_vision and step_count % 200 == 0:
             _debug_vision_step(step_count, rgb, depth, debug_vision_dir)
         rgb_emb = encode_rgb(rgb, siglip_model, siglip_processor, device)
         depth_emb = encode_depth(depth, defm_model, device)
@@ -536,8 +438,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             f"Expected vision_embeds dim {VISION_EMBED_DIM}, got {vision_embeds.shape[0]}"
         )
 
-        # Query policy at decimation rate
-        # if step_count % env.unwrapped.cfg.decimation == 0:
+        # Query policy every env step (each env.step() advances decimation physics steps;
+        # we need a fresh action per step, matching play.py and collect_dataset)
         if guidance_fn is not None:
             if args_cli.guidance_type == "joystick" and keyboard_joystick is not None:
                 if hasattr(guidance_fn, "joystick_values"):
@@ -545,7 +447,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                     guidance_fn.joystick_values[1] = keyboard_joystick.ly
                     guidance_fn.joystick_values[2] = keyboard_joystick.rx
                     guidance_fn.joystick_values[3] = keyboard_joystick.ry
-            last_action_isaac = policy.get_action(
+            action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
                 vision_embeds=vision_embeds,
@@ -554,23 +456,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 guidance_scale=args_cli.guidance_scale,
             )
         else:
-            last_action_isaac = policy.get_action(
+            action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
                 vision_embeds=vision_embeds,
                 # vision_embeds=None, # for debugging
             )
-        if last_action_isaac is None:
-            last_action_isaac = np.zeros(29, dtype=np.float32)
-        action_env = _isaac_action_to_env(last_action_isaac, env, env_id)
+        if action is None:
+            action = np.zeros(29, dtype=np.float32)
+            
+        action = torch.from_numpy(action).float().to(device).unsqueeze(0)
 
         # Step env (vec: obs is batched)
-        if action_env.shape[0] < env.unwrapped.num_envs:
-            action_env = action_env.repeat(env.unwrapped.num_envs, 1)
-        obs, _, _, _, _ = env.step(action_env)
+        if action.shape[0] < env.unwrapped.num_envs:
+            action = action.repeat(env.unwrapped.num_envs, 1)
+        obs, _, _, _, _ = env.step(action)
         step_count += 1
 
-        if step_count % 500 == 0:
+        # Print progress
+        if step_count % 100 == 0:
             robot = env.unwrapped.scene["robot"]
             pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
             print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m")

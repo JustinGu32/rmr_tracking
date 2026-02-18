@@ -95,37 +95,12 @@ from diffusion_policy.inference.guidance import create_guidance_fn  # noqa: E402
 from diffusion_policy.inference.diffusion_agent import DiffusionAgentIsaac  # noqa: E402
 
 # Keyboard joystick for guidance (same as sim2sim.py)
-# try:
-#     from pynput import keyboard
-#     PYNPUT_AVAILABLE = True
-# except ImportError:
-#     PYNPUT_AVAILABLE = False
-#     print("[WARNING] pynput not available - keyboard joystick disabled (pip install pynput)")
-
-# Isaac joint scale and default pose (policy outputs 29 dims; target = action * scale + default)
-ACTION_SCALE_ISAAC = np.array([
-    0.548, 0.548, 0.548, 0.351, 0.351, 0.439, 0.548, 0.548, 0.439,
-    0.351, 0.351, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439,
-    0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.439, 0.075, 0.075, 0.075, 0.075,
-], dtype=np.float32)
-DEFAULT_POSE_ISAAC = np.array([
-    -0.312, -0.312, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-    0.669, 0.669, 0.2, 0.2, -0.363, -0.363, 0.2, -0.2, 0.0, 0.0,
-    0.0, 0.0, 0.6, 0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-], dtype=np.float32)
-
-# Isaac body order (from map_npz_mj2isaac) to index robot.data by name
-ISAAC_BODY_NAMES = [
-    "pelvis", "left_hip_pitch_link", "right_hip_pitch_link", "waist_yaw_link",
-    "left_hip_roll_link", "right_hip_roll_link", "waist_roll_link", "left_hip_yaw_link",
-    "right_hip_yaw_link", "torso_link", "left_knee_link", "right_knee_link",
-    "left_shoulder_pitch_link", "right_shoulder_pitch_link", "left_ankle_pitch_link",
-    "right_ankle_pitch_link", "left_shoulder_roll_link", "right_shoulder_roll_link",
-    "left_ankle_roll_link", "right_ankle_roll_link", "left_shoulder_yaw_link",
-    "right_shoulder_yaw_link", "left_elbow_link", "right_elbow_link",
-    "left_wrist_roll_link", "right_wrist_roll_link", "left_wrist_pitch_link",
-    "right_wrist_pitch_link", "left_wrist_yaw_link", "right_wrist_yaw_link",
-]
+try:
+    from pynput import keyboard
+    PYNPUT_AVAILABLE = True
+except ImportError:
+    PYNPUT_AVAILABLE = False
+    print("[WARNING] pynput not available - keyboard joystick disabled (pip install pynput)")
 
 seed = 42
 torch.manual_seed(seed)
@@ -182,45 +157,6 @@ class KeyboardJoystick:
             self._listener.stop()
 
 
-def _robot_state_isaac(env, env_id=0):
-    """Read robot state from Isaac env in Isaac order for DiffusionAgentIsaac (no MuJoCo conversion)."""
-    robot = env.unwrapped.scene["robot"]
-    body_names = list(robot.body_names)
-    isaac_body_indices = []
-    for name in ISAAC_BODY_NAMES:
-        if name in body_names:
-            isaac_body_indices.append(body_names.index(name))
-        else:
-            raise KeyError(f"Robot missing body {name!r}. Have: {body_names[:5]}...")
-    isaac_body_indices = np.array(isaac_body_indices)
-
-    def get_bodies(x):
-        xi = x[env_id].cpu().numpy()
-        return xi[isaac_body_indices].astype(np.float32)
-
-    body_pos = get_bodies(robot.data.body_pos_w)
-    body_quat = get_bodies(robot.data.body_quat_w)
-    body_lin_vel = get_bodies(robot.data.body_lin_vel_w)
-    body_ang_vel = get_bodies(robot.data.body_ang_vel_w)
-    joint_pos = robot.data.joint_pos[env_id].cpu().numpy().astype(np.float32)
-    joint_vel = robot.data.joint_vel[env_id].cpu().numpy().astype(np.float32)
-    return body_pos, body_quat, body_lin_vel, body_ang_vel, joint_pos, joint_vel
-
-
-def _isaac_action_to_env(action_isaac, env, env_id=0):
-    """Convert policy output (Isaac order, unnormalized target positions) to env action (offset + scale)."""
-    robot = env.unwrapped.scene["robot"]
-    # Policy returns unnormalized action in Isaac order; target = action * scale + default
-    target_isaac = action_isaac * ACTION_SCALE_ISAAC + DEFAULT_POSE_ISAAC
-    target_isaac = torch.tensor(target_isaac, device=robot.device, dtype=torch.float32)
-    # Env expects: joint target = offset + scale * action_env, so action_env = (target - offset) / scale
-    action_term = env.unwrapped.action_manager.get_term("joint_pos")
-    scale = action_term._scale[env_id]
-    offset = action_term._offset[env_id]
-    action_env = (target_isaac - offset) / scale
-    return action_env.unsqueeze(0)
-
-
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
     """Run diffusion policy in Isaac Lab (same flow as sim2sim.py, sim from collect_dataset/play)."""
@@ -242,20 +178,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Create env (play.py / collect_dataset style); use rgb_array for video (works headless)
     record_video = getattr(args_cli, "video", False)
     video_length = getattr(args_cli, "video_length", 500)
-    # When recording, use one long episode so the video is one continuous trajectory (no resets)
-    if record_video:
-        steps_to_seconds = env_cfg.decimation * env_cfg.sim.dt
-        episode_s = (video_length + 200) * steps_to_seconds  # buffer so we don't hit time_out
-        env_cfg.episode_length_s = max(env_cfg.episode_length_s, episode_s)
-        # Relax failure terminations so policy drift doesn't cause resets mid-video
-        if hasattr(env_cfg.terminations, "anchor_pos") and hasattr(env_cfg.terminations.anchor_pos, "params"):
-            env_cfg.terminations.anchor_pos.params["threshold"] = 10.0
-        if hasattr(env_cfg.terminations, "anchor_ori") and hasattr(env_cfg.terminations.anchor_ori, "params"):
-            env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
-        if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
-            env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
-        print(f"[INFO] Video mode: episode_length_s={env_cfg.episode_length_s:.1f} for continuous recording", flush=True)
 
+    # Relax termination thresholds: the diffusion policy generates
+    # its own motion and does NOT track the reference motion file, so the reference-based
+    # terminations (anchor_pos, anchor_ori, ee_body_pos) trigger spurious resets that
+    # corrupt the policy's temporal observation buffer.
+    steps_to_seconds = env_cfg.decimation * env_cfg.sim.dt
+    episode_s = (max(args_cli.steps, video_length) + 200) * steps_to_seconds
+    env_cfg.episode_length_s = max(env_cfg.episode_length_s, episode_s)
+    if hasattr(env_cfg.terminations, "anchor_pos") and hasattr(env_cfg.terminations.anchor_pos, "params"):
+        env_cfg.terminations.anchor_pos.params["threshold"] = 10.0
+    if hasattr(env_cfg.terminations, "anchor_ori") and hasattr(env_cfg.terminations.anchor_ori, "params"):
+        env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
+    if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
+        env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
+    print(f"[INFO] Relaxed termination thresholds for sim2sim (episode_length_s={env_cfg.episode_length_s:.1f})", flush=True)
+    
     render_mode = "rgb_array" if record_video else None
     print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
@@ -300,7 +238,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     guidance_fn = None
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
-        guidance_config = {"target_velocity": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]}
+        guidance_config = {"target_velocity": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]}
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")
@@ -320,48 +258,47 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # Get state from diffusion_collect (flattened); reshape to (30, 3), (30, 4) for policy
         dc = obs['diffusion_collect']
         _idx = env_id if dc['body_pos'].ndim > 1 else slice(None)
-        body_pos = np.asarray(dc['body_pos'][_idx].cpu(), dtype=np.float32).reshape(30, 3)
-        body_quat = np.asarray(dc['body_ori'][_idx].cpu(), dtype=np.float32).reshape(30, 4)
-        body_lin_vel = np.asarray(dc['body_lin_vel'][_idx].cpu(), dtype=np.float32).reshape(30, 3)
-        body_ang_vel = np.asarray(dc['body_ang_vel'][_idx].cpu(), dtype=np.float32).reshape(30, 3)
-        joint_pos = np.asarray(dc['dof_pos'][_idx].cpu(), dtype=np.float32)
-        joint_vel = np.asarray(dc['dof_vel'][_idx].cpu(), dtype=np.float32)
+        body_pos = dc['body_pos'][_idx].float().cpu().numpy().reshape(30, 3)
+        body_quat = dc['body_ori'][_idx].float().cpu().numpy().reshape(30, 4)
+        body_lin_vel = dc['body_lin_vel'][_idx].float().cpu().numpy().reshape(30, 3)
+        body_ang_vel = dc['body_ang_vel'][_idx].float().cpu().numpy().reshape(30, 3)
+        joint_pos = dc['dof_pos'][_idx].float().cpu().numpy()
+        joint_vel = dc['dof_vel'][_idx].float().cpu().numpy()
 
-        # Query policy at decimation rate
-        if step_count % env.unwrapped.cfg.decimation == 0:
-        
-            if guidance_fn is not None:
-                if args_cli.guidance_type == "joystick" and keyboard_joystick is not None:
-                    if hasattr(guidance_fn, "joystick_values"):
-                        guidance_fn.joystick_values[0] = keyboard_joystick.lx
-                        guidance_fn.joystick_values[1] = keyboard_joystick.ly
-                        guidance_fn.joystick_values[2] = keyboard_joystick.rx
-                        guidance_fn.joystick_values[3] = keyboard_joystick.ry
-                last_action_isaac = policy.get_action(
-                    body_pos, body_quat, body_lin_vel, body_ang_vel,
-                    joint_pos, joint_vel,
-                    guidance_fn=guidance_fn,
-                    guidance_kwargs=None,
-                    guidance_scale=args_cli.guidance_scale,
-                )
-            else:
-                last_action_isaac = policy.get_action(
-                    body_pos, body_quat, body_lin_vel, body_ang_vel,
-                    joint_pos, joint_vel,
-                )
-            # if last_action_isaac is None:
-            #     last_action_isaac = np.zeros(29, dtype=np.float32)
-        action_env = torch.tensor(last_action_isaac, device=device, dtype=torch.float32).unsqueeze(0)
-        # action_env = _isaac_action_to_env(last_action_isaac, env, env_id)
+        # Query policy every env step (each env.step() advances decimation physics steps;
+        # we need a fresh action per step, matching play.py and collect_dataset)
+        if guidance_fn is not None:
+            if args_cli.guidance_type == "joystick" and keyboard_joystick is not None:
+                if hasattr(guidance_fn, "joystick_values"):
+                    guidance_fn.joystick_values[0] = keyboard_joystick.lx
+                    guidance_fn.joystick_values[1] = keyboard_joystick.ly
+                    guidance_fn.joystick_values[2] = keyboard_joystick.rx
+                    guidance_fn.joystick_values[3] = keyboard_joystick.ry
+            last_action_isaac = policy.get_action(
+                body_pos, body_quat, body_lin_vel, body_ang_vel,
+                joint_pos, joint_vel,
+                guidance_fn=guidance_fn,
+                guidance_kwargs=None,
+                guidance_scale=args_cli.guidance_scale,
+            )
+        else:
+            last_action_isaac = policy.get_action(
+                body_pos, body_quat, body_lin_vel, body_ang_vel,
+                joint_pos, joint_vel,
+            )
+        if last_action_isaac is None:
+            last_action_isaac = np.zeros(29, dtype=np.float32)
+            
+        action_env = torch.from_numpy(last_action_isaac).float().to(device).unsqueeze(0)
 
         # Step env (vec: obs is batched)
         if action_env.shape[0] < env.unwrapped.num_envs:
             action_env = action_env.repeat(env.unwrapped.num_envs, 1)
-        # breakpoint()
         obs, _, _, _, _ = env.step(action_env)
         step_count += 1
 
-        if step_count % 500 == 0:
+        # Print progress
+        if step_count % 100 == 0:
             robot = env.unwrapped.scene["robot"]
             pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
             print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m")
