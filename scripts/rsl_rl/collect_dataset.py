@@ -29,6 +29,7 @@ import pathlib
 from pathlib import Path
 import matplotlib.pyplot as plt
 import traceback
+import random
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -64,6 +65,7 @@ parser.add_argument("--save_folder", type=str, default=None, help="save folder")
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--num_obstacles", type=int, default=3, help="Number of obstacles to generate.")
+parser.add_argument("--seed", type=int, default=None, help="Random seed for the experiment.")
 
 def none_or_int(value):
     if value.lower() == 'none':
@@ -128,6 +130,16 @@ def main():
 
     # Set environment variable for dynamic obstacles BEFORE parsing config
     os.environ["NUM_OBSTACLES"] = str(args_cli.num_obstacles)
+
+    # Set random seed if provided
+    if args_cli.seed is not None:
+        print(f"[INFO] Setting random seed to {args_cli.seed}")
+        random.seed(args_cli.seed)
+        np.random.seed(args_cli.seed)
+        torch.manual_seed(args_cli.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(args_cli.seed)
+            torch.cuda.manual_seed_all(args_cli.seed)
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -250,7 +262,7 @@ def main():
     
     from datetime import datetime
     timestamp = datetime.now().strftime("%d_%H%M")
-    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_dec-{env_cfg.decimation}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
+    base_filename = f'{timestamp}_seed-{args_cli.seed}_{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_dec-{env_cfg.decimation}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}.zarr'
     save_path = Path(args_cli.save_folder) if args_cli.save_folder else Path.cwd()
     save_path.mkdir(parents=True, exist_ok=True)
     SAVE_FILE_NAME = str(save_path / base_filename)
@@ -272,6 +284,7 @@ def main():
         'knee_noise': knee_noise,
         'ankle_noise': ankle_noise,
         'timestamp': timestamp,
+        'seed': args_cli.seed,
     }
     buff.update_meta(metadata)
     

@@ -18,8 +18,9 @@ class ExperimentConfig:
     min_sample_idx: int | None = None
     max_sample_idx: int | None = None
     no_action_noise: bool = False
+    num_obstacles: int = 0
 
-def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Collect-v0", num_envs: int = 10):
+def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Collect-v0", num_envs: int = 10, seed: int | None = None):
     """Run a single experiment with the given configuration."""
     
     # Construct the base command
@@ -38,6 +39,8 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Colle
         f"--min_sample_idx={config.min_sample_idx}", 
         f"--max_sample_idx={config.max_sample_idx}", 
         f"--save_folder={config.save_folder}",
+        f"--seed={seed}",
+        f"--num_obstacles={config.num_obstacles}",
         f"--headless",
         ]       
     # import ipdb; ipdb.set_trace() 
@@ -78,6 +81,11 @@ def expand_config_delays(config: ExperimentConfig) -> List[ExperimentConfig]:
     return expanded_configs
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed", type=int, default=None, help="Random seed")
+    args = parser.parse_args()
+
     # Define your experiment configurations here
     #=========== 25 HZ Teleport Policy Ablation Test ===================================    
     
@@ -89,11 +97,12 @@ def main():
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
             episode_collect_length_s=4,
             num_steps_collect=60,  # 1.8 sec
-            num_eps_collect=10000, #8000
+            num_eps_collect= 1000, #10000, #8000
             # min_sample_idx = 0,
             # max_sample_idx = 16000, #16000,
-            save_folder='VISION_DATA_COLLECTED', #_OU
+            save_folder='VISION_OBSTACLE_DATA_COLLECTED', #_OU
             delays=[0],  
+            num_obstacles=3,
     ),
     # 5333
     ]
@@ -113,7 +122,7 @@ def main():
         print(f"Running Experiment {i+1}/{total_experiments} (delay={config.min_delay})")
         print(f"{'='*50}")
         
-        success = run_experiment(config, num_envs=750) # 750
+        success = run_experiment(config, num_envs=100, seed=args.seed) # 750
         if success:
             successful_experiments += 1
         
