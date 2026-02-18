@@ -1,0 +1,20 @@
+#!/bin/bash
+#SBATCH --partition=move  --account=move
+#SBATCH --time=72:00:00
+#SBATCH --nodes=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=150G
+#SBATCH --gres=gpu:rtxpro6000:1 
+#SBATCH --job-name=takara_walk_isaac_collect
+#SBATCH --output=slurm_outputs/slurm-%j.out
+
+set -euo pipefail
+
+cd /move/u/justingu/rmr_tracking/
+
+source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
+export OMNI_KIT_ACCEPT_EULA=y
+conda activate env_isaaclab
+
+
+python scripts/multi_collect.py

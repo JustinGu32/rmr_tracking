@@ -1,5 +1,9 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
+"""
+python scripts/rsl_rl/play.py --task=Chair-Step-G1-v0 --num_envs=2 --wandb_path=robot-mcrobotface/chair_step/q4yp8tny
+"""
+
 """Launch Isaac Sim Simulator first."""
 
 import argparse
@@ -144,16 +148,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # export policy to onnx/jit
     export_model_dir = os.path.join(os.path.dirname(resume_path), "exported")
 
-    export_motion_policy_as_onnx(
-        env.unwrapped,
-        ppo_runner.alg.policy,
-        normalizer=ppo_runner.obs_normalizer,
-        path=export_model_dir,
-        filename="policy.onnx",
-    )
-    attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
+    # export_motion_policy_as_onnx(
+    #     env.unwrapped,
+    #     ppo_runner.alg.policy,
+    #     normalizer=ppo_runner.obs_normalizer,
+    #     path=export_model_dir,
+    #     filename="policy.onnx",
+    # )
+    # attach_onnx_metadata(env.unwrapped, args_cli.wandb_path if args_cli.wandb_path else "none", export_model_dir)
     # reset environment
-    obs, _ = env.get_observations()
+    obs, _ = env.reset()
     timestep = 0
     # simulate environment
     while simulation_app.is_running():

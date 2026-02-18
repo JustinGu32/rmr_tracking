@@ -12,8 +12,9 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors import TiledCameraCfg
 import os
 
 ##
@@ -104,10 +105,9 @@ class MySceneCfg(InteractiveSceneCfg):
 
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    # import ipdb; ipdb.set_trace();
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            prim_path="{ENV_REGEX_NS}/Robot/head_link/depth_camera",
             update_period=0.1,  # 10Hz
             height=480,
             width=848,
@@ -117,9 +117,8 @@ class MySceneCfg(InteractiveSceneCfg):
                 horizontal_aperture=3.6,
                 clipping_range=(0.1, 5.0),
             ),
-            debug_vis=True,
             offset=TiledCameraCfg.OffsetCfg(
-                pos=(0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
                 rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
                 convention="ros",
             ),
@@ -179,21 +178,27 @@ class ObservationsCfg:
     """Observation specifications for the MDP."""
 
     @configclass
-    class PolicyDeployCfg(ObsGroup):
-        """Observations for policy group."""
-
-        # observation terms (order preserved)
+    class PolicySimCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        # motion_anchor_pos_b = ObsTerm(
-        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        # )
+        
+        motion_anchor_pos_b = ObsTerm(
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -230,7 +235,7 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
     # observation groups
-    policy: PolicyCfg = PolicyDeployCfg()
+    policy: PolicyCfg = PolicySimCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
     diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
@@ -412,7 +417,7 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
+class TrackingSimCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
@@ -431,7 +436,7 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         # Todo: define with WandB/data collection
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 100.0
         # simulation settings
         self.sim.dt = 0.005

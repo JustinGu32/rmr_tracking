@@ -28,6 +28,7 @@
 **/.neptune/*
 docker/artifacts/
 *.tmp
+slurm_outputs/
 
 # Isaac-Sim packman
 _isaac_sim*
@@ -39,6 +40,8 @@ _build
 *.pkl
 *.zarr
 *.npz
+*.out
+*.zip
 
 **/assets/
 artifacts/

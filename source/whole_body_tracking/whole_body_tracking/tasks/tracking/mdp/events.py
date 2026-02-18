@@ -11,6 +11,140 @@ from isaaclab.managers import SceneEntityCfg
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
+from isaaclab.assets import Articulation, DeformableObject, RigidObject
+
+from isaaclab.utils.math import quat_mul, quat_apply, quat_inv, quat_error_magnitude, yaw_quat, sample_uniform, quat_from_euler_xyz
+
+
+from whole_body_tracking.tasks.tracking.mdp.commands import MotionCommand
+
+def _get_body_indexes(command: MotionCommand, body_names: list[str] | None) -> list[int]:
+    return [i for i, name in enumerate(command.cfg.body_names) if (body_names is None) or (name in body_names)]
+
+def apply_random_body_forces(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    body_names: list[str],
+    asset_cfg: SceneEntityCfg,
+    force_std: tuple[float, float, float] = (5.0, 5.0, 5.0),
+    torque_std: tuple[float, float, float] = (1.0, 1.0, 1.0),
+):
+    """Apply random forces to specific bodies."""
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    body_indexes = _get_body_indexes(command, body_names)
+    body_indexes_tensor = torch.tensor(body_indexes, dtype=torch.long, device=env.device)
+    
+    num_bodies = len(body_indexes)
+    
+
+    num_target_envs = len(env_ids)
+    num_target_bodies = len(body_indexes)
+
+    # 3. Create the "small" tensors of random values
+    # Shape: (num_target_envs, num_target_bodies, 3)
+    forces = torch.randn(num_target_envs, num_target_bodies, 3, device=env.device)
+    forces *= torch.tensor(force_std, device=env.device)
+    
+    torques = torch.randn(num_target_envs, num_target_bodies, 3, device=env.device)
+    torques *= torch.tensor(torque_std, device=env.device)
+
+    # constant_force = torch.tensor([0.0, 0.0, 100.0], device=env.device)
+    
+    # # 2. Tile this force for all target envs and bodies
+    # #    Shape: (num_target_envs, num_target_bodies, 3)
+    # forces = constant_force.expand(num_target_envs, num_target_bodies, 3)
+    
+    # # 3. Set torques to zero
+    # torques = torch.zeros(num_target_envs, num_target_bodies, 3, device=env.device)
+
+    # 4. Create the "full" tensors, initialized to zero
+    # Shape: (total_num_envs, total_num_bodies, 3)
+    full_forces_buffer = torch.zeros(env.num_envs, asset.num_bodies, 3, device=env.device)
+    full_torques_buffer = torch.zeros(env.num_envs, asset.num_bodies, 3, device=env.device)
+
+    # 5. Use torch.ix_ to scatter the small tensors into the full buffers
+    # This selects the specific [rows (env_ids), columns (body_indexes)]
+    # in the full buffer and assigns the random values.
+    full_forces_buffer[env_ids[:, None], body_indexes] = forces
+    full_torques_buffer[env_ids[:, None], body_indexes] = torques
+    # import ipdb; ipdb.set_trace() 
+
+    # 6. Call the correct high-level API
+    # This applies forces in the BODY frame by default.
+    
+    asset.set_external_force_and_torque(
+        forces=full_forces_buffer,
+        torques=full_torques_buffer
+    )
+    
+    # # Create zero forces/torques for all envs, then fill in for selected env_ids
+    # forces = torch.zeros(env.num_envs, num_bodies, 3, device=env.device)
+    # torques = torch.zeros(env.num_envs, num_bodies, 3, device=env.device)
+    
+    # # Only apply random forces to the specified env_ids
+    # forces[env_ids] = torch.randn(len(env_ids), num_bodies, 3, device=env.device) * torch.tensor(force_std, device=env.device)
+    # torques[env_ids] = torch.randn(len(env_ids), num_bodies, 3, device=env.device) * torch.tensor(torque_std, device=env.device)
+    
+    # import ipdb; ipdb.set_trace() 
+    
+    # # Apply to specific bodies (None for positions = apply at center of mass)
+    # asset.root_physx_view.apply_forces_and_torques_at_position(
+    #     force_data=forces,
+    #     torque_data=torques,
+    #     position_data=None,  # None applies at center of mass
+    #     indices=body_indexes_tensor,
+    #     is_global=True
+    # )
+
+
+
+def teleport_root_with_noise(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    root_pos_noise_range: tuple[float, float],  # meters for x,y displacement
+    root_rot_noise_range: tuple[float, float],  # radians for rotation
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+):
+    """Teleport root position (x,y) and rotation with noise."""
+    # extract the used quantities
+    asset: RigidObject | Articulation = env.scene[asset_cfg.name]
+    
+    # resolve environment ids
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=asset.device)
+    
+    # Get current root state components (following your pattern)
+    root_pos = asset.data.root_pos_w.clone()
+    root_ori = asset.data.root_quat_w.clone()
+    root_lin_vel = asset.data.root_lin_vel_w.clone()
+    root_ang_vel = asset.data.root_ang_vel_w.clone()
+    
+    # Sample position noise (x, y only, keep z unchanged)
+    pos_noise_xy = sample_uniform(*root_pos_noise_range, (len(env_ids), 2), asset.device)
+    root_pos[env_ids, :2] += pos_noise_xy  # Add noise to x, y
+    
+    # Sample rotation noise (yaw only for simplicity)
+    rot_noise_yaw = sample_uniform(*root_rot_noise_range, (len(env_ids),), asset.device)
+    
+    # Convert yaw rotation to quaternion using Isaac Lab's function
+    orientations_delta = quat_from_euler_xyz(
+        torch.zeros_like(rot_noise_yaw),  # roll = 0
+        torch.zeros_like(rot_noise_yaw),  # pitch = 0  
+        rot_noise_yaw                     # yaw = noise
+    )
+    
+    root_ori[env_ids] = quat_mul(orientations_delta, root_ori[env_ids])
+
+    # Write the new root state (following your pattern)
+    asset.write_root_state_to_sim(
+        torch.cat([root_pos[env_ids], root_ori[env_ids], 
+                   root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1), 
+        env_ids=env_ids
+    )
+
 
 def randomize_joint_default_pos(
     env: ManagerBasedEnv,
@@ -91,3 +225,138 @@ def randomize_rigid_body_com(
 
     # Set the new coms
     asset.root_physx_view.set_coms(coms, env_ids)
+
+
+def randomize_multiple_obstacles_avoiding_path(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    asset_names: list[str],
+    x_range: tuple[float, float],
+    y_range: tuple[float, float],
+    min_dist_to_path: float,
+    min_dist_between_obstacles: float = 1.0,
+):
+    """
+    Randomize multiple obstacles (cylindrical pillars) such that they do not interfere with the
+    robot's reference motion path for the current episode, and do not overlap with each other.
+    """
+    if not asset_names:
+        return
+
+    # 1. Access Command
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device)
+
+    # 2. Get Full Reference Motion Path
+    # motion.body_pos_w is (Total_Steps, Num_Bodies, 3)
+    anchor_idx = command.motion_anchor_body_index
+    raw_motion_pos = command.motion._body_pos_w[:, anchor_idx, :3] # (Total_Steps, 3)
+
+    # 3. Determine Episode Time Slices for Each Environment
+    start_steps = command.time_steps[env_ids]
+    episode_length = command.steps_collect 
+    max_steps = raw_motion_pos.shape[0]
+    
+    device = env.device
+    num_envs_to_reset = len(env_ids)
+    
+    # Pre-fetch all obstacle assets
+    obstacles = [env.scene[name] for name in asset_names]
+    num_obstacles = len(obstacles)
+
+    # Store positions for all obstacles in this batch of envs: (num_envs, num_obstacles, 3)
+    final_positions = torch.zeros(num_envs_to_reset, num_obstacles, 3, device=device)
+    final_positions[..., :] = 100.0 # Default far away
+    final_positions[..., 2] = 1.0   # Z height
+
+    max_iters = 100
+    
+    for i in range(num_envs_to_reset):
+        # Identify the time slice for this specific episode
+        t_start = start_steps[i]
+        t_end = min(t_start + episode_length, max_steps)
+        
+        # Extract path (T, 2) for collision checking (ignore Z)
+        if t_start < max_steps:
+             path = raw_motion_pos[t_start:t_end, :2] 
+        else:
+             path = torch.empty(0, 2, device=device)
+        
+        # Place each obstacle sequentially
+        for obs_idx in range(num_obstacles):
+            placed = False
+            for _ in range(max_iters): 
+                # Sample random (x,y) candidate
+                rx = torch.rand(1, device=device) * (x_range[1] - x_range[0]) + x_range[0]
+                ry = torch.rand(1, device=device) * (y_range[1] - y_range[0]) + y_range[0]
+                cand = torch.cat([rx, ry], dim=0) # (2,)
+                
+                # Shift by path start to center near robot? 
+                # The original code did: cand = cand + raw_motion_pos[t_start, :2]
+                cand_world = cand + raw_motion_pos[t_start, :2]
+
+                # 1. Check distance to Path
+                dist_to_path = float('inf')
+                if path.shape[0] > 0:
+                    dists = torch.norm(path - cand_world, dim=1)
+                    dist_to_path = torch.min(dists)
+                
+                if dist_to_path < min_dist_to_path:
+                    continue # Try again
+
+                # 2. Check distance to previously placed obstacles
+                if obs_idx > 0:
+                    # Get previously placed obstacles for this env
+                    # prev_pos: (obs_idx, 3)
+                    # We only care about x,y. final_positions is (num_envs, num_obstacles, 3)
+                    prev_positions_xy = final_positions[i, :obs_idx, :2] 
+                    
+                    # cand_world is (2,)
+                    # Calculate distances
+                    dists_to_obs = torch.norm(prev_positions_xy - cand_world, dim=1)
+                    min_dist_to_obs = torch.min(dists_to_obs)
+                    
+                    if min_dist_to_obs < min_dist_between_obstacles:
+                        continue # Try again
+                
+                # If we get here, it's valid
+                final_positions[i, obs_idx, 0] = cand_world[0]
+                final_positions[i, obs_idx, 1] = cand_world[1]
+                placed = True
+                break
+            
+            if not placed:
+                # Could not place obstacle after max_iters. 
+                # It stays at default (100, 100) or we could log a warning.
+                pass
+
+    # Add Env Origins to convert local positions to global world coordinates
+    # env_origins: (num_envs, 3)
+    env_origins = env.scene.env_origins[env_ids]
+    
+    # final_positions is (num_envs, num_obstacles, 3)
+    # broadcase add env_origins (num_envs, 1, 3)
+    global_positions = final_positions + env_origins.unsqueeze(1)
+
+    # 5. Orientation: Identity 
+    quat = torch.zeros(num_envs_to_reset, 4, device=device)
+    quat[..., 0] = 1.0 
+
+    # 6. Update Simulation State for each obstacle asset
+    for obs_idx, obstacle_asset in enumerate(obstacles):
+        # obstacle_asset is RigidObject or Articulation
+        # We need to write state for 'env_ids'
+        
+        current_states = obstacle_asset.data.root_state_w[env_ids].clone() 
+        
+        # Set Pos
+        current_states[:, :3] = global_positions[:, obs_idx, :]
+        # Set Rot
+        current_states[:, 3:7] = quat
+        # Set Vel
+        current_states[:, 7:] = 0.0 
+        
+        obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)

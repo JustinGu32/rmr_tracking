@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -12,8 +12,9 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 import os
 
 ##
@@ -99,16 +100,16 @@ class MySceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.DomeLightCfg(color=(0.13, 0.13, 0.13), intensity=1000.0),
     )
     contact_forces = ContactSensorCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
+        prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=False
     )
 
     # Depth camera mounted on the D435 link (head)
     # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    # import ipdb; ipdb.set_trace();
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
             update_period=0.1,  # 10Hz
+            debug_vis=False,
             height=480,
             width=848,
             data_types=["rgb", "depth"],
@@ -117,9 +118,8 @@ class MySceneCfg(InteractiveSceneCfg):
                 horizontal_aperture=3.6,
                 clipping_range=(0.1, 5.0),
             ),
-            debug_vis=True,
             offset=TiledCameraCfg.OffsetCfg(
-                pos=(0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
                 rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
                 convention="ros",
             ),
@@ -142,7 +142,7 @@ class CommandsCfg:
     motion = mdp.MotionCommandCfg(
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
-        debug_vis=True,
+        debug_vis=False,
         # Todo: define as parameter instead
         # pose_range={
         #     "x": (-0.05, 0.05),
@@ -199,6 +199,63 @@ class ObservationsCfg:
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
+
+    @configclass
+    class PolicySimCfg(ObsGroup):
+        command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        
+        motion_anchor_pos_b = ObsTerm(
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        )
+        motion_anchor_ori_b = ObsTerm(
+            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
+        )
+        
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+
+        actions = ObsTerm(func=mdp.last_action)
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
+
+            
+    @configclass
+    class PrivilegedPolicyCfg(ObsGroup):
+        command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        
+        motion_anchor_pos_b = ObsTerm(
+            func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        )
+        motion_anchor_ori_b = ObsTerm(
+            func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
+        )
+        
+        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.05, n_max=0.05))
+        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+
+        base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
+        
+        joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
+        joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+
+        actions = ObsTerm(func=mdp.last_action)
+
+        def __post_init__(self):
+            self.enable_corruption = True
+            self.concatenate_terms = True
             
     @configclass
     class PrivilegedCfg(ObsGroup):
@@ -230,7 +287,7 @@ class ObservationsCfg:
             self.enable_corruption = False
             self.concatenate_terms = True
     # observation groups
-    policy: PolicyCfg = PolicyDeployCfg()
+    policy: PolicyCfg = PolicyDeployCfg() # PolicySimCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
     diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
@@ -261,16 +318,16 @@ class EventCfg:
             "operation": "add",
         },
     )
-    # teleport = EventTerm(
-    #     func=mdp.teleport_root_with_noise,
-    #     mode='interval',
-    #     interval_range_s=(0.0, .1),
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "root_pos_noise_range": (-0.01, 0.01),
-    #         "root_rot_noise_range": (-0.02, 0.02),
-    #     },
-    # )
+    teleport = EventTerm(
+        func=mdp.teleport_root_with_noise,
+        mode='interval',
+        interval_range_s=(0.0, .1),
+        params={
+            "asset_cfg": SceneEntityCfg("robot"),
+            "root_pos_noise_range": (-0.01, 0.01),
+            "root_rot_noise_range": (-0.02, 0.02),
+        },
+    )
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -280,22 +337,14 @@ class EventCfg:
         },
     )
 
-    #train 
-    # interval
+    
+    # collect
     push_robot = EventTerm(
         func=mdp.push_by_setting_velocity,
         mode="interval",
-        interval_range_s=(1.0, 3.0),
-        params={"velocity_range": VELOCITY_RANGE},
+        interval_range_s=(0, .1),
+        params={"velocity_range": VELOCITY_RANGE_COLLECT2},
     )
-
-    # collect
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(0, .1),
-    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
-    # )
 
     # random_body_forces = EventTerm(
     #     func=mdp.apply_random_body_forces,
@@ -412,11 +461,11 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
+class TrackingCollectCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=20.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -442,3 +491,59 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # --- Dynamic Obstacle Configuration ---
+        # Note: This allows collect_dataset.py to control obstacle count via env var
+        try:
+            num_obstacles = int(os.environ.get("NUM_OBSTACLES", 0))
+        except ValueError:
+            num_obstacles = 0
+
+        # 1. Remove existing pillars (if any exist in class definition)
+        # We iterate a safe range or check configured ones.
+        for i in range(10): # Check up to 10 legacy pillars
+            if hasattr(self.scene, f"pillar_{i}"):
+                delattr(self.scene, f"pillar_{i}")
+            if hasattr(self.events, f"randomize_pillar_{i}"):
+                delattr(self.events, f"randomize_pillar_{i}")
+
+        # 2. Add new pillars based on num_obstacles
+        obstacle_names = []
+        for i in range(num_obstacles):
+            obs_name = f"pillar_{i}"
+            obstacle_names.append(obs_name)
+            
+            # Cycle colors: Red, Green, Blue, Yellow, Cyan, Magenta
+            colors = [
+                (0.8, 0.1, 0.1), (0.1, 0.8, 0.1), (0.1, 0.1, 0.8),
+                (0.8, 0.8, 0.1), (0.1, 0.8, 0.8), (0.8, 0.1, 0.8)
+            ]
+            color = colors[i % len(colors)]
+            
+            obs_cfg = RigidObjectCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/{obs_name.capitalize()}",
+                spawn=sim_utils.CylinderCfg(
+                    radius=0.15,
+                    height=2.0,
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
+                ),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(100.0 + i*2.0, 100.0, 0.0)),
+            )
+            setattr(self.scene, obs_name, obs_cfg)
+
+        # 3. Add single randomization event for all pillars
+        if num_obstacles > 0:
+            self.events.randomize_obstacles = EventTerm(
+                func=mdp.randomize_multiple_obstacles_avoiding_path,
+                mode="reset",
+                params={
+                    "asset_names": obstacle_names,
+                    "command_name": "motion",
+                    "x_range": (-4.0, 4.0),
+                    "y_range": (-4.0, 4.0),
+                    "min_dist_to_path": 2.0,
+                    "min_dist_between_obstacles": 1.0,
+                },
+            )
