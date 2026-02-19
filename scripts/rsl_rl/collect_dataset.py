@@ -1,5 +1,21 @@
 """Script to play a checkpoint if an RL agent from RSL-RL."""
 
+"""example command: 
+python scripts/rsl_rl/collect_dataset.py \
+    --task Tracking-Flat-G1-Collect-v0   \
+    --num_envs 2 \
+    --wandb_path robot-mcrobotface/takara_walk_isaac/nxotitq9 \
+    --num_steps_collect 60 \
+    --num_eps_collect 10000 \
+    --episode_collect_length 4 \
+    --min_delay 0 \
+    --max_delay 0 \
+    --min_sample_idx 0 \
+    --max_sample_idx 1000 \
+    --num_obstacles 4 \
+    --video
+"""
+
 """Launch Isaac Sim Simulator first."""
 
 import argparse
@@ -13,6 +29,7 @@ import pathlib
 from pathlib import Path
 import matplotlib.pyplot as plt
 import traceback
+import random
 
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Train an RL agent with RSL-RL.")
@@ -47,6 +64,8 @@ parser.add_argument("--save_folder", type=str, default=None, help="save folder")
 
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
+parser.add_argument("--num_obstacles", type=int, default=3, help="Number of obstacles to generate.")
+parser.add_argument("--seed", type=int, default=None, help="Random seed for the experiment.")
 
 def none_or_int(value):
     if value.lower() == 'none':
@@ -93,6 +112,8 @@ from torch.distributions import Normal
 
 
 # Import extensions to set up environment tasks
+# Set ENABLE_CAMERAS before importing tasks so config files pick it up
+os.environ["ENABLE_CAMERAS"] = "1"
 import whole_body_tracking.tasks  # noqa: F401
 from transformers import AutoImageProcessor, SiglipModel
 from transformers import AutoImageProcessor, SiglipModel
@@ -106,6 +127,19 @@ def main():
     """Play with RSL-RL agent."""
     # parse configuration
 
+
+    # Set environment variable for dynamic obstacles BEFORE parsing config
+    os.environ["NUM_OBSTACLES"] = str(args_cli.num_obstacles)
+
+    # Set random seed if provided
+    if args_cli.seed is not None:
+        print(f"[INFO] Setting random seed to {args_cli.seed}")
+        random.seed(args_cli.seed)
+        np.random.seed(args_cli.seed)
+        torch.manual_seed(args_cli.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(args_cli.seed)
+            torch.cuda.manual_seed_all(args_cli.seed)
 
     env_cfg = parse_env_cfg(
         args_cli.task,
@@ -193,6 +227,16 @@ def main():
     env = gym.make(
         args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None
     )
+
+    if args_cli.video:
+        video_kwargs = {
+            "video_folder": os.path.join("videos", args_cli.task),
+            "step_trigger": lambda step: step % args_cli.video_length == 0,
+            "video_length": args_cli.video_length,
+            "name_prefix": "inclusion",
+        }
+        print((f"[INFO] Recording videos to: {video_kwargs['video_folder']}"))
+        env = gym.wrappers.RecordVideo(env, **video_kwargs)
     
     # env_cfg 
     # recorded_obs = []
@@ -218,7 +262,7 @@ def main():
     
     from datetime import datetime
     timestamp = datetime.now().strftime("%d_%H%M")
-    base_filename = f'{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}_{timestamp}.zarr'
+    base_filename = f'{timestamp}_seed-{args_cli.seed}_{wandb_run.name}_ep-{NUM_EPISODE}_steps-{COLLECT_STEPS}_dec-{env_cfg.decimation}_delay-{args_cli.min_delay}-{args_cli.max_delay}_noise-{noise_level}_hip-{hip_noise}_knee-{knee_noise}_ankle-{ankle_noise}.zarr'
     save_path = Path(args_cli.save_folder) if args_cli.save_folder else Path.cwd()
     save_path.mkdir(parents=True, exist_ok=True)
     SAVE_FILE_NAME = str(save_path / base_filename)
@@ -227,6 +271,22 @@ def main():
     buff = ReplayBuffer.create_empty_zarr(
         storage=zarr.DirectoryStore(SAVE_FILE_NAME)
     )
+
+    metadata = {
+        'wandb_run': wandb_run.name,
+        'num_episodes': NUM_EPISODE,
+        'collect_steps': COLLECT_STEPS,
+        'decimation': env_cfg.decimation,
+        'min_delay': args_cli.min_delay,
+        'max_delay': args_cli.max_delay,
+        'noise_level': noise_level,
+        'hip_noise': hip_noise,
+        'knee_noise': knee_noise,
+        'ankle_noise': ankle_noise,
+        'timestamp': timestamp,
+        'seed': args_cli.seed,
+    }
+    buff.update_meta(metadata)
     
     num_bodies = 30
     num_joints = 29
@@ -444,6 +504,7 @@ def main():
                     batch_depth = depth_image.squeeze(-1).float() 
                     batch_depth_np = batch_depth.cpu().numpy()
                     
+                    depth_embeds_list = []
                     for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
                         # 1. Get chunk of raw depth (numpy, CPU)
                         batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]

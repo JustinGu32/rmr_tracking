@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -491,3 +491,59 @@ class TrackingCollectCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # --- Dynamic Obstacle Configuration ---
+        # Note: This allows collect_dataset.py to control obstacle count via env var
+        try:
+            num_obstacles = int(os.environ.get("NUM_OBSTACLES", 0))
+        except ValueError:
+            num_obstacles = 0
+
+        # 1. Remove existing pillars (if any exist in class definition)
+        # We iterate a safe range or check configured ones.
+        for i in range(10): # Check up to 10 legacy pillars
+            if hasattr(self.scene, f"pillar_{i}"):
+                delattr(self.scene, f"pillar_{i}")
+            if hasattr(self.events, f"randomize_pillar_{i}"):
+                delattr(self.events, f"randomize_pillar_{i}")
+
+        # 2. Add new pillars based on num_obstacles
+        obstacle_names = []
+        for i in range(num_obstacles):
+            obs_name = f"pillar_{i}"
+            obstacle_names.append(obs_name)
+            
+            # Cycle colors: Red, Green, Blue, Yellow, Cyan, Magenta
+            colors = [
+                (0.8, 0.1, 0.1), (0.1, 0.8, 0.1), (0.1, 0.1, 0.8),
+                (0.8, 0.8, 0.1), (0.1, 0.8, 0.8), (0.8, 0.1, 0.8)
+            ]
+            color = colors[i % len(colors)]
+            
+            obs_cfg = RigidObjectCfg(
+                prim_path=f"{{ENV_REGEX_NS}}/{obs_name.capitalize()}",
+                spawn=sim_utils.CylinderCfg(
+                    radius=0.15,
+                    height=2.0,
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=color),
+                ),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(100.0 + i*2.0, 100.0, 0.0)),
+            )
+            setattr(self.scene, obs_name, obs_cfg)
+
+        # 3. Add single randomization event for all pillars
+        if num_obstacles > 0:
+            self.events.randomize_obstacles = EventTerm(
+                func=mdp.randomize_multiple_obstacles_avoiding_path,
+                mode="reset",
+                params={
+                    "asset_names": obstacle_names,
+                    "command_name": "motion",
+                    "x_range": (-4.0, 4.0),
+                    "y_range": (-4.0, 4.0),
+                    "min_dist_to_path": 2.0,
+                    "min_dist_between_obstacles": 1.0,
+                },
+            )

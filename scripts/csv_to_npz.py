@@ -30,6 +30,7 @@ parser.add_argument(
 )
 parser.add_argument("--output_name", type=str, required=True, help="The name of the motion npz file.")
 parser.add_argument("--output_fps", type=int, default=50, help="The fps of the output motion.")
+parser.add_argument("--chair_step", action="store_true", default=False, help="Whether to visualize the chair step object.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -45,7 +46,7 @@ simulation_app = app_launcher.app
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationContext
 from isaaclab.utils import configclass
@@ -56,6 +57,8 @@ from isaaclab.utils.math import axis_angle_from_quat, quat_conjugate, quat_mul, 
 # Pre-defined configs
 ##
 from whole_body_tracking.robots.g1 import G1_CYLINDER_CFG
+from whole_body_tracking.tasks.chair_step.chair_step_env_cfg import BOX_SIZE, BOX_POSITION
+
 
 
 @configclass
@@ -116,11 +119,19 @@ class MotionLoader:
         self.motion_base_poss_input = motion[:, :3]
         self.motion_base_rots_input = motion[:, 3:7]
         self.motion_base_rots_input = self.motion_base_rots_input[:, [3, 0, 1, 2]]  # convert to wxyz
-        self.motion_dof_poss_input = motion[:, 7:]
+        # Assumes 29 joints
+        self.motion_dof_poss_input = motion[:, 7:36]
+
+        self.has_object = False
+        if motion.shape[1] > 36:
+             self.has_object = True
+             self.motion_object_poss_input = motion[:, 36:39]
+             self.motion_object_rots_input = motion[:, 39:43]
+             self.motion_object_rots_input = self.motion_object_rots_input[:, [3, 0, 1, 2]] # wxyz
 
         self.input_frames = motion.shape[0]
         self.duration = (self.input_frames - 1) * self.input_dt
-        print(f"Motion loaded ({self.motion_file}), duration: {self.duration} sec, frames: {self.input_frames}")
+        print(f"Motion loaded ({self.motion_file}), duration: {self.duration} sec, frames: {self.input_frames}. Has Object: {self.has_object}")
 
     def _interpolate_motion(self):
         """Interpolates the motion to the output fps."""
@@ -142,6 +153,17 @@ class MotionLoader:
             self.motion_dof_poss_input[index_1],
             blend.unsqueeze(1),
         )
+        if self.has_object:
+             self.motion_object_poss = self._lerp(
+                  self.motion_object_poss_input[index_0],
+                  self.motion_object_poss_input[index_1],
+                  blend.unsqueeze(1),
+             )
+             self.motion_object_rots = self._slerp(
+                  self.motion_object_rots_input[index_0],
+                  self.motion_object_rots_input[index_1],
+                  blend,
+             )
         print(
             f"Motion interpolated, input frames: {self.input_frames}, input fps: {self.input_fps}, output frames:"
             f" {self.output_frames}, output fps: {self.output_fps}"
@@ -171,6 +193,9 @@ class MotionLoader:
         self.motion_base_lin_vels = torch.gradient(self.motion_base_poss, spacing=self.output_dt, dim=0)[0]
         self.motion_dof_vels = torch.gradient(self.motion_dof_poss, spacing=self.output_dt, dim=0)[0]
         self.motion_base_ang_vels = self._so3_derivative(self.motion_base_rots, self.output_dt)
+        if self.has_object:
+             self.motion_object_lin_vels = torch.gradient(self.motion_object_poss, spacing=self.output_dt, dim=0)[0]
+             self.motion_object_ang_vels = self._so3_derivative(self.motion_object_rots, self.output_dt)
 
     def _so3_derivative(self, rotations: torch.Tensor, dt: float) -> torch.Tensor:
         """Computes the derivative of a sequence of SO3 rotations.
@@ -207,12 +232,22 @@ class MotionLoader:
             self.motion_dof_poss[self.current_idx : self.current_idx + 1],
             self.motion_dof_vels[self.current_idx : self.current_idx + 1],
         )
+        
+        object_state = None
+        if self.has_object:
+             object_state = (
+                  self.motion_object_poss[self.current_idx : self.current_idx + 1],
+                  self.motion_object_rots[self.current_idx : self.current_idx + 1],
+                  self.motion_object_lin_vels[self.current_idx : self.current_idx + 1],
+                  self.motion_object_ang_vels[self.current_idx : self.current_idx + 1]
+             )
+        
         self.current_idx += 1
         reset_flag = False
         if self.current_idx >= self.output_frames:
             self.current_idx = 0
             reset_flag = True
-        return state, reset_flag
+        return state, object_state, reset_flag
 
 
 def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joint_names: list[str]):
@@ -228,6 +263,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
 
     # Extract scene entities
     robot = scene["robot"]
+    if args_cli.chair_step:
+        object = scene["object"]
     robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
 
     # ------- data logger -------------------------------------------------------
@@ -239,6 +276,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
         "body_quat_w": [],
         "body_lin_vel_w": [],
         "body_ang_vel_w": [],
+        "object_pos_w": [],
+        "object_quat_w": [],
+        "object_lin_vel_w": [],
+        "object_ang_vel_w": [],
     }
     file_saved = False
     # --------------------------------------------------------------------------
@@ -254,6 +295,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
                 motion_dof_pos,
                 motion_dof_vel,
             ),
+            object_state,
             reset_flag,
         ) = motion.get_next_state()
 
@@ -272,6 +314,16 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
         joint_pos[:, robot_joint_indexes] = motion_dof_pos
         joint_vel[:, robot_joint_indexes] = motion_dof_vel
         robot.write_joint_state_to_sim(joint_pos, joint_vel)
+        if args_cli.chair_step:
+             if object_state is not None:
+                  obj_pos, obj_rot, _, _ = object_state
+                  # set object state
+                  obj_root_states = object.data.default_root_state.clone()
+                  obj_root_states[:, :3] = obj_pos
+                  obj_root_states[:, :2] += scene.env_origins[:, :2]
+                  obj_root_states[:, 3:7] = obj_rot
+                  # object.write_root_state_to_sim(obj_root_states)
+        
         sim.render()  # We don't want physic (sim.step())
         scene.update(sim.get_physics_dt())
 
@@ -285,6 +337,13 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
             log["body_quat_w"].append(robot.data.body_quat_w[0, :].cpu().numpy().copy())
             log["body_lin_vel_w"].append(robot.data.body_lin_vel_w[0, :].cpu().numpy().copy())
             log["body_ang_vel_w"].append(robot.data.body_ang_vel_w[0, :].cpu().numpy().copy())
+            
+            if object_state is not None:
+                 obj_pos, obj_rot, obj_lin_vel, obj_ang_vel = object_state
+                 log["object_pos_w"].append(obj_pos[0].cpu().numpy().copy())
+                 log["object_quat_w"].append(obj_rot[0].cpu().numpy().copy())
+                 log["object_lin_vel_w"].append(obj_lin_vel[0].cpu().numpy().copy())
+                 log["object_ang_vel_w"].append(obj_ang_vel[0].cpu().numpy().copy())
 
         if reset_flag and not file_saved:
             file_saved = True
@@ -295,8 +354,15 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
                 "body_quat_w",
                 "body_lin_vel_w",
                 "body_ang_vel_w",
+                "object_pos_w",
+                "object_quat_w",
+                "object_lin_vel_w",
+                "object_ang_vel_w",
             ):
-                log[k] = np.stack(log[k], axis=0)
+                if len(log[k]) > 0:
+                     log[k] = np.stack(log[k], axis=0)
+                else:
+                     del log[k]
 
             np.savez("/tmp/motion.npz", **log)
 
@@ -319,6 +385,24 @@ def main():
     sim = SimulationContext(sim_cfg)
     # Design scene
     scene_cfg = ReplayMotionsSceneCfg(num_envs=1, env_spacing=2.0)
+    if args_cli.chair_step:
+        scene_cfg.object = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Box",
+            spawn=sim_utils.CuboidCfg(
+                size=BOX_SIZE,
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), # added
+                collision_props=sim_utils.CollisionPropertiesCfg(), # Enable collision
+                mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    friction_combine_mode="multiply",
+                    restitution_combine_mode="multiply",
+                    static_friction=0.7,
+                    dynamic_friction=0.5,
+                ),
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
+            ),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POSITION),
+        )
     scene = InteractiveScene(scene_cfg)
     # Play the simulator
     sim.reset()
