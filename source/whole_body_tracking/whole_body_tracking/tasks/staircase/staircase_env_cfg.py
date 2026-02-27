@@ -12,6 +12,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.assets import RigidObjectCfg
@@ -57,7 +58,7 @@ VELOCITY_RANGE_Null = {
 }
 
 # Staircase definition
-STAIRCASE_POSITION = [0.0, 0.0, -0.01] # -0.02, -0.01 to avoid contact with the step
+STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
 
 @configclass
 class StaircaseSceneCfg(InteractiveSceneCfg):
@@ -98,7 +99,7 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
     staircase = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Staircase",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.74_0.74_0.74.urdf",
+            asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
             fix_base=True,
             collision_props=sim_utils.CollisionPropertiesCfg(),
             joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -266,6 +267,8 @@ class EventCfg:
     #     params={"velocity_range": VELOCITY_RANGE},
     # )
 
+    # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
+
 
 @configclass
 class RewardsCfg:
@@ -349,8 +352,12 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    anchor_pos = DoneTerm(
+    anchor_pos_z = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
+        params={"command_name": "motion", "threshold": 0.25},
+    )
+    anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
     anchor_ori = DoneTerm(
@@ -376,7 +383,20 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    pass
+    # Adaptive difficulty scheduler based on anchor tracking error
+    adr = CurrTerm(
+        func=mdp.AssistiveForceScheduler,
+        params={
+            "command_name": "motion",
+            "pos_tol": 0.15,
+            "init_difficulty": 0,
+            "min_difficulty": 0,
+            "max_difficulty": 10,
+        },
+    )
+
+    # (assistive_force_adr removed — spring force is now scaled directly
+    #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
 
 
 ##
@@ -399,6 +419,19 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
+
+    # Spring-based assistive force configuration
+    # Applied every step in _pre_physics_step, scaled by curriculum factor
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 300.0,       # Spring stiffness (Kp)
+        "damping": 20.0,          # Velocity damping (Kd)
+        "gravity_comp": 0.8,      # Fraction of gravity to compensate
+        "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
+        "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
+    }
+
 
     def __post_init__(self):
         """Post initialization."""

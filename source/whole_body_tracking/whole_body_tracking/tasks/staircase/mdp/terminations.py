@@ -20,6 +20,10 @@ def bad_anchor_pos(env: ManagerBasedRLEnv, command_name: str, threshold: float) 
     return torch.norm(command.anchor_pos_w - command.robot_anchor_pos_w, dim=1) > threshold
 
 
+def bad_anchor_pos_x_y_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return torch.norm(command.anchor_pos_w[:, 0:2] - command.robot_anchor_pos_w[:, 0:2], dim=1) > threshold
+
 def bad_anchor_pos_z_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     return torch.abs(command.anchor_pos_w[:, -1] - command.robot_anchor_pos_w[:, -1]) > threshold

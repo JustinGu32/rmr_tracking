@@ -1,78 +1,180 @@
 from __future__ import annotations
 
 import torch
+from isaaclab.utils.math import quat_mul, quat_inv, axis_angle_from_quat
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from isaaclab.managers import SceneEntityCfg
+from isaaclab.assets import Articulation, RigidObject
+from isaaclab.envs import mdp
+from isaaclab.managers import ManagerTermBase, SceneEntityCfg
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
-def apply_assistive_forces(
+
+# ---------------------------------------------------------------------------
+# Interpolation helper (mirrors dexsuite's initial_final_interpolate_fn)
+# ---------------------------------------------------------------------------
+
+def initial_final_interpolate_fn(env: ManagerBasedRLEnv, env_id, data, initial_value, final_value, difficulty_term_str):
+    """Interpolate between initial_value and final_value based on difficulty_frac.
+
+    Supports arbitrarily nested lists/tuples. Scalars are interpolated at the leaves.
+    """
+    difficulty_term: AssistiveForceScheduler = getattr(env.curriculum_manager.cfg, difficulty_term_str).func
+    frac = difficulty_term.difficulty_frac
+    if frac < 0.1:
+        return mdp.modify_env_param.NO_CHANGE
+
+    initial_value_tensor = torch.tensor(initial_value, device=env.device)
+    final_value_tensor = torch.tensor(final_value, device=env.device)
+
+    return _recurse(initial_value_tensor.tolist(), final_value_tensor.tolist(), data, frac)
+
+
+def _recurse(iv_elem, fv_elem, data_elem, frac):
+    if isinstance(data_elem, Sequence) and not isinstance(data_elem, (str, bytes)):
+        return type(data_elem)(_recurse(iv_e, fv_e, d_e, frac) for iv_e, fv_e, d_e in zip(iv_elem, fv_elem, data_elem))
+    new_val = frac * (fv_elem - iv_elem) + iv_elem
+    if isinstance(data_elem, int):
+        return int(new_val)
+    return float(new_val)
+
+
+# ---------------------------------------------------------------------------
+# Adaptive difficulty scheduler (mirrors dexsuite's DifficultyScheduler)
+# ---------------------------------------------------------------------------
+
+class AssistiveForceScheduler(ManagerTermBase):
+    """Adaptive scheduler that reduces assistance as motion tracking improves.
+
+    Tracks per-environment difficulty levels. When anchor position tracking error
+    falls below ``pos_tol``, difficulty increases (less assistance). Otherwise it
+    decreases (more assistance). The normalised mean difficulty is exposed as
+    ``difficulty_frac`` for use in curriculum interpolation terms.
+    """
+
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        init_difficulty = self.cfg.params.get("init_difficulty", 0)
+        self.current_adr_difficulties = torch.ones(env.num_envs, device=env.device) * init_difficulty
+        self.difficulty_frac = 0.0
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        command_name: str = "motion",
+        pos_tol: float = 0.15,
+        init_difficulty: int = 0,
+        min_difficulty: int = 0,
+        max_difficulty: int = 10,
+    ):
+        command = env.command_manager.get_term(command_name)
+        pos_err = command.metrics["error_anchor_pos"][env_ids]
+
+        move_up = pos_err < pos_tol  # tracking well → increase difficulty (reduce assist)
+        self.current_adr_difficulties[env_ids] = torch.where(
+            move_up,
+            self.current_adr_difficulties[env_ids] + 1,
+            self.current_adr_difficulties[env_ids] - 1,
+        ).clamp(min=min_difficulty, max=max_difficulty)
+
+        self.difficulty_frac = torch.mean(self.current_adr_difficulties) / max(max_difficulty, 1)
+        return self.difficulty_frac
+
+
+# ---------------------------------------------------------------------------
+# Spring force toward reference motion (replaces simple Z-upward force)
+# ---------------------------------------------------------------------------
+
+def apply_spring_force(
     env: ManagerBasedRLEnv,
     command_name: str,
-    asset_cfg: SceneEntityCfg,
-    stiffness: float,
-    damping: float,
-    gravity_comp: float,
+    asset_name: str = "robot",
+    stiffness: float = 1000.0,
+    ang_stiffness: float = 100.0,
+    damping: float = 20.0,
+    gravity_comp: float = 0.8,
+    axis_weights: tuple[float, float, float] = (0.3, 0.3, 5.0),
     curriculum_factor: float = 1.0,
+    env_ids: torch.Tensor | None = None,
 ):
-    """
-    Apply assistive forces (spring + gravity compensation) to the robot's anchor body.
-    
+    """Apply a PD spring force pulling the robot's anchor body toward the reference motion.
+
+    The force is computed as:
+        F_spring = axis_weights * stiffness * (ref_pos - cur_pos)
+                 + damping * (ref_vel - cur_vel)
+                 + ang_stiffness * axis_angle_error(ref_quat, cur_quat)
+        F_total  = F_spring * curriculum_factor
+
+    Called every step from StaircaseEnv.step() before physics stepping.
+
     Args:
         env: The environment.
-        command_name: The name of the command term providing the reference motion.
-        asset_cfg: The configuration for the asset (robot) to apply forces to.
-        stiffness: Spring stiffness (Kp) for position error.
-        damping: Damping (Kd) for velocity error.
-        gravity_comp: Gravity compensation factor (0.0 to 1.0).
-        curriculum_factor: A factor (0.0 to 1.0) scaling the forces. 1.0 = full assist, 0.0 = no assist.
+        command_name: Name of the motion command term.
+        asset_name: Name of the robot asset in the scene.
+        stiffness: Spring stiffness (Kp).
+        ang_stiffness: Angular spring stiffness (Kp_ang).
+        damping: Velocity damping (Kd).
+        gravity_comp: Fraction of gravity to compensate (0.0–1.0).
+        axis_weights: Per-axis multiplier on spring stiffness [x, y, z].
+        curriculum_factor: Scaling factor from curriculum (1.0 = full assist, 0.0 = none).
+        env_ids: Optional tensor of env indices to apply force to. If None, applies to all.
     """
-    
-    # 0. Get the robot asset
-    asset = env.scene[asset_cfg.name]
-    
-    # 1. Get reference motion
-    command = env.command_manager.terms[command_name]
-    
-    # Reference root state (world frame)
-    ref_pos_w = command.anchor_pos_w
-    ref_lin_vel_w = command.anchor_lin_vel_w
-    
-    # 2. Get current robot state (world frame)
-    body_idx = command.robot_anchor_body_index
-    
-    # Check shape compatibility
-    # asset.data.body_pos_w is (num_envs, num_bodies, 3)
-    current_pos_w = asset.data.body_pos_w[:, body_idx, :]
-    current_lin_vel_w = asset.data.body_lin_vel_w[:, body_idx, :]
-    
-    # 3. Calculate errors
-    pos_error = ref_pos_w - current_pos_w
-    vel_error = ref_lin_vel_w - current_lin_vel_w
-    
-    # 4. Calculate Spring Force (PD control)
-    # F = (Kp * pos_err + Kd * vel_err) * curriculum_factor
-    spring_force = (stiffness * pos_error + damping * vel_error) * curriculum_factor.unsqueeze(-1)
-    
-    # 5. Calculate Gravity Compensation
-    # F_g = mass * g * vector_up * scale * curriculum_factor
-    # Sum masses of all links to estimate total mass to lift
-    total_mass = asset.root_physx_view.get_masses().sum(dim=1)
-    gravity_vec = torch.tensor([0.0, 0.0, 9.81], device=env.device).repeat(env.num_envs, 1)
-    
-    grav_force = total_mass[:, None] * gravity_vec * gravity_comp * curriculum_factor.unsqueeze(-1)
-    
-    # 6. Apply Total Force
-    total_force = spring_force + grav_force
-    
-    # Create force tensor for all bodies (num_envs, num_bodies, 3)
-    forces = torch.zeros(env.num_envs, asset.num_bodies, 3, device=env.device)
-    forces[:, body_idx, :] = total_force
-    
-    # Apply to simulation (set buffer for next step)
-    # Using write_data_to_sim pattern or direct physx call
-    # Note: external forces are usually cleared every step by the physics engine unless persistent, 
-    # but Isaac Lab's `set_external_force_and_torque` sets the buffer that is applied.
-    asset.set_external_force_and_torque(forces=forces)
+    asset: Articulation = env.scene[asset_name]
+    command = env.command_manager.get_term(command_name)
+    anchor_idx = command.robot_anchor_body_index
+
+    # Reference anchor state (world frame, includes env origins)
+    ref_pos_w = command.anchor_pos_w          # (num_envs, 3)
+    ref_vel_w = command.anchor_lin_vel_w      # (num_envs, 3)
+    ref_quat_w = command.anchor_quat_w        # (num_envs, 4)
+
+    # Current robot anchor state (world frame)
+    cur_pos_w = asset.data.body_pos_w[:, anchor_idx, :]      # (num_envs, 3)
+    cur_vel_w = asset.data.body_lin_vel_w[:, anchor_idx, :]   # (num_envs, 3)
+    cur_quat_w = asset.data.body_quat_w[:, anchor_idx, :]    # (num_envs, 4)
+
+    # Position and velocity errors
+    pos_error = ref_pos_w - cur_pos_w   # (num_envs, 3)
+    # vel_error = ref_vel_w - cur_vel_w   # (num_envs, 3)
+
+    # Per-axis weighted spring force
+    weights = torch.tensor(axis_weights, device=env.device)  # (3,)
+    # spring_force = weights * stiffness * pos_error + damping * vel_error  # (num_envs, 3)
+    spring_force = weights * stiffness * pos_error  # (num_envs, 3)
+
+    # Angular spring torque: Kp_ang * axis_angle_error(ref_quat, cur_quat)
+    quat_error = quat_mul(ref_quat_w, quat_inv(cur_quat_w))  # (num_envs, 4)
+    ang_error = axis_angle_from_quat(quat_error)              # (num_envs, 3)
+    spring_torque = weights * ang_stiffness * ang_error        # (num_envs, 3)
+
+    # Gravity compensation
+    # total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
+    # grav_force = torch.zeros_like(spring_force)
+    # grav_force[:, 2] = total_mass * 9.81 * gravity_comp
+
+    # Total force & torque, scaled by curriculum
+    # total_force = (spring_force + grav_force) * curriculum_factor
+    total_force = spring_force * curriculum_factor
+    total_torque = spring_torque * curriculum_factor
+
+    if env_ids is not None:
+        # Apply only to specified envs
+        forces = total_force[env_ids].unsqueeze(1)   # (len(env_ids), 1, 3)
+        torques = total_torque[env_ids].unsqueeze(1)  # (len(env_ids), 1, 3)
+        asset.set_external_force_and_torque(
+            forces, torques, body_ids=[anchor_idx], env_ids=env_ids, is_global=True
+        )
+    else:
+        # Apply to all envs
+        forces = total_force.unsqueeze(1)   # (num_envs, 1, 3)
+        torques = total_torque.unsqueeze(1)  # (num_envs, 1, 3)
+        asset.set_external_force_and_torque(
+            forces, torques, body_ids=[anchor_idx], is_global=True
+        )
+
+    return total_force
+

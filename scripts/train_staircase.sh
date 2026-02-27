@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=20G
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:rtxpro6000:1
 #SBATCH --job-name=staircase
 
 set -euo pipefail
@@ -18,11 +18,11 @@ export WANDB_ENTITY=robot-mcrobotface
 
 python scripts/rsl_rl/train.py \
    --task=Staircase-G1-v0 \
-   --registry_name robot-mcrobotface/csv_to_npz/staircase:latest \
+   --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_v0 \
+   --run_name staircase_v3 \
    --video \
    --video_length 500 \
    --video_interval 10000

@@ -10,7 +10,7 @@ from ...staircase_env import StaircaseEnv
 
 gym.register(
     id="Staircase-G1-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.staircase.staircase_env:StaircaseEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": G1StaircaseEnvCfg,

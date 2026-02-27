@@ -410,7 +410,7 @@ def main():
         scene_cfg.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Staircase",
             spawn=sim_utils.UrdfFileCfg(
-                asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.74_0.74_0.74.urdf",
+                asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
                 fix_base=True,
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(

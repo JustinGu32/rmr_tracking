@@ -305,12 +305,12 @@ class MotionCommand(CommandTerm):
             * (self.motion.time_step_total - 1)
         ).long()
 
-        self.time_steps[env_ids] = torch.clamp(
-            self.time_steps[env_ids],
-            min=self.min_sample_idx,
-            max=min(self.max_sample_idx, self.motion.time_step_total - 1),
-        )
-        # self.time_steps[env_ids] = 0
+        # self.time_steps[env_ids] = torch.clamp(
+        #     self.time_steps[env_ids],
+        #     min=self.min_sample_idx,
+        #     max=min(self.max_sample_idx, self.motion.time_step_total - 1),
+        # )
+        self.time_steps[env_ids] = 0
         
         # Can add stride sampling to avoid near identical samples
         
