@@ -12,6 +12,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.assets import RigidObjectCfg
@@ -23,7 +24,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-import whole_body_tracking.tasks.chair_step.mdp as mdp
+import whole_body_tracking.tasks.staircase.mdp as mdp
 
 # Recommended Implementation
 from isaaclab.terrains.config import TerrainGeneratorCfg
@@ -56,12 +57,11 @@ VELOCITY_RANGE_Null = {
     "yaw": (-0.0, 0.0),
 }
 
-# Box definition
-BOX_POSITION = [-0.1, 0.50, 0.15]  # Guess and checked in sim
-BOX_SIZE = [0.4572, 0.4064, 0.3]  # 18" x 16" x 16.33" (Derived from OBJ)
+# Staircase definition
+STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
 
 @configclass
-class MySceneCfg(InteractiveSceneCfg):
+class StaircaseSceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
 
     # ground terrain
@@ -95,23 +95,20 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
-    # Box object
-    box = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Box",
-        spawn=sim_utils.CuboidCfg(
-            size=BOX_SIZE,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True), # added
-            collision_props=sim_utils.CollisionPropertiesCfg(), # Enable collision
-            mass_props=sim_utils.MassPropertiesCfg(mass=10.0),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=0.7,
-                dynamic_friction=0.5,
+    # Staircase object
+    staircase = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/Staircase",
+        spawn=sim_utils.UrdfFileCfg(
+            asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
+            fix_base=True,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
             ),
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POSITION),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POSITION),
     )
 
     # Depth camera mounted on the D435 link (head)
@@ -162,7 +159,7 @@ class CommandsCfg:
         },
         velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
-        box_position=BOX_POSITION,
+        box_position=STAIRCASE_POSITION,
     )
 
 # Null pose
@@ -270,6 +267,8 @@ class EventCfg:
     #     params={"velocity_range": VELOCITY_RANGE},
     # )
 
+    # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
+
 
 @configclass
 class RewardsCfg:
@@ -353,8 +352,12 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    anchor_pos = DoneTerm(
+    anchor_pos_z = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
+        params={"command_name": "motion", "threshold": 0.25},
+    )
+    anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
     anchor_ori = DoneTerm(
@@ -380,7 +383,20 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    pass
+    # Adaptive difficulty scheduler based on anchor tracking error
+    adr = CurrTerm(
+        func=mdp.AssistiveForceScheduler,
+        params={
+            "command_name": "motion",
+            "pos_tol": 0.15,
+            "init_difficulty": 0,
+            "min_difficulty": 0,
+            "max_difficulty": 10,
+        },
+    )
+
+    # (assistive_force_adr removed — spring force is now scaled directly
+    #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
 
 
 ##
@@ -389,11 +405,11 @@ class CurriculumCfg:
 
 
 @configclass
-class ChairStepEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the chair step environment."""
+class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the staircase environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -403,6 +419,19 @@ class ChairStepEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
+
+    # Spring-based assistive force configuration
+    # Applied every step in _pre_physics_step, scaled by curriculum factor
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 300.0,       # Spring stiffness (Kp)
+        "damping": 20.0,          # Velocity damping (Kd)
+        "gravity_comp": 0.8,      # Fraction of gravity to compensate
+        "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
+        "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
+    }
+
 
     def __post_init__(self):
         """Post initialization."""

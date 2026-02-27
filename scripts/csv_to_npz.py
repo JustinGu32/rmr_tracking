@@ -31,6 +31,7 @@ parser.add_argument(
 parser.add_argument("--output_name", type=str, required=True, help="The name of the motion npz file.")
 parser.add_argument("--output_fps", type=int, default=50, help="The fps of the output motion.")
 parser.add_argument("--chair_step", action="store_true", default=False, help="Whether to visualize the chair step object.")
+parser.add_argument("--staircase", action="store_true", default=False, help="Whether to visualize the staircase object.")
 
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
@@ -265,6 +266,8 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
     robot = scene["robot"]
     if args_cli.chair_step:
         object = scene["object"]
+    elif args_cli.staircase:
+        object = scene["object"]
     robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
 
     # ------- data logger -------------------------------------------------------
@@ -314,7 +317,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
         joint_pos[:, robot_joint_indexes] = motion_dof_pos
         joint_vel[:, robot_joint_indexes] = motion_dof_vel
         robot.write_joint_state_to_sim(joint_pos, joint_vel)
-        if args_cli.chair_step:
+        if args_cli.chair_step or args_cli.staircase:
              if object_state is not None:
                   obj_pos, obj_rot, _, _ = object_state
                   # set object state
@@ -402,6 +405,21 @@ def main():
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.8, 0.2, 0.2)),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(pos=BOX_POSITION),
+        )
+    elif args_cli.staircase:
+        scene_cfg.object = RigidObjectCfg(
+            prim_path="{ENV_REGEX_NS}/Staircase",
+            spawn=sim_utils.UrdfFileCfg(
+                asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
+                fix_base=True,
+                collision_props=sim_utils.CollisionPropertiesCfg(),
+                joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                    gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
+                ),
+                articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
+                rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            ),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
         )
     scene = InteractiveScene(scene_cfg)
     # Play the simulator
