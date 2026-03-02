@@ -65,20 +65,24 @@ class StaircaseEnv(ManagerBasedRLEnv):
             return
 
         # Get curriculum factor: 1.0 = full assist, 0.0 = no assist
+        # Quadratic scaling: (1 - difficulty_frac)^2
+        # This makes the force decay faster and become truly negligible at high ADR,
+        # eliminating the cliff that occurs with linear scaling + hard cutoff.
         curriculum_factor = 1.0
         curriculum_cfg = self.cfg.curriculum
         if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
             adr_scheduler = curriculum_cfg.adr.func
             if hasattr(adr_scheduler, "difficulty_frac"):
-                curriculum_factor = 1.0 - float(adr_scheduler.difficulty_frac)
+                linear_factor = 1.0 - float(adr_scheduler.difficulty_frac)
+                curriculum_factor = linear_factor ** 2  # quadratic decay
 
         self._last_spring_force = mdp.apply_spring_force(
             env=self,
             command_name=spring_cfg["command_name"],
             asset_name="robot",
             stiffness=spring_cfg["stiffness"],
+            ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
             damping=spring_cfg["damping"],
-            gravity_comp=spring_cfg["gravity_comp"],
             axis_weights=tuple(spring_cfg["axis_weights"]),
             curriculum_factor=curriculum_factor,
         )
@@ -105,3 +109,8 @@ class StaircaseEnv(ManagerBasedRLEnv):
         if self._last_spring_force is not None:
             force_mag = torch.norm(self._last_spring_force, dim=-1).mean()
             self.extras["log"]["curriculum/spring_force_magnitude"] = float(force_mag)
+            # Per-axis: XY (horizontal) and Z (vertical)
+            force_xy = torch.norm(self._last_spring_force[:, :2], dim=-1).mean()
+            force_z = self._last_spring_force[:, 2].abs().mean()
+            self.extras["log"]["curriculum/spring_force_xy"] = float(force_xy)
+            self.extras["log"]["curriculum/spring_force_z"] = float(force_z)

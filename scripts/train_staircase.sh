@@ -22,7 +22,7 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_v3 \
+   --run_name staircase_quadratic_adr_high_stiff_z4 \
    --video \
    --video_length 500 \
    --video_interval 10000

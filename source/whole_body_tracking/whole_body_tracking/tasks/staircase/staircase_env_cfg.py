@@ -425,11 +425,11 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     spring_force_cfg: dict = {
         "command_name": "motion",
         "body_names": ["torso_link"],
-        "stiffness": 300.0,       # Spring stiffness (Kp)
-        "damping": 20.0,          # Velocity damping (Kd)
-        "gravity_comp": 0.8,      # Fraction of gravity to compensate
-        "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
-        "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
+        "stiffness": 600.0,        # Spring stiffness (Kp)
+        "ang_stiffness": 20.0,      # Angular spring stiffness (Kp_ang) — disabled for stability testing
+        "damping": 20.0,           # Velocity damping (Kd)
+        "axis_weights": [0.5, 0.5, 4.0],  # [x, y, z] — effective: 200, 200, 800 N/m
+        "cutoff_steps": 240000,    # ~10k training iterations (× 24 steps_per_env)
     }
 
 

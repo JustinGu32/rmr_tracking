@@ -163,6 +163,7 @@ def main(env_cfg, agent_cfg):
                     command_name=spring_cfg["command_name"],
                     asset_name="robot",
                     stiffness=spring_cfg["stiffness"],
+                    ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
                     damping=spring_cfg["damping"],
                     gravity_comp=spring_cfg["gravity_comp"],
                     axis_weights=tuple(spring_cfg["axis_weights"]),
