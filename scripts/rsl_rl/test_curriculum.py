@@ -165,8 +165,8 @@ def main(env_cfg, agent_cfg):
                     stiffness=spring_cfg["stiffness"],
                     ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
                     damping=spring_cfg["damping"],
-                    gravity_comp=spring_cfg["gravity_comp"],
                     axis_weights=tuple(spring_cfg["axis_weights"]),
+                    gravity_comp=1.0,
                     curriculum_factor=1.0,
                     env_ids=torch.tensor([0], device=base_env.device),
                 )
