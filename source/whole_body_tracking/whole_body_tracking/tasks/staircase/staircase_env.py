@@ -44,16 +44,19 @@ class StaircaseEnv(ManagerBasedRLEnv):
             staircase.write_root_state_to_sim(root_state)
 
     def _apply_spring_force(self):
-        """Apply PD spring force toward the reference motion, scaled by curriculum."""
+        """Apply PD spring force toward the reference motion, scaled by linear ramp."""
         spring_cfg = getattr(self.cfg, "spring_force_cfg", None)
         if spring_cfg is None:
             return
 
-        # Hard cutoff: after cutoff_steps, disable spring force permanently
-        cutoff_steps = spring_cfg.get("cutoff_steps", None)
-        if cutoff_steps is not None and self.common_step_counter >= cutoff_steps:
+        # Linear ramp: curriculum_factor goes from 1.0 → 0.0 over ramp_steps
+        ramp_steps = spring_cfg.get("ramp_steps", 480000)  # default: 20k iters × 24
+        t = min(self.common_step_counter / ramp_steps, 1.0)
+        curriculum_factor = 1.0 - t  # linear decay, no discontinuity
+
+        if curriculum_factor <= 0.0:
+            # Force fully ramped down — clear any persistent force buffer
             if self._spring_force_active:
-                # Clear persistent force buffer once
                 self._spring_force_active = False
                 self._last_spring_force = None
                 robot = self.scene["robot"]
@@ -63,18 +66,6 @@ class StaircaseEnv(ManagerBasedRLEnv):
                     zero_force, zero_force, body_ids=[anchor_idx], is_global=True
                 )
             return
-
-        # Get curriculum factor: 1.0 = full assist, 0.0 = no assist
-        # Quadratic scaling: (1 - difficulty_frac)^2
-        # This makes the force decay faster and become truly negligible at high ADR,
-        # eliminating the cliff that occurs with linear scaling + hard cutoff.
-        curriculum_factor = 1.0
-        curriculum_cfg = self.cfg.curriculum
-        if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
-            adr_scheduler = curriculum_cfg.adr.func
-            if hasattr(adr_scheduler, "difficulty_frac"):
-                linear_factor = 1.0 - float(adr_scheduler.difficulty_frac)
-                curriculum_factor = linear_factor ** 2  # quadratic decay
 
         self._last_spring_force = mdp.apply_spring_force(
             env=self,
@@ -91,7 +82,16 @@ class StaircaseEnv(ManagerBasedRLEnv):
     def _reset_idx(self, env_ids: Sequence[int]):
         super()._reset_idx(env_ids)
 
-        # Log curriculum metrics (same pattern as other managers in _reset_idx)
+        # Log linear ramp curriculum metrics
+        spring_cfg = getattr(self.cfg, "spring_force_cfg", None)
+        if spring_cfg is not None:
+            ramp_steps = spring_cfg.get("ramp_steps", 480000)
+            t = min(self.common_step_counter / ramp_steps, 1.0)
+            curriculum_factor = 1.0 - t
+            self.extras["log"]["curriculum/curriculum_factor"] = float(curriculum_factor)
+            self.extras["log"]["curriculum/ramp_progress"] = float(t)
+
+        # Log ADR metrics if still active (informational only)
         curriculum_cfg = self.cfg.curriculum
         if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
             adr_scheduler = curriculum_cfg.adr.func
@@ -99,9 +99,6 @@ class StaircaseEnv(ManagerBasedRLEnv):
                 self.extras["log"]["curriculum/difficulty_frac"] = float(adr_scheduler.difficulty_frac)
                 self.extras["log"]["curriculum/mean_difficulty"] = float(
                     adr_scheduler.current_adr_difficulties.mean()
-                )
-                self.extras["log"]["curriculum/curriculum_factor"] = float(
-                    1.0 - adr_scheduler.difficulty_frac
                 )
 
         # Log spring force info

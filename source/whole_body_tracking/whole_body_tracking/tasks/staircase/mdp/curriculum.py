@@ -97,6 +97,7 @@ def apply_spring_force(
     ang_stiffness: float = 50.0,
     damping: float = 20.0,
     axis_weights: tuple[float, float, float] = (0.3, 0.3, 5.0),
+    gravity_comp: float = 0.0,
     curriculum_factor: float = 1.0,
     env_ids: torch.Tensor | None = None,
 ):
@@ -138,26 +139,26 @@ def apply_spring_force(
 
     # Position and velocity errors
     pos_error = ref_pos_w - cur_pos_w   # (num_envs, 3)
-    # vel_error = ref_vel_w - cur_vel_w   # (num_envs, 3)
+    vel_error = ref_vel_w - cur_vel_w   # (num_envs, 3)
 
     # Per-axis weighted spring force
     weights = torch.tensor(axis_weights, device=env.device)  # (3,)
-    # spring_force = weights * stiffness * pos_error + damping * vel_error  # (num_envs, 3)
-    spring_force = weights * stiffness * pos_error  # (num_envs, 3)
+    spring_force = weights * stiffness * pos_error + damping * vel_error  # (num_envs, 3)
+    # spring_force = weights * stiffness * pos_error  # (num_envs, 3)
 
     # Angular spring torque: Kp_ang * axis_angle_error(ref_quat, cur_quat)
     quat_error = quat_mul(ref_quat_w, quat_inv(cur_quat_w))  # (num_envs, 4)
     ang_error = axis_angle_from_quat(quat_error)              # (num_envs, 3)
     spring_torque = weights * ang_stiffness * ang_error        # (num_envs, 3)
 
-    # Gravity compensation
-    # total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
-    # grav_force = torch.zeros_like(spring_force)
-    # grav_force[:, 2] = total_mass * 9.81 * gravity_comp
+    # Gravity compensation (opt-in, default off for training)
+    grav_force = torch.zeros_like(spring_force)
+    if gravity_comp > 0.0:
+        total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
+        grav_force[:, 2] = total_mass * 9.81 * gravity_comp
 
     # Total force & torque, scaled by curriculum
-    # total_force = (spring_force + grav_force) * curriculum_factor
-    total_force = spring_force * curriculum_factor
+    total_force = (spring_force + grav_force) * curriculum_factor
     total_torque = spring_torque * curriculum_factor
 
     if env_ids is not None:

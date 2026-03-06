@@ -383,17 +383,16 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    # Adaptive difficulty scheduler based on anchor tracking error
-    adr = CurrTerm(
-        func=mdp.AssistiveForceScheduler,
-        params={
-            "command_name": "motion",
-            "pos_tol": 0.15,
-            "init_difficulty": 0,
-            "min_difficulty": 0,
-            "max_difficulty": 10,
-        },
-    )
+    # adr = CurrTerm(
+    #     func=mdp.AssistiveForceScheduler,
+    #     params={
+    #         "command_name": "motion",
+    #         "pos_tol": 0.15,
+    #         "init_difficulty": 0,
+    #         "min_difficulty": 0,
+    #         "max_difficulty": 10,
+    #     },
+    # )
 
     # (assistive_force_adr removed — spring force is now scaled directly
     #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
@@ -420,18 +419,15 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # Spring-based assistive force configuration
-    # Applied every step in _pre_physics_step, scaled by curriculum factor
     spring_force_cfg: dict = {
         "command_name": "motion",
         "body_names": ["torso_link"],
-        "stiffness": 600.0,        # Spring stiffness (Kp)
-        "ang_stiffness": 20.0,      # Angular spring stiffness (Kp_ang) — disabled for stability testing
-        "damping": 20.0,           # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 4.0],  # [x, y, z] — effective: 200, 200, 800 N/m
-        "cutoff_steps": 240000,    # ~10k training iterations (× 24 steps_per_env)
+        "stiffness": 250.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
+        "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
+        "damping": 15.0,            # Velocity damping (Kd)
+        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
+        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
     }
-
 
     def __post_init__(self):
         """Post initialization."""
