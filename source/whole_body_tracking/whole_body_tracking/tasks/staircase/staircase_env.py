@@ -24,7 +24,7 @@ class StaircaseEnv(ManagerBasedRLEnv):
         # --- Apply spring force BEFORE physics stepping ---
         # We set the force buffer here; it gets flushed to simulation
         # inside super().step() via scene.write_data_to_sim() each substep.
-        self._apply_spring_force()
+        # self._apply_spring_force()
         self._update_staircase_pose()
 
         return super().step(action)
@@ -85,6 +85,13 @@ class StaircaseEnv(ManagerBasedRLEnv):
 
 
     def _reset_idx(self, env_ids: Sequence[int]):
+        # # Debug: print which terminations fired
+        # for i, term_name in enumerate(self.termination_manager._term_names):
+        #     fired = self.termination_manager._term_dones[env_ids, i]
+        #     if fired.any():
+        #         count = fired.sum().item()
+        #         print(f"  Termination '{term_name}' fired in {int(count)}/{len(env_ids)} envs")
+
         super()._reset_idx(env_ids)
 
         # Log curriculum metrics (same pattern as other managers in _reset_idx)

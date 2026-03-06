@@ -16,7 +16,7 @@ python scripts/rsl_rl/collect_dataset.py \
     --video
 
 python scripts/rsl_rl/collect_dataset.py \
-    --task Chair-Step-G1-v0   \
+    --task Chair-Step-G1-Collect-v0   \
     --num_envs 2 \
     --wandb_path robot-mcrobotface/chair_step/q4yp8tny \
     --num_steps_collect 60 \
@@ -267,6 +267,11 @@ def main():
     hip_noise = .3
     knee_noise = .3 
     ankle_noise =.5
+
+    # noise_level = .15
+    # hip_noise = .15
+    # knee_noise = .15
+    # ankle_noise =.2
 
     hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
     knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]

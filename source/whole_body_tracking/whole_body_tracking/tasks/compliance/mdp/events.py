@@ -7,6 +7,7 @@ import isaaclab.utils.math as math_utils
 from isaaclab.assets import Articulation
 from isaaclab.envs.mdp.events import _randomize_prop_by_op
 from isaaclab.managers import SceneEntityCfg
+from whole_body_tracking.tasks.compliance.mdp.commands import MotionCommand, MultiMotionCommand
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
@@ -93,6 +94,7 @@ def randomize_rigid_body_com(
 
     # Set the new coms
     asset.root_physx_view.set_coms(coms, env_ids)
+
 
 def set_environment_collision_groups(
     env: ManagerBasedEnv,

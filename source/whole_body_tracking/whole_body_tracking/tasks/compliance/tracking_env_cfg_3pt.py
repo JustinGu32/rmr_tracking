@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -12,10 +11,8 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
-from isaaclab.assets import RigidObjectCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
 
 ##
@@ -24,16 +21,7 @@ from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-import whole_body_tracking.tasks.staircase.mdp as mdp
-
-# Recommended Implementation
-from isaaclab.terrains.config import TerrainGeneratorCfg
-import isaaclab.terrains.config as terrain_gen
-from isaaclab.terrains import HfPyramidStairsTerrainCfg
-from isaaclab.terrains.trimesh.mesh_terrains_cfg import MeshPyramidStairsTerrainCfg
-
-# from whole_body_tracking.tasks.chair_step.custom_terrains import LinearStairsTerrainCfg
-
+import whole_body_tracking.tasks.compliance.mdp as mdp
 
 ##
 # Scene definition
@@ -48,20 +36,9 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
-VELOCITY_RANGE_Null = {
-    "x": (-0.0, 0.0),
-    "y": (-0.0, 0.0),
-    "z": (-0.0, 0.0),
-    "roll": (-0.0, 0.0),
-    "pitch": (-0.0, 0.0),
-    "yaw": (-0.0, 0.0),
-}
-
-# Staircase definition
-STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
 
 @configclass
-class StaircaseSceneCfg(InteractiveSceneCfg):
+class MySceneCfg(InteractiveSceneCfg):
     """Configuration for the terrain scene with a legged robot."""
 
     # ground terrain
@@ -95,47 +72,6 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
-    # Staircase object
-    staircase = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Staircase",
-        spawn=sim_utils.UrdfFileCfg(
-            asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
-            usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
-            fix_base=True,
-            collision_props=sim_utils.CollisionPropertiesCfg(),
-            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
-                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
-            ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
-        ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POSITION),
-    )
-
-    # Depth camera mounted on the D435 link (head)
-    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    depth_camera: TiledCameraCfg | None = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-                convention="ros",
-            ),
-        )
-        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-        else None
-    )
-
 
 ##
 # MDP settings
@@ -146,9 +82,25 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    motion = mdp.MotionCommandCfg(
+    # motion = mdp.MotionCommandCfg(
+    #     asset_name="robot",
+    #     resampling_time_range=(1.0e9, 1.0e9),
+    #     debug_vis=True,
+    #     pose_range={
+    #         "x": (-0.05, 0.05),
+    #         "y": (-0.05, 0.05),
+    #         "z": (-0.01, 0.01),
+    #         "roll": (-0.1, 0.1),
+    #         "pitch": (-0.1, 0.1),
+    #         "yaw": (-0.2, 0.2),
+    #     },
+    #     velocity_range=VELOCITY_RANGE,
+    #     joint_position_range=(-0.1, 0.1),
+    # )
+    motion = mdp.MultiMotionCommandCfg(
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
+        adaptive_uniform_ratio=0.25,
         debug_vis=True,
         pose_range={
             "x": (-0.05, 0.05),
@@ -160,18 +112,7 @@ class CommandsCfg:
         },
         velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
-        box_position=STAIRCASE_POSITION,
     )
-
-# Null pose
-# pose_range={
-#     "x": (-0.0, 0.0),
-#     "y": (-0.0, 0.0),
-#     "z": (-0.0, 0.0),
-#     "roll": (-0.0, 0.0),
-#     "pitch": (-0.0, 0.0),
-#     "yaw": (-0.0, 0.0),
-# }
 
 @configclass
 class ActionsCfg:
@@ -189,14 +130,19 @@ class ObservationsCfg:
         """Observations for policy group."""
 
         # observation terms (order preserved)
-        command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        #command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        command = ObsTerm(func=mdp.command_lower_body, params={"command_name":"motion"})
+        vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_target, params={"command_name":"motion"})
+        vr_3point_orn = ObsTerm(func=mdp.vr_3point_local_orn_target, params={"command_name":"motion"})
+        #command = ObsTerm(func=mdp.command_lookahead, params={"command_name":"motion"})
         # motion_anchor_pos_b = ObsTerm(
-        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.2, n_max=0.2)
         # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-1.0, n_max=1.0))
+        gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
@@ -261,14 +207,22 @@ class EventCfg:
     )
 
     # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 3.0),
+        params={"velocity_range": VELOCITY_RANGE},
+    )
 
-    # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
+    # force push robot
+    force_push_robot = EventTerm(
+        func=mdp.force_based_push,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={"force_duration": [50,100],
+                "command_name": "motion",
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
+    )
 
 
 @configclass
@@ -324,28 +278,6 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
-    # shin_box_collision = RewTerm(
-    #     func=mdp.shin_box_collision_penalty,
-    #     weight=-2.0,  # Strong negative weight
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=["left_knee_link", "right_knee_link"],
-    #         ),
-    #         "box_position": BOX_POSITION,
-    #         "box_size": BOX_SIZE,
-    #         "contact_threshold": 5.0,  # 5N of force
-    #     },
-    # )
-    # feet_on_box = RewTerm(
-    #     func=mdp.feet_above_box_reward,
-    #     weight=0.5,
-    #     params={
-    #         "box_position": BOX_POSITION,
-    #         "box_size": BOX_SIZE,
-    #         "height_threshold": 0.0,  # 0cm clearance (just be above box top)
-    #     },
-    # )
 
 
 @configclass
@@ -353,12 +285,9 @@ class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    anchor_pos_z = DoneTerm(
+    motion_ended = DoneTerm(func=mdp.motion_ended, params={"command_name": "motion"})
+    anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
-        params={"command_name": "motion", "threshold": 0.25},
-    )
-    anchor_pos_xy = DoneTerm(
-        func=mdp.bad_anchor_pos_x_y_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
     anchor_ori = DoneTerm(
@@ -384,20 +313,7 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    # Adaptive difficulty scheduler based on anchor tracking error
-    adr = CurrTerm(
-        func=mdp.AssistiveForceScheduler,
-        params={
-            "command_name": "motion",
-            "pos_tol": 0.15,
-            "init_difficulty": 0,
-            "min_difficulty": 0,
-            "max_difficulty": 10,
-        },
-    )
-
-    # (assistive_force_adr removed — spring force is now scaled directly
-    #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
+    pass
 
 
 ##
@@ -406,11 +322,11 @@ class CurriculumCfg:
 
 
 @configclass
-class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the staircase environment."""
+class Tracking3ptEnvCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
-    scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: MySceneCfg = MySceneCfg(num_envs=8192, env_spacing=2.5)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -421,23 +337,10 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # Spring-based assistive force configuration
-    # Applied every step in _pre_physics_step, scaled by curriculum factor
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 300.0,       # Spring stiffness (Kp)
-        "damping": 20.0,          # Velocity damping (Kd)
-        "gravity_comp": 0.8,      # Fraction of gravity to compensate
-        "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
-        "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
-    }
-
-
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005

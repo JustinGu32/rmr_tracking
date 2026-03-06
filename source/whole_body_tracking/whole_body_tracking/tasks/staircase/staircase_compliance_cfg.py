@@ -58,7 +58,10 @@ VELOCITY_RANGE_Null = {
 }
 
 # Staircase definition
+# STAIRCASE_POSITION = [0.0, -0.30, -0.05] # 0.0, -0.01 to avoid contact with the step
+# STAIRCASE_POSITION = [0.0, -0.025, -0.01] # 0.0, -0.01 to avoid contact with the step
 STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
+
 
 @configclass
 class StaircaseSceneCfg(InteractiveSceneCfg):
@@ -101,7 +104,7 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UrdfFileCfg(
             asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
             usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
-            fix_base=True,
+            fix_base=False,
             collision_props=sim_utils.CollisionPropertiesCfg(),
             joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
                 gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
@@ -196,6 +199,9 @@ class ObservationsCfg:
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
+        # CHIP compliance observations
+        compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
         # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
@@ -213,6 +219,10 @@ class ObservationsCfg:
         motion_anchor_ori_b = ObsTerm(func=mdp.motion_anchor_ori_b, params={"command_name": "motion"})
         body_pos = ObsTerm(func=mdp.robot_body_pos_b, params={"command_name": "motion"})
         body_ori = ObsTerm(func=mdp.robot_body_ori_b, params={"command_name": "motion"})
+        # CHIP compliance observations (critic gets both compliant and non-compliant targets)
+        compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        vr_3point_pos_compliant = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
+        vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_target, params={"command_name": "motion"})
         base_lin_vel = ObsTerm(func=mdp.base_lin_vel)
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
@@ -261,12 +271,38 @@ class EventCfg:
     )
 
     # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 3.0),
+        params={"velocity_range": VELOCITY_RANGE},
+    )
+
+    # CHIP force push: apply randomized external forces to ankle/pelvis bodies
+    force_push_robot = EventTerm(
+        func=mdp.force_based_push,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "force_duration": [50, 100],
+            "command_name": "motion",
+            "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"]),
+        },
+    )
+
+    # CHIP compliance: randomize end-effector stiffness
+    change_compliance = EventTerm(
+        func=mdp.change_compliance,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={
+            "command_name": "motion",
+            "compliance_lb": [0.0, 0.0, 0.0],
+            "compliance_ub": [0.02, 0.02, 0.01],
+            "compliance_duration": (100, 200),
+            "start_steps": 0,
+        },
+    )
 
     # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
 
@@ -384,20 +420,22 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    # Adaptive difficulty scheduler based on anchor tracking error
-    adr = CurrTerm(
-        func=mdp.AssistiveForceScheduler,
-        params={
-            "command_name": "motion",
-            "pos_tol": 0.15,
-            "init_difficulty": 0,
-            "min_difficulty": 0,
-            "max_difficulty": 10,
-        },
-    )
+    pass
 
-    # (assistive_force_adr removed — spring force is now scaled directly
-    #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
+    # # Adaptive difficulty scheduler based on anchor tracking error
+    # adr = CurrTerm(
+    #     func=mdp.AssistiveForceScheduler,
+    #     params={
+    #         "command_name": "motion",
+    #         "pos_tol": 0.15,
+    #         "init_difficulty": 0,
+    #         "min_difficulty": 0,
+    #         "max_difficulty": 10,
+    #     },
+    # )
+
+    # # (assistive_force_adr removed — spring force is now scaled directly
+    # #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
 
 
 ##
@@ -406,8 +444,8 @@ class CurriculumCfg:
 
 
 @configclass
-class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the staircase environment."""
+class StaircaseComplianceCfg(ManagerBasedRLEnvCfg):
+    """Configuration for the staircase environment with CHIP compliance."""
 
     # Scene settings
     scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
@@ -421,17 +459,17 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # Spring-based assistive force configuration
-    # Applied every step in _pre_physics_step, scaled by curriculum factor
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 300.0,       # Spring stiffness (Kp)
-        "damping": 20.0,          # Velocity damping (Kd)
-        "gravity_comp": 0.8,      # Fraction of gravity to compensate
-        "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
-        "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
-    }
+    # # Spring-based assistive force configuration
+    # # Applied every step in _pre_physics_step, scaled by curriculum factor
+    # spring_force_cfg: dict = {
+    #     "command_name": "motion",
+    #     "body_names": ["torso_link"],
+    #     "stiffness": 300.0,       # Spring stiffness (Kp)
+    #     "damping": 20.0,          # Velocity damping (Kd)
+    #     "gravity_comp": 0.8,      # Fraction of gravity to compensate
+    #     "axis_weights": [0.3, 0.3, 1.0],  # [x, y, z] — Z-emphasis for stair climbing
+    #     "cutoff_steps": 10000,    # Hard cutoff: stop spring force after this many total steps
+    # }
 
 
     def __post_init__(self):

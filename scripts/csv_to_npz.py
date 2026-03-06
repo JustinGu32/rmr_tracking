@@ -10,6 +10,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import numpy as np
 
 from isaaclab.app import AppLauncher
@@ -287,6 +288,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
     file_saved = False
     # --------------------------------------------------------------------------
 
+    root_states = robot.data.default_root_state.clone()
+    pos_lookat = root_states[0, :3].cpu().numpy()
+    sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
+
     # Simulation loop
     while simulation_app.is_running():
         (
@@ -330,9 +335,6 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
         sim.render()  # We don't want physic (sim.step())
         scene.update(sim.get_physics_dt())
 
-        pos_lookat = root_states[0, :3].cpu().numpy()
-        sim.set_camera_view(pos_lookat + np.array([2.0, 2.0, 0.5]), pos_lookat)
-
         if not file_saved:
             log["joint_pos"].append(robot.data.joint_pos[0, :].cpu().numpy().copy())
             log["joint_vel"].append(robot.data.joint_vel[0, :].cpu().numpy().copy())
@@ -367,7 +369,10 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
                 else:
                      del log[k]
 
-            np.savez("/tmp/motion.npz", **log)
+            tmp_dir = os.path.expanduser("~/tmp")
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_motion_path = os.path.join(tmp_dir, "motion.npz")
+            np.savez(tmp_motion_path, **log)
 
             import wandb
 
@@ -375,7 +380,7 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
             run = wandb.init(project="csv_to_npz", name=COLLECTION)
             print(f"[INFO]: Logging motion to wandb: {COLLECTION}")
             REGISTRY = "motions"
-            logged_artifact = run.log_artifact(artifact_or_path="/tmp/motion.npz", name=COLLECTION, type=REGISTRY)
+            logged_artifact = run.log_artifact(artifact_or_path=tmp_motion_path, name=COLLECTION, type=REGISTRY)
             run.link_artifact(artifact=logged_artifact, target_path=f"wandb-registry-{REGISTRY}/{COLLECTION}")
             print(f"[INFO]: Motion saved to wandb registry: {REGISTRY}/{COLLECTION}")
 
@@ -411,6 +416,7 @@ def main():
             prim_path="{ENV_REGEX_NS}/Staircase",
             spawn=sim_utils.UrdfFileCfg(
                 asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
+                usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
                 fix_base=True,
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -419,7 +425,7 @@ def main():
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             ),
-            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 0.0)),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.025, 0.0)),
         )
     scene = InteractiveScene(scene_cfg)
     # Play the simulator

@@ -77,7 +77,7 @@ VELOCITY_RANGE_COLLECT2= {
 }
 
 # Box definition
-BOX_POSITION = [-0.1, 0.50, 0.15]  # Guess and checked in sim
+BOX_POSITION = [-0.05, 0.50, 0.15]  # Guess and checked in sim
 # Z was originally 0.6, but TODO: check why height is being doubled when loading motion
 BOX_SIZE = [0.4572, 0.4064, 0.3]  # 18" x 16" x 16.33" (Derived from OBJ)
 
@@ -319,12 +319,12 @@ class EventCfg:
     #     interval_range_s=(1.0, 3.0),
     #     params={"velocity_range": VELOCITY_RANGE},
     # )
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(0, .1),
-        params={"velocity_range": VELOCITY_RANGE_COLLECT2},
-    )
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(0, .1),
+    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    # )
 
 
 @configclass

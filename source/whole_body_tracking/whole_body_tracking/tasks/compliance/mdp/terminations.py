@@ -11,18 +11,35 @@ if TYPE_CHECKING:
 from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 
-from whole_body_tracking.tasks.tracking.mdp.commands import MotionCommand
-from whole_body_tracking.tasks.tracking.mdp.rewards import _get_body_indexes
+from whole_body_tracking.tasks.compliance.mdp.commands import MotionCommand
+from whole_body_tracking.tasks.compliance.mdp.rewards import _get_body_indexes
+
+
+def motion_ended(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Terminate when the current motion has ended (reached the last frame).
+
+    Works with MotionCommand (single motion) and MultiMotionCommand/BindedMultiMotionCommand
+    (multi-motion with per-env motion_ids). Uses time_steps and motion bounds from the command.
+
+    Note: Terminations are checked before command_manager.compute(), so we check for
+    time_steps >= motion_end - 1 (on last frame) since the increment happens in compute().
+    """
+    command = env.command_manager.get_term(command_name)
+    time_steps = command.time_steps
+
+    if hasattr(command, "motion_ids") and hasattr(command.motion, "motion_end_idx"):
+        # MultiMotionCommand or BindedMultiMotionCommand: per-env motion end
+        motion_end = command.motion.motion_end_idx[command.motion_ids]
+        return time_steps >= motion_end - 1
+    else:
+        # MotionCommand: single motion
+        return time_steps >= command.motion.time_step_total - 1
 
 
 def bad_anchor_pos(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     return torch.norm(command.anchor_pos_w - command.robot_anchor_pos_w, dim=1) > threshold
 
-
-def bad_anchor_pos_x_y_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
-    command: MotionCommand = env.command_manager.get_term(command_name)
-    return torch.norm(command.anchor_pos_w[:, 0:2] - command.robot_anchor_pos_w[:, 0:2], dim=1) > threshold
 
 def bad_anchor_pos_z_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
@@ -38,6 +55,7 @@ def bad_anchor_ori(
     motion_projected_gravity_b = math_utils.quat_apply_inverse(command.anchor_quat_w, asset.data.GRAVITY_VEC_W)
 
     robot_projected_gravity_b = math_utils.quat_apply_inverse(command.robot_anchor_quat_w, asset.data.GRAVITY_VEC_W)
+
     return (motion_projected_gravity_b[:, 2] - robot_projected_gravity_b[:, 2]).abs() > threshold
 
 

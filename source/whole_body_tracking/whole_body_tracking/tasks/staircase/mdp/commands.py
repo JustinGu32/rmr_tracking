@@ -128,6 +128,42 @@ class MotionCommand(CommandTerm):
         # Store box position
         self.box_position = torch.tensor(self.cfg.box_position, device=self.device)
 
+        # VR 3-point related (ankle + pelvis tracking points)
+        self.vr_3point_body_indices = [self.robot.body_names.index(name) for name in self.cfg.vr_3point_body]
+        self.vr_3point_body_indices_motion = [self.cfg.body_names.index(name) for name in self.cfg.vr_3point_body]
+        self.vr_3point_body_offsets = torch.tensor(self.cfg.vr_3point_body_offset, dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+
+        self.down_dir = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+
+        # Force push related (CHIP)
+        self.force_update_frequency = self.cfg.force_update_frequency
+        self.max_force = self.cfg.max_force
+        self.num_bodies = len(self.cfg.body_names)
+        self.body_force_dir_buf = torch.randn(self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device, requires_grad=False)
+        self.body_force_dir_buf /= torch.norm(self.body_force_dir_buf, dim=-1, keepdim=True)
+        self.body_force_magnitude_buf = torch.rand(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
+
+        self.force_push_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.force_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.force_config_init = False
+        self.force_push_ids = self.robot.find_bodies(self.cfg.force_push_body, preserve_order=True)[0]
+        self.non_force_push_ids_rel = []
+        self.force_push_ids_rel = []
+        for i, idx in enumerate(self.body_indexes.tolist()):
+            if idx not in self.force_push_ids:
+                self.non_force_push_ids_rel.append(i)
+            else:
+                self.force_push_ids_rel.append(i)
+
+        self.force_push_body_offsets = torch.tensor(self.cfg.force_push_body_offset, dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+        self.last_force_applied = torch.zeros(self.num_envs, len(self.force_push_ids), 3, dtype=torch.float, device=self.device, requires_grad=False)
+
+        # Compliance related (CHIP)
+        self.compliance_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.compliance_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.eef_stiffness_buf = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.device)
+        self.compliance_config_init = False
+
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_lin_vel"] = torch.zeros(self.num_envs, device=self.device)
@@ -139,6 +175,7 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["force_applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
@@ -237,7 +274,7 @@ class MotionCommand(CommandTerm):
     @property
     def object_pos_w(self) -> torch.Tensor:
         """Position of the object in world frame."""
-        return self.motion.object_pos_w[self.time_steps] + self._env.scene.env_origins
+        return self.motion.object_pos_w[self.time_steps] + self._env.scene.env_origins + self.box_position
 
     @property
     def object_quat_w(self) -> torch.Tensor:
@@ -253,6 +290,26 @@ class MotionCommand(CommandTerm):
     def object_ang_vel_w(self) -> torch.Tensor:
         """Angular velocity of the object in world frame."""
         return self.motion.object_ang_vel_w[self.time_steps]
+
+    # VR 3-point properties (CHIP compliance tracking points)
+    @property
+    def vr_3point_body_quat_w(self) -> torch.Tensor:
+        return self.motion.body_quat_w[self.time_steps][:, self.vr_3point_body_indices_motion]
+
+    @property
+    def vr_3point_body_pos_w(self) -> torch.Tensor:
+        return self.motion.body_pos_w[self.time_steps][:, self.vr_3point_body_indices_motion] \
+            + quat_apply(self.vr_3point_body_quat_w, self.vr_3point_body_offsets) \
+            + self._env.scene.env_origins[:, None, :]
+
+    @property
+    def robot_vr_3point_quat_w(self) -> torch.Tensor:
+        return self.robot.data.body_quat_w[:, self.vr_3point_body_indices]
+
+    @property
+    def robot_vr_3point_pos_w(self) -> torch.Tensor:
+        return self.robot.data.body_pos_w[:, self.vr_3point_body_indices] \
+            + quat_apply(self.robot_vr_3point_quat_w, self.vr_3point_body_offsets)
 
     def _update_metrics(self):
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
@@ -276,6 +333,9 @@ class MotionCommand(CommandTerm):
 
         self.metrics["error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
+
+        self.metrics["force_applied"] = torch.norm(self.last_force_applied, dim=-1).mean(dim=-1)
+
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
         episode_failed = self._env.termination_manager.terminated[env_ids]
@@ -305,12 +365,15 @@ class MotionCommand(CommandTerm):
             * (self.motion.time_step_total - 1)
         ).long()
 
-        # self.time_steps[env_ids] = torch.clamp(
-        #     self.time_steps[env_ids],
-        #     min=self.min_sample_idx,
-        #     max=min(self.max_sample_idx, self.motion.time_step_total - 1),
-        # )
-        self.time_steps[env_ids] = 0
+        if random.uniform(0.0, 1.0) < 0.1:
+            self.time_steps[env_ids] = 0
+        else:
+            self.time_steps[env_ids] = torch.clamp(
+                self.time_steps[env_ids],
+                min=self.min_sample_idx,
+                max=min(self.max_sample_idx, self.motion.time_step_total - 1),
+            )
+        # self.time_steps[env_ids] = 0
         
         # Can add stride sampling to avoid near identical samples
         
@@ -476,3 +539,14 @@ class MotionCommandCfg(CommandTermCfg):
     min_sample_idx: int = 0
     max_sample_idx: int = 10**9
     steps_collect: int = 1
+
+    # CHIP force push config
+    force_update_frequency: int = 100
+    max_force: float = 20.0
+
+    force_push_body: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
+    force_push_body_offset: list[list[float]] = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+
+    # CHIP VR 3-point tracking config
+    vr_3point_body: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
+    vr_3point_body_offset: list[list[float]] = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]

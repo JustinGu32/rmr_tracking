@@ -5,17 +5,28 @@ from typing import TYPE_CHECKING
 
 from isaaclab.utils.math import matrix_from_quat, subtract_frame_transforms, quat_apply, quat_inv, quat_mul
 
-from whole_body_tracking.tasks.staircase.mdp.commands import MotionCommand
+from whole_body_tracking.tasks.compliance.mdp.commands import MotionCommand, MultiMotionCommand
 
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
+def command_lookahead(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    command = MultiMotionCommand = env.command_manager.get_term(command_name)
+    return command.command_lookahead
+
+def command_lower_body(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.command_lower_body
 
 def robot_anchor_ori_w(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     mat = matrix_from_quat(command.robot_anchor_quat_w)
     return mat[..., :2].reshape(mat.shape[0], -1)
 
+def projected_gravity(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    grav_dir = quat_apply(quat_inv(command.robot_anchor_quat_w), command.down_dir)
+    return grav_dir.view(env.num_envs, -1)
 
 def robot_anchor_lin_vel_w(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
@@ -82,7 +93,6 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
     mat = matrix_from_quat(ori)
     return mat[..., :2].reshape(mat.shape[0], -1)
 
-
 def vr_3point_local_target(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     ref_root_quat = command.anchor_quat_w.view(env.num_envs, 1, 4).repeat(1, len(command.cfg.vr_3point_body), 1)
@@ -96,7 +106,6 @@ def vr_3point_local_compliant_target(env: ManagerBasedEnv, command_name: str) ->
     root_quat = command.robot_anchor_quat_w[:,None,:].repeat(1, len(command.cfg.vr_3point_body),1)
     ext_force_disp_l = quat_apply(quat_inv(root_quat), ext_force_disp_w)
     ref_root_quat = command.anchor_quat_w.view(env.num_envs, 1, 4).repeat(1, len(command.cfg.vr_3point_body), 1)
-    import ipdb; ipdb.set_trace()
     ref_3point_diff = command.vr_3point_body_pos_w - command.anchor_pos_w[:,None,:]
     ref_3point_root = quat_apply(quat_inv(ref_root_quat), ref_3point_diff)
     ref_3point_root -= ext_force_disp_l

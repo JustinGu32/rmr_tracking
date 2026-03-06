@@ -3,7 +3,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=150G
+#SBATCH --mem=80G
 #SBATCH --gres=gpu:rtxpro6000:1 
 #SBATCH --job-name=takara_obstacle_collect
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
