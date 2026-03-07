@@ -96,7 +96,6 @@ def vr_3point_local_compliant_target(env: ManagerBasedEnv, command_name: str) ->
     root_quat = command.robot_anchor_quat_w[:,None,:].repeat(1, len(command.cfg.vr_3point_body),1)
     ext_force_disp_l = quat_apply(quat_inv(root_quat), ext_force_disp_w)
     ref_root_quat = command.anchor_quat_w.view(env.num_envs, 1, 4).repeat(1, len(command.cfg.vr_3point_body), 1)
-    import ipdb; ipdb.set_trace()
     ref_3point_diff = command.vr_3point_body_pos_w - command.anchor_pos_w[:,None,:]
     ref_3point_root = quat_apply(quat_inv(ref_root_quat), ref_3point_diff)
     ref_3point_root -= ext_force_disp_l

@@ -34,7 +34,7 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_compliance_v0 \
+   --run_name staircase_compliance_v1 \
    --video \
    --video_length 500 \
    --video_interval 10000

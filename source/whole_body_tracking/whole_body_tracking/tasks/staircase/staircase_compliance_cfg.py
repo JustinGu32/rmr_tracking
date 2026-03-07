@@ -58,9 +58,7 @@ VELOCITY_RANGE_Null = {
 }
 
 # Staircase definition
-# STAIRCASE_POSITION = [0.0, -0.30, -0.05] # 0.0, -0.01 to avoid contact with the step
-# STAIRCASE_POSITION = [0.0, -0.025, -0.01] # 0.0, -0.01 to avoid contact with the step
-STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
+STAIRCASE_POSITION = [0.0, 0.0, 0.0]
 
 
 @configclass
