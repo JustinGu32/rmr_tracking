@@ -44,16 +44,19 @@ class StaircaseEnv(ManagerBasedRLEnv):
             staircase.write_root_state_to_sim(root_state)
 
     def _apply_spring_force(self):
-        """Apply PD spring force toward the reference motion, scaled by curriculum."""
+        """Apply PD spring force toward the reference motion, scaled by linear ramp."""
         spring_cfg = getattr(self.cfg, "spring_force_cfg", None)
         if spring_cfg is None:
             return
 
-        # Hard cutoff: after cutoff_steps, disable spring force permanently
-        cutoff_steps = spring_cfg.get("cutoff_steps", None)
-        if cutoff_steps is not None and self.common_step_counter >= cutoff_steps:
+        # Linear ramp: curriculum_factor goes from 1.0 → 0.0 over ramp_steps
+        ramp_steps = spring_cfg.get("ramp_steps", 480000)  # default: 20k iters × 24
+        t = min(self.common_step_counter / ramp_steps, 1.0)
+        curriculum_factor = 1.0 - t  # linear decay, no discontinuity
+
+        if curriculum_factor <= 0.0:
+            # Force fully ramped down — clear any persistent force buffer
             if self._spring_force_active:
-                # Clear persistent force buffer once
                 self._spring_force_active = False
                 self._last_spring_force = None
                 robot = self.scene["robot"]
@@ -64,21 +67,13 @@ class StaircaseEnv(ManagerBasedRLEnv):
                 )
             return
 
-        # Get curriculum factor: 1.0 = full assist, 0.0 = no assist
-        curriculum_factor = 1.0
-        curriculum_cfg = self.cfg.curriculum
-        if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
-            adr_scheduler = curriculum_cfg.adr.func
-            if hasattr(adr_scheduler, "difficulty_frac"):
-                curriculum_factor = 1.0 - float(adr_scheduler.difficulty_frac)
-
         self._last_spring_force = mdp.apply_spring_force(
             env=self,
             command_name=spring_cfg["command_name"],
             asset_name="robot",
             stiffness=spring_cfg["stiffness"],
+            ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
             damping=spring_cfg["damping"],
-            gravity_comp=spring_cfg["gravity_comp"],
             axis_weights=tuple(spring_cfg["axis_weights"]),
             curriculum_factor=curriculum_factor,
         )
@@ -94,7 +89,16 @@ class StaircaseEnv(ManagerBasedRLEnv):
 
         super()._reset_idx(env_ids)
 
-        # Log curriculum metrics (same pattern as other managers in _reset_idx)
+        # Log linear ramp curriculum metrics
+        spring_cfg = getattr(self.cfg, "spring_force_cfg", None)
+        if spring_cfg is not None:
+            ramp_steps = spring_cfg.get("ramp_steps", 480000)
+            t = min(self.common_step_counter / ramp_steps, 1.0)
+            curriculum_factor = 1.0 - t
+            self.extras["log"]["curriculum/curriculum_factor"] = float(curriculum_factor)
+            self.extras["log"]["curriculum/ramp_progress"] = float(t)
+
+        # Log ADR metrics if still active (informational only)
         curriculum_cfg = self.cfg.curriculum
         if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
             adr_scheduler = curriculum_cfg.adr.func
@@ -103,12 +107,14 @@ class StaircaseEnv(ManagerBasedRLEnv):
                 self.extras["log"]["curriculum/mean_difficulty"] = float(
                     adr_scheduler.current_adr_difficulties.mean()
                 )
-                self.extras["log"]["curriculum/curriculum_factor"] = float(
-                    1.0 - adr_scheduler.difficulty_frac
-                )
 
         # Log spring force info
         self.extras["log"]["curriculum/spring_force_active"] = float(self._spring_force_active)
         if self._last_spring_force is not None:
             force_mag = torch.norm(self._last_spring_force, dim=-1).mean()
             self.extras["log"]["curriculum/spring_force_magnitude"] = float(force_mag)
+            # Per-axis: XY (horizontal) and Z (vertical)
+            force_xy = torch.norm(self._last_spring_force[:, :2], dim=-1).mean()
+            force_z = self._last_spring_force[:, 2].abs().mean()
+            self.extras["log"]["curriculum/spring_force_xy"] = float(force_xy)
+            self.extras["log"]["curriculum/spring_force_z"] = float(force_z)

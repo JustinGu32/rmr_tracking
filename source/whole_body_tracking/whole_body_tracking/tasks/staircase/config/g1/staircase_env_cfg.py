@@ -107,3 +107,33 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.commands.motion.max_sample_idx = 0
 
         
+
+
+@configclass
+class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
+    """G1 robot configuration for staircase."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.scene.robot = G1_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions.joint_pos.scale = G1_ACTION_SCALE
+        self.commands.motion.anchor_body_name = "pelvis"
+        self.commands.motion.body_names = [
+            "pelvis",
+            "left_hip_roll_link",
+            "left_knee_link",
+            "left_ankle_roll_link",
+            "right_hip_roll_link",
+            "right_knee_link",
+            "right_ankle_roll_link",
+            "torso_link",
+            "left_shoulder_roll_link",
+            "left_elbow_link",
+            "left_wrist_yaw_link",
+            "right_shoulder_roll_link",
+            "right_elbow_link",
+            "right_wrist_yaw_link",
+        ]
+
+        self.spring_force_cfg = None

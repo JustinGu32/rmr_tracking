@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=20G
-#SBATCH --gres=gpu:rtxpro6000:1
+#SBATCH --gres=gpu:rtxpro6000:2
 #SBATCH --job-name=staircase
 
 set -euo pipefail
@@ -22,7 +22,7 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_v3 \
+   --run_name staircase_s200_a10_z1.2_nodamp \
    --video \
    --video_length 500 \
    --video_interval 10000
