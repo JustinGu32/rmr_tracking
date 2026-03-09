@@ -261,12 +261,12 @@ class EventCfg:
     )
 
     # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 3.0),
+        params={"velocity_range": VELOCITY_RANGE},
+    )
 
     # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
 
@@ -357,10 +357,10 @@ class TerminationsCfg:
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
-    anchor_pos_xy = DoneTerm(
-        func=mdp.bad_anchor_pos_x_y_only,
-        params={"command_name": "motion", "threshold": 0.25},
-    )
+    # anchor_pos_xy = DoneTerm(
+    #     func=mdp.bad_anchor_pos_x_y_only,
+    #     params={"command_name": "motion", "threshold": 0.25},
+    # )
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
         params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},
@@ -420,15 +420,16 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 250.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
-        "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
-        "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
-        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
-    }
+    # spring_force_cfg: dict = {
+    #     "command_name": "motion",
+    #     "body_names": ["torso_link"],
+    #     "stiffness": 250.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
+    #     "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
+    #     "damping": 15.0,            # Velocity damping (Kd)
+    #     "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
+    #     "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
+    # }
+    spring_force_cfg = None
 
     def __post_init__(self):
         """Post initialization."""

@@ -24,10 +24,25 @@ class StaircaseEnv(ManagerBasedRLEnv):
         # --- Apply spring force BEFORE physics stepping ---
         # We set the force buffer here; it gets flushed to simulation
         # inside super().step() via scene.write_data_to_sim() each substep.
-        # self._apply_spring_force()
+        self._apply_spring_force()
         self._update_staircase_pose()
 
-        return super().step(action)
+        # return super().step(action)
+        result = super().step(action)
+
+        # Log ground reaction forces for feet
+        contact = self.scene["contact_forces"]
+        forces = contact.data.net_forces_w  # (num_envs, num_bodies, 3)
+        body_names = contact.body_names
+        left_idx = body_names.index("left_ankle_roll_link")
+        right_idx = body_names.index("right_ankle_roll_link")
+        self.extras["log"]["contact/left_foot_force"] = float(torch.norm(forces[:, left_idx], dim=-1).mean())
+        self.extras["log"]["contact/right_foot_force"] = float(torch.norm(forces[:, right_idx], dim=-1).mean())
+        self.extras["log"]["contact/total_foot_force"] = float(
+            (torch.norm(forces[:, left_idx], dim=-1) + torch.norm(forces[:, right_idx], dim=-1)).mean()
+        )
+
+        return result
 
     def _update_staircase_pose(self):
         """Sync staircase rigid body pose with the motion command's object state."""

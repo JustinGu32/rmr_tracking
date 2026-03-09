@@ -1,6 +1,7 @@
 from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import whole_body_tracking.tasks.staircase.mdp as mdp
@@ -100,11 +101,27 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         super().__post_init__()
         self.events.push_robot = None
         self.events.force_push_robot = None
-        self.events.change_compliance = None
         self.terminations.anchor_pos_xy = None
-        self.episode_length_s = 15.0
+        self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
+        self.spring_force_cfg = None
+
+        # self.events.change_compliance = None
+        self.events.change_compliance = EventTerm(
+            func=mdp.change_compliance,
+            mode="interval",
+            interval_range_s=(0.02, 0.02),
+            params={
+                "command_name": "motion",
+                "compliance_lb": [0.05, 0.05, 0.05],
+                "compliance_ub": [0.05, 0.05, 0.05],
+                "compliance_duration": (1, 2),
+                "start_steps": 0,
+            }
+        )
+        
+
 
         
 
@@ -137,3 +154,6 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
         ]
 
         self.spring_force_cfg = None
+        self.episode_length_s = 20.0
+        self.commands.motion.min_sample_idx = 0
+        self.commands.motion.max_sample_idx = 0
