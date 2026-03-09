@@ -87,10 +87,16 @@ def main(env_cfg, agent_cfg):
     # Disable the curriculum scheduler so the force stays constant
     # (we manually control curriculum_factor via env override below)
     env_cfg.curriculum.adr = None
+    env_cfg.curriculum.spring_force_adr = None
 
-    # Disable the built-in spring force so we can manually control per-env
-    spring_cfg = env_cfg.spring_force_cfg.copy()
-    env_cfg.spring_force_cfg = None
+    # Extract spring force params from the event config before disabling it
+    spring_params = dict(env_cfg.events.assistive_spring_force.params)
+    # Override ang_stiffness for testing (default 20.0 is too low to keep pelvis upright)
+    spring_params["ang_stiffness"] = 150.0
+    print(f"[INFO] Spring force params (ang_stiffness bumped): {spring_params}")
+
+    # Disable the built-in spring force event so we can manually control per-env
+    env_cfg.events.assistive_spring_force = None
 
     # ------------------------------------------------------------------
     # 4. Create environment
@@ -122,7 +128,7 @@ def main(env_cfg, agent_cfg):
     print("  Env 0 (left) : FULL spring force  -> should TRACK reference")
     print("  Env 1 (right): ZERO spring force  -> should FALL")
     print("  Actions      : ZERO (default-pose PD target)")
-    print("  Spring cfg   :", spring_cfg)
+    print("  Spring params:", spring_params)
     print("=" * 60 + "\n")
 
     # ------------------------------------------------------------------
@@ -160,12 +166,12 @@ def main(env_cfg, agent_cfg):
                 # Apply spring force only to env 0
                 total_force = apply_spring_force(
                     env=base_env,
-                    command_name=spring_cfg["command_name"],
-                    asset_name="robot",
-                    stiffness=spring_cfg["stiffness"],
-                    ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
-                    damping=spring_cfg["damping"],
-                    axis_weights=tuple(spring_cfg["axis_weights"]),
+                    command_name=spring_params["command_name"],
+                    asset_name=spring_params["asset_name"],
+                    stiffness=spring_params["stiffness"],
+                    ang_stiffness=spring_params.get("ang_stiffness", 100.0),
+                    damping=spring_params["damping"],
+                    axis_weights=tuple(spring_params["axis_weights"]),
                     gravity_comp=1.0,
                     curriculum_factor=1.0,
                     env_ids=torch.tensor([0], device=base_env.device),

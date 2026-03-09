@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -35,6 +36,10 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# Auto-detect distributed training (torchrun sets LOCAL_RANK)
+if "LOCAL_RANK" in os.environ:
+    args_cli.distributed = True
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -229,7 +234,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
-    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    # In multi-GPU mode, AppLauncher sets device based on LOCAL_RANK — don't override it
+    if "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        correct_device = f"cuda:{local_rank}"
+        env_cfg.sim.device = correct_device
+        agent_cfg.device = correct_device
+    else:
+        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
     # load the motion file from the wandb registry
     registry_name = args_cli.registry_name
