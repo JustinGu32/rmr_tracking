@@ -26,44 +26,56 @@ def main():
     keys = list(data.keys())
     print(f"Loading data from {args.input_npz}. Keys: {keys}")
     
-    # Extract Root Position
-    if 'root_pos' in data:
-         root_pos = data['root_pos']
-    elif 'body_pos_w' in data:
-         # Root is at index 1
-         root_pos = data['body_pos_w'][:, 1, :].copy()
+    # ---------- Fast path: qpos-only format (e.g. MuJoCo npz) ----------
+    # qpos layout: root_pos(3) | root_quat_wxyz(4) | joint_angles(N)
+    has_separate_root = 'root_pos' in data or 'body_pos_w' in data
+    if 'qpos' in data and not has_separate_root:
+         qpos = data['qpos']
+         root_pos = qpos[:, :3]
+         root_rot_wxyz = qpos[:, 3:7]
+         # csv_to_npz expects [x, y, z, w] in CSV
+         root_rot_xyzw = root_rot_wxyz[:, [1, 2, 3, 0]]
+         final_joint_pos = qpos[:, 7:]
+         print(f"Using qpos fast-path: {qpos.shape[0]} frames, "
+               f"root(7) + {final_joint_pos.shape[1]} joints")
     else:
-         print("Error: Could not find root position data.")
-         return
+         # ---------- Standard path: separate keys ----------
+         # Extract Root Position
+         if 'root_pos' in data:
+              root_pos = data['root_pos']
+         elif 'body_pos_w' in data:
+              # Root is at index 1
+              root_pos = data['body_pos_w'][:, 1, :].copy()
+         else:
+              print("Error: Could not find root position data.")
+              return
 
-    # Extract Root Rotation
-    if 'root_rot' in data:
-         root_rot = data['root_rot']
-
-
-    elif 'body_quat_w' in data:
-         # Root is at index 1
-         root_rot = data['body_quat_w'][:, 1, :]
-    else:
-         print("Error: Could not find root rotation data.")
-         return
+         # Extract Root Rotation
+         if 'root_rot' in data:
+              root_rot = data['root_rot']
+         elif 'body_quat_w' in data:
+              # Root is at index 1
+              root_rot = data['body_quat_w'][:, 1, :]
+         else:
+              print("Error: Could not find root rotation data.")
+              return
+              
+         # Ensure rotation is w, x, y, z (Isaac convention)
+         # csv_to_npz expects [x, y, z, w] in CSV and converts to [w, x, y, z]
+         # So we should save as [x, y, z, w]
          
-    # Ensure rotation is w, x, y, z (Isaac convention)
-    # csv_to_npz expects [x, y, z, w] in CSV and converts to [w, x, y, z]
-    # So we should save as [x, y, z, w]
-    
-    # Assuming standard Isaac [w, x, y, z]
-    root_rot_xyzw = root_rot[:, [1, 2, 3, 0]]
-    
-    # Extract Joint Positions
-    if 'joint_pos' in data:
-        joint_pos = data['joint_pos']
-    elif 'qpos' in data:
-         print("Warning: Using 'qpos', verify if this includes root.")
-         joint_pos = data['qpos']
-    else:
-         print("Error: Could not find joint position data.")
-         return
+         # Assuming standard Isaac [w, x, y, z]
+         root_rot_xyzw = root_rot[:, [1, 2, 3, 0]]
+         
+         # Extract Joint Positions
+         if 'joint_pos' in data:
+             joint_pos = data['joint_pos']
+         elif 'qpos' in data:
+              print("Warning: Using 'qpos', verify if this includes root.")
+              joint_pos = data['qpos']
+         else:
+              print("Error: Could not find joint position data.")
+              return
 
     # Target Joint Names (G1)
     target_joints = [
@@ -97,43 +109,45 @@ def main():
             "right_wrist_pitch_joint",
             "right_wrist_yaw_joint"
     ]
-    
-    final_joint_pos = joint_pos
-    
-    # If joint_names available, reorder/filter
-    if 'joint_names' in data:
-        src_names = data['joint_names']
-        if isinstance(src_names, np.ndarray):
-             src_names = src_names.tolist()
-        
-        # Clean names
-        src_names = [n.decode('utf-8') if isinstance(n, bytes) else str(n) for n in src_names]
-        
-        print(f"Found {len(src_names)} joints in NPZ.")
-        
-        indices = []
-        missing = []
-        for name in target_joints:
-             if name in src_names:
-                  indices.append(src_names.index(name))
+    # Joint reordering (only for the standard path where joint_pos was set separately)
+    if not ('qpos' in data and not has_separate_root):
+         final_joint_pos = joint_pos
+         
+         # Check joint_names or dof_names for reordering
+         names_key = 'joint_names' if 'joint_names' in data else ('dof_names' if 'dof_names' in data else None)
+         if names_key is not None:
+             src_names = data[names_key]
+             if isinstance(src_names, np.ndarray):
+                  src_names = src_names.tolist()
+             
+             # Clean names
+             src_names = [n.decode('utf-8') if isinstance(n, bytes) else str(n) for n in src_names]
+             
+             print(f"Found {len(src_names)} joints in NPZ.")
+             
+             indices = []
+             missing = []
+             for name in target_joints:
+                  if name in src_names:
+                       indices.append(src_names.index(name))
+                  else:
+                       # Try relaxed matching?
+                       missing.append(name)
+             
+             if missing:
+                  print(f"Warning: {len(missing)} target joints not found in NPZ: {missing}")
+                  if len(indices) == 0:
+                       print("No matching joints found. Using raw joint_pos (truncated if needed).")
+                  else:
+                       final_joint_pos = joint_pos[:, indices]
              else:
-                  # Try relaxed matching?
-                  missing.append(name)
-        
-        if missing:
-             print(f"Warning: {len(missing)} target joints not found in NPZ: {missing}")
-             if len(indices) == 0:
-                  print("No matching joints found. Using raw joint_pos (truncated if needed).")
-             else:
+                  print("All target joints matched successfully.")
                   final_joint_pos = joint_pos[:, indices]
-        else:
-             print("All target joints matched successfully.")
-             final_joint_pos = joint_pos[:, indices]
-    else:
-         print("Warning: 'joint_names' not found in NPZ. Utilizing raw joint_pos assumes correct order.")
-         # Check size
-         if joint_pos.shape[1] != len(target_joints):
-              print(f"Warning: Size mismatch! NPZ has {joint_pos.shape[1]}, target has {len(target_joints)}.")
+         else:
+              print("Warning: 'joint_names'/'dof_names' not found in NPZ. Utilizing raw joint_pos assumes correct order.")
+              # Check size
+              if joint_pos.shape[1] != len(target_joints):
+                   print(f"Warning: Size mismatch! NPZ has {joint_pos.shape[1]}, target has {len(target_joints)}.")
 
     # Combine: [pos(3), rot(4), joints(N)]
     # Shape: (Frames, 7 + N)

@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=50G
 #SBATCH --gres=gpu:rtxpro6000:1 
-#SBATCH --job-name=staircase_compliance
+#SBATCH --job-name=chip_tango
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
 
@@ -18,23 +18,71 @@ conda activate env_isaaclab
 
 # python scripts/rsl_rl/train.py \
 #   --task=Tracking-Flat-G1-v0 \
-#   --registry_name justingu-stanford-university-org/wandb-registry-motions/takara_walk_isaac:v0 \
+#   --registry_name justingu-stanford-university-org/wandb-registry-Motions/waltz_full:latest \
 #   --headless \
 #   --logger wandb \
-#   --log_project_name takara_walk_isaac \
-#   --run_name takara_walk_isaac_npz \
+#   --log_project_name waltz_full \
+#   --run_name waltz_full_base \
 #   --video \
 #   --video_length 500 \
 #   --video_interval 10000
 
+# python scripts/rsl_rl/train.py \
+#   --task=Tracking-Flat-G1-Compliance-v0 \
+#   --registry_name justingu-stanford-university-org/wandb-registry-Motions/waltz_full:latest \
+#   --headless \
+#   --logger wandb \
+#   --log_project_name waltz_full \
+#   --run_name waltz_full_compliance \
+#   --video \
+#   --video_length 500 \
+#   --video_interval 10000
+
+# python scripts/rsl_rl/train.py \
+#   --task=Tracking-Flat-G1-v0 \
+#   --registry_name justingu-stanford-university-org/wandb-registry-Motions/tango:latest \
+#   --headless \
+#   --logger wandb \
+#   --log_project_name tango \
+#   --run_name tango_base \
+#   --video \
+#   --video_length 500 \
+#   --video_interval 10000
 
 python scripts/rsl_rl/train.py \
-   --task=Staircase-G1-Compliance-v0 \
-   --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \
-   --headless \
-   --logger wandb \
-   --log_project_name staircase \
-   --run_name staircase_compliance_v1 \
-   --video \
-   --video_length 500 \
-   --video_interval 10000
+  --task=Tracking-Flat-G1-Compliance-v0 \
+  --registry_name justingu-stanford-university-org/wandb-registry-Motions/tango:latest \
+  --headless \
+  --logger wandb \
+  --log_project_name tango \
+  --run_name tango_compliance \
+  --video \
+  --video_length 500 \
+  --video_interval 10000
+
+
+
+
+
+# python scripts/rsl_rl/train.py \
+#    --task=Staircase-G1-Compliance-v0 \
+#    --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name staircase \
+#    --run_name staircase_compliance_v1 \
+#    --video \
+#    --video_length 500 \
+#    --video_interval 10000
+
+
+# python scripts/rsl_rl/train.py \
+#    --task=Staircase-G1-v0 \
+#    --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name staircase \
+#    --run_name staircase_baseline \
+#    --video \
+#    --video_length 500 \
+#    --video_interval 10000

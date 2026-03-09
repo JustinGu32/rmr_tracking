@@ -46,7 +46,9 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         # Disable spring force and curriculum
         self.spring_force_cfg = None
         self.curriculum.adr = None
-        self.episode_length_s = 15.0
+        self.episode_length_s = 20.0
+        self.commands.motion.min_sample_idx = 0
+        self.commands.motion.max_sample_idx = 0
 
 @configclass
 class G1StaircaseComplianceCfg(StaircaseComplianceCfg):

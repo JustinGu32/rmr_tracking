@@ -8,7 +8,7 @@ from . import agents, flat_env_cfg
 
 gym.register(
     id="Tracking-Flat-Walk-Humanoid-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.HumanoidFlatWalkEnvCfg,
@@ -18,7 +18,7 @@ gym.register(
 
 gym.register(
     id="Tracking-Flat-WalkBack-Humanoid-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.HumanoidFlatWalkBackEnvCfg,
@@ -28,7 +28,7 @@ gym.register(
 
 gym.register(
     id="Tracking-Flat-WalkBox-Humanoid-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.HumanoidFlatWalkBoxEnvCfg,

@@ -122,7 +122,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap for video recording
     if args_cli.video:
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play"),
+            "video_folder": os.path.join(log_dir, "videos", "play", wandb_run.id if args_cli.wandb_path else "local"),
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,

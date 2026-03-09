@@ -5,6 +5,11 @@ from whole_body_tracking.tasks.tracking.config.g1.agents.rsl_rl_ppo_cfg import L
 from whole_body_tracking.tasks.tracking.tracking_env_cfg import TrackingEnvCfg
 from whole_body_tracking.tasks.tracking.tracking_collect_cfg import TrackingCollectCfg
 from whole_body_tracking.tasks.tracking.tracking_sim_cfg import TrackingSimCfg
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
+import whole_body_tracking.tasks.tracking.mdp as mdp
 
 @configclass
 class G1FlatEnvCfg(TrackingEnvCfg):
@@ -30,6 +35,11 @@ class G1FlatEnvCfg(TrackingEnvCfg):
             "right_elbow_link",
             "right_wrist_yaw_link",
         ]
+
+        self.terminations.bad_anchor_pos_xy = DoneTerm(
+            func=mdp.bad_anchor_pos_x_y_only,
+            params={"command_name": "motion", "threshold": 0.3},
+        )
 
 
 @configclass
@@ -99,3 +109,48 @@ class G1FlatSimEnvCfg(TrackingSimCfg):
             "right_elbow_link",
             "right_wrist_yaw_link",
         ]
+
+
+@configclass
+class G1FlatComplianceEnvCfg(G1FlatEnvCfg):
+    """G1 flat tracking with CHIP feet compliance."""
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Compliance observations
+        self.observations.policy.compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        self.observations.policy.vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
+        self.observations.critic.compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        self.observations.critic.vr_3point_pos_compliant = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
+        self.observations.critic.vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_target, params={"command_name": "motion"})
+
+        # Proprioception with history
+        self.observations.policy.gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
+        self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=4)
+        self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
+        self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=4)
+        self.observations.policy.actions = ObsTerm(func=mdp.last_action, history_length=4)
+
+        self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)
+        self.observations.critic.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, history_length=10)
+        self.observations.critic.joint_pos = ObsTerm(func=mdp.joint_pos_rel, history_length=10)
+        self.observations.critic.joint_vel = ObsTerm(func=mdp.joint_vel_rel, history_length=10)
+        self.observations.critic.actions = ObsTerm(func=mdp.last_action, history_length=10)
+
+        # CHIP compliance event
+        self.events.change_compliance = EventTerm(func=mdp.change_compliance,
+                                                  mode="interval",
+                                                  interval_range_s=(0.02, 0.02),
+                                                  params={
+                                                        "command_name": "motion",
+                                                        "compliance_lb": [0.0, 0.0, 0.0],
+                                                        "compliance_ub": [0.05, 0.05, 0.05],
+                                                        "compliance_duration": (100, 200),
+                                                        "start_steps": 0
+                                                  })
+
+        # Termination
+        self.terminations.bad_anchor_pos_xy = DoneTerm(
+            func=mdp.bad_anchor_pos_x_y_only,
+            params={"command_name": "motion", "threshold": 0.3},
+        )
