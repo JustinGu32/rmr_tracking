@@ -43,6 +43,81 @@ def _recurse(iv_elem, fv_elem, data_elem, frac):
 
 
 # ---------------------------------------------------------------------------
+# Assistive-force curriculum interpolation (modify_fn for modify_term_cfg)
+# ---------------------------------------------------------------------------
+
+# def assistive_force_interpolate_fn(
+#     env: ManagerBasedRLEnv,
+#     env_ids,
+#     data,
+#     difficulty_term_str,
+#     cutoff_steps: int = 240000,
+# ):
+#    """Interpolate curriculum_factor from 1.0 → 0.0 based on ADR difficulty,
+#    with a hard cutoff after ``cutoff_steps`` physics steps.
+
+#    Option A (active): ADR-based scheduling with hard cutoff.
+#      - Before cutoff: curriculum_factor = 1 - difficulty_frac
+#      - After cutoff:  curriculum_factor = 0  (forces fully off)
+
+#    Args:
+#        cutoff_steps: Physics step count after which forces are hard-zeroed.
+#                      Default 240000 = 10k iters × 24 steps_per_env.
+#    """
+    # Hard cutoff: force fully off after cutoff_steps
+#    if env.common_step_counter >= cutoff_steps:
+#        return 0.0
+
+    # Before cutoff: ADR-based scheduling
+#    difficulty_term: AssistiveForceScheduler = getattr(
+#        env.curriculum_manager.cfg, difficulty_term_str
+#    ).func
+#    frac = difficulty_term.difficulty_frac
+
+#    new_factor = 1.0 - frac  # full assist at difficulty 0, no assist at max
+#    return float(new_factor)
+
+
+# --- Option B (uncomment to use instead of Option A above) ---
+# Gradual ramp-to-zero safety net: if ADR hasn't fully removed forces
+# by ramp_start_steps, linearly ramp whatever remains to 0 by cutoff_steps.
+# This avoids any cliff even if ADR is slow to reach max difficulty.
+#
+def assistive_force_interpolate_fn(
+    env: ManagerBasedRLEnv,
+    env_ids,
+    data,
+    difficulty_term_str,
+    cutoff_steps: int = 240000,
+    ramp_start_steps: int = 168000,  # start safety ramp at ~7k iters (70% of cutoff)
+):
+    """ADR-based scheduling with gradual ramp-to-zero safety net.
+
+    - Before ramp_start: curriculum_factor = 1 - difficulty_frac (pure ADR)
+    - ramp_start → cutoff: linearly blend ADR factor toward 0
+    - After cutoff: curriculum_factor = 0  (forces fully off)
+    Args:
+        cutoff_steps: Physics step count after which forces are hard-zeroed.
+        ramp_start_steps: Step at which the safety ramp begins blending toward 0.
+    """
+    if env.common_step_counter >= cutoff_steps:
+        return 0.0
+
+    difficulty_term: AssistiveForceScheduler = getattr(
+        env.curriculum_manager.cfg, difficulty_term_str
+    ).func
+    frac = difficulty_term.difficulty_frac
+    adr_factor = 1.0 - frac
+
+    if env.common_step_counter >= ramp_start_steps:
+        # Safety ramp: linearly blend adr_factor → 0 over remaining window
+        ramp_progress = (env.common_step_counter - ramp_start_steps) / (cutoff_steps - ramp_start_steps)
+        adr_factor = adr_factor * (1.0 - ramp_progress)
+
+    return float(adr_factor)
+
+
+# ---------------------------------------------------------------------------
 # Adaptive difficulty scheduler (mirrors dexsuite's DifficultyScheduler)
 # ---------------------------------------------------------------------------
 
