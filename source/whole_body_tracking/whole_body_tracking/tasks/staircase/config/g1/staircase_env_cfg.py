@@ -44,8 +44,9 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         # Disable perturbations for clean playback
         self.events.push_robot = None
         # Disable spring force and curriculum
-        self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
@@ -97,7 +98,7 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
 
 @configclass
 class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
-    """G1 robot configuration for staircase with CHIP compliance."""
+    """G1 robot configuration for staircase compliance playback (no perturbations)."""
 
     def __post_init__(self):
         super().__post_init__()
@@ -107,7 +108,10 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
-        self.spring_force_cfg = None
+        # Disable spring force and curriculum
+        self.events.assistive_spring_force = None
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
 
         # self.events.change_compliance = None
         self.events.change_compliance = EventTerm(
@@ -122,7 +126,6 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
                 "start_steps": 0,
             }
         )
-        
 
 
         
@@ -155,7 +158,10 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        self.spring_force_cfg = None
+        # Disable spring force and curriculum
+        self.events.assistive_spring_force = None
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0

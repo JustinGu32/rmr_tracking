@@ -372,10 +372,10 @@ class TerminationsCfg:
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
-    # anchor_pos_xy = DoneTerm(
-    #     func=mdp.bad_anchor_pos_x_y_only,
-    #     params={"command_name": "motion", "threshold": 0.25},
-    # )
+    anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
+        params={"command_name": "motion", "threshold": 0.25},
+    )
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
         params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},
@@ -432,8 +432,12 @@ class CurriculumCfg:
 
 
 @configclass
-class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the staircase environment."""
+class StaircaseBaseCfg(ManagerBasedRLEnvCfg):
+    """Base configuration for staircase environments.
+
+    Contains the full ADR curriculum + assistive spring force event shared by
+    all staircase variants (plain and compliance).
+    """
 
     # Scene settings
     scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
@@ -446,19 +450,6 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
-
-    # (spring_force_cfg removed — spring force is now managed by the event system
-    #  with ADR-based curriculum scheduling via EventCfg.assistive_spring_force
-    #  and CurriculumCfg.spring_force_adr)
-    # spring_force_cfg: dict = {
-    #     "command_name": "motion",
-    #     "body_names": ["torso_link"],
-    #     "stiffness": 250.0,
-    #     "ang_stiffness": 10.0,
-    #     "damping": 15.0,
-    #     "axis_weights": [0.5, 0.5, 2.0],
-    #     "ramp_steps": 240000,
-    # }
 
     def __post_init__(self):
         """Post initialization."""
@@ -474,3 +465,10 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+
+@configclass
+class StaircaseEnvCfg(StaircaseBaseCfg):
+    """Configuration for the staircase environment (no compliance)."""
+
+    pass
