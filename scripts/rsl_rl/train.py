@@ -26,6 +26,9 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
+parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
+parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
+parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -36,6 +39,14 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# Export CLI flags as env vars so __post_init__ in env configs can read them
+if args_cli.curriculum:
+    os.environ["WBT_CURRICULUM"] = "1"
+if args_cli.double_step:
+    os.environ["WBT_DOUBLE_STEP"] = "1"
+if args_cli.motion_joint_pos:
+    os.environ["WBT_MOTION_JOINT_POS"] = "1"
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:

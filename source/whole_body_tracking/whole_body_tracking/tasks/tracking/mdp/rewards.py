@@ -37,7 +37,6 @@ def motion_relative_body_position_error_exp(
     error = torch.sum(
         torch.square(command.body_pos_relative_w[:, body_indexes] - command.robot_body_pos_w[:, body_indexes]), dim=-1
     )
-    # print("Body pos Reward = ", torch.exp(-error.mean(-1) / std**2), " | Error = ", error.mean(-1))
     return torch.exp(-error.mean(-1) / std**2)
 
 
@@ -61,17 +60,6 @@ def motion_global_body_linear_velocity_error_exp(
     error = torch.sum(
         torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
     )
-    # if body_names == ["left_ankle_roll_link", "right_ankle_roll_link"]:
-    #     print(
-    #         "Feet lin vel Reward = ", (torch.exp(-error.mean(-1) / std**2)).item(), 
-    #         " | Error = ", error.mean(-1).item(), 
-    #         " | reference vel = ", command.body_lin_vel_w[:, body_indexes],
-    #         " | robot vel = ", command.robot_body_lin_vel_w[:, body_indexes],
-    #         " \n"
-    #     )
-    #     import ipdb; ipdb.set_trace()
-
-    # print("Body lin vel Reward = ", torch.exp(-error.mean(-1) / std**2), " | Error = ", error.mean(-1))
     return torch.exp(-error.mean(-1) / std**2)
 
 
@@ -83,14 +71,12 @@ def motion_global_body_angular_velocity_error_exp(
     error = torch.sum(
         torch.square(command.body_ang_vel_w[:, body_indexes] - command.robot_body_ang_vel_w[:, body_indexes]), dim=-1
     )
-    # print("Body ang vel Reward = ", torch.exp(-error.mean(-1) / std**2), " | Error = ", error.mean(-1))
     return torch.exp(-error.mean(-1) / std**2)
 
 
 def motion_joint_position_error_exp(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     error = torch.mean(torch.square(command.joint_pos - command.robot_joint_pos), dim=-1)
-    # print("Joint pos Reward = ", torch.exp(-error.mean(-1) / std**2), " | Error = ", error.mean(-1), "\n")
     return torch.exp(-error.mean(-1) / std**2)
 
 
