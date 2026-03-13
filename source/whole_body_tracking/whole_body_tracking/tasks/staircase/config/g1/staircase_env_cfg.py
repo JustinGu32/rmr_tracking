@@ -50,6 +50,8 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
+        self.terminations.anchor_pos_xy = None
+
 
 @configclass
 class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
@@ -79,6 +81,7 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
         ]
 
         # CHIP: Add history to proprioception (optional but recommended)
+        self.observations.policy.gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=4)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
         self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=4)
@@ -165,3 +168,4 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
+        self.terminations.anchor_pos_xy = None

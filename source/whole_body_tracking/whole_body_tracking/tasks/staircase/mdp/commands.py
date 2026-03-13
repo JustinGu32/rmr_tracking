@@ -370,7 +370,7 @@ class MotionCommand(CommandTerm):
             min=self.min_sample_idx,
             max=min(self.max_sample_idx, self.motion.time_step_total - 1),
         )
-        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.2
+        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
         self.time_steps[env_ids[eps_mask]] = 0
         
         # Can add stride sampling to avoid near identical samples

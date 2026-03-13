@@ -83,6 +83,12 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
     return mat[..., :2].reshape(mat.shape[0], -1)
 
 
+def projected_gravity(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    grav_dir = quat_apply(quat_inv(command.robot_anchor_quat_w), command.down_dir)
+    return grav_dir.view(env.num_envs, -1)
+
+
 def vr_3point_local_target(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     ref_root_quat = command.anchor_quat_w.view(env.num_envs, 1, 4).repeat(1, len(command.cfg.vr_3point_body), 1)

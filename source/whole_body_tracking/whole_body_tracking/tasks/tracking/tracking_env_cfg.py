@@ -37,6 +37,15 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
+VELOCITY_RANGE_SOFT = {
+    "x": (-0.25, 0.25),
+    "y": (-0.25, 0.25),
+    "z": (-0.1, 0.1),
+    "roll": (-0.26, 0.26),
+    "pitch": (-0.26, 0.26),
+    "yaw": (-0.39, 0.39),
+}
+
 VELOCITY_RANGE_Null = {
     "x":  (-0.0, 0.0),
     "y":  (-0.0, 0.0),
@@ -144,6 +153,17 @@ class CommandsCfg:
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
         # Todo: define as parameter instead
+        pose_range={
+            "x": (-0.02, 0.02),
+            "y": (-0.02, 0.02),
+            "z": (-0.005, 0.005),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.1, 0.1),
+        },
+        velocity_range=VELOCITY_RANGE_SOFT,
+        joint_position_range=(-0.05, 0.05),
+
         # pose_range={
         #     "x": (-0.05, 0.05),
         #     "y": (-0.05, 0.05),
@@ -154,16 +174,18 @@ class CommandsCfg:
         # },
         # velocity_range=VELOCITY_RANGE,
         # joint_position_range=(-0.1, 0.1),
-        pose_range={
-            "x": (0.0, 0.0),
-            "y": (0.0, 0.0),
-            "z": (0.0, 0.0),
-            "roll":  (0.0, 0.0),
-            "pitch": (0.0, 0.0),
-            "yaw":   (0.0, 0.0),
-        },
-        velocity_range=VELOCITY_RANGE_Null,
-        joint_position_range=(-.1, .1),
+
+        # pose_range={
+        #     "x": (0.0, 0.0),
+        #     "y": (0.0, 0.0),
+        #     "z": (0.0, 0.0),
+        #     "roll":  (0.0, 0.0),
+        #     "pitch": (0.0, 0.0),
+        #     "yaw":   (0.0, 0.0),
+        # },
+        # velocity_range=VELOCITY_RANGE_Null,
+        # joint_position_range=(0.0, 0.0),
+        # joint_position_range=(-.1, .1),
     )
 
 
@@ -286,7 +308,7 @@ class EventCfg:
         func=mdp.push_by_setting_velocity,
         mode="interval",
         interval_range_s=(1.0, 3.0),
-        params={"velocity_range": VELOCITY_RANGE},
+        params={"velocity_range": VELOCITY_RANGE_SOFT},
     )
 
     # collect
@@ -348,6 +370,20 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
+    motion_joint_pos = RewTerm(
+        func=mdp.motion_joint_position_error_exp,
+        weight=1.0,
+        params={"command_name": "motion", "std": 0.15},
+    )
+    # double_step_penalty = RewTerm(
+    #     func=mdp.double_step_penalty,
+    #     weight=0.5,
+    #     params={
+    #         "command_name": "motion",
+    #         "threshold": 2.0,
+    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+    #     },
+    # )
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -397,6 +433,14 @@ class TerminationsCfg:
             ],
         },
     )
+    # double_step = DoneTerm(
+    #     func=mdp.double_step,
+    #     params={
+    #         "command_name": "motion",
+    #         "threshold": 3.0,
+    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+    #     },
+    # )
 
 
 @configclass
@@ -431,7 +475,7 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         # Todo: define with WandB/data collection
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 100.0
         # simulation settings
         self.sim.dt = 0.005
