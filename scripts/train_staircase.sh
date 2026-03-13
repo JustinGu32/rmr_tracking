@@ -23,8 +23,18 @@ export NCCL_SHM_DISABLE=1
 export NCCL_IB_DISABLE=1
 export NCCL_DEBUG=INFO
 
+# Prevent NCCL conflicts with PhysX CUDA memory
+# P2P disable: no direct GPU-to-GPU memory access
+# SHM disable: no shared memory (still uses cudaMemcpy) — forces socket transport
+# IB disable: no InfiniBand (not needed on single node)
+export NCCL_P2P_DISABLE=1
+export NCCL_SHM_DISABLE=1
+export NCCL_IB_DISABLE=1
+export NCCL_DEBUG=INFO
+
 export WANDB_ENTITY=robot-mcrobotface
 
+python -m torch.distributed.run --nproc_per_node=2 scripts/rsl_rl/train.py \
 python -m torch.distributed.run --nproc_per_node=2 scripts/rsl_rl/train.py \
    --task=Staircase-G1-v0 \
    --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \

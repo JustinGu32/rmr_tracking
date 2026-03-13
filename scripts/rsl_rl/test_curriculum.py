@@ -97,6 +97,16 @@ def main(env_cfg, agent_cfg):
 
     # Disable the built-in spring force event so we can manually control per-env
     env_cfg.events.assistive_spring_force = None
+    env_cfg.curriculum.spring_force_adr = None
+
+    # Extract spring force params from the event config before disabling it
+    spring_params = dict(env_cfg.events.assistive_spring_force.params)
+    # Override ang_stiffness for testing (default 20.0 is too low to keep pelvis upright)
+    spring_params["ang_stiffness"] = 150.0
+    print(f"[INFO] Spring force params (ang_stiffness bumped): {spring_params}")
+
+    # Disable the built-in spring force event so we can manually control per-env
+    env_cfg.events.assistive_spring_force = None
 
     # ------------------------------------------------------------------
     # 4. Create environment
