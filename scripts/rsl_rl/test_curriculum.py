@@ -89,7 +89,18 @@ def main(env_cfg, agent_cfg):
     env_cfg.curriculum.adr = None
 
     # Disable the built-in spring force so we can manually control per-env
-    spring_cfg = env_cfg.spring_force_cfg.copy()
+    if getattr(env_cfg, "spring_force_cfg", None) is not None:
+        spring_cfg = env_cfg.spring_force_cfg.copy()
+    else:
+        # Default spring configs for isolated testing if not provided by env_cfg
+        spring_cfg = {
+            "command_name": "motion",
+            "body_name": "pelvis",
+            "stiffness": 500.0,
+            "ang_stiffness": 50.0,
+            "damping": 20.0,
+            "axis_weights": [0.3, 0.3, 5.0],
+        }
     env_cfg.spring_force_cfg = None
 
     # ------------------------------------------------------------------
@@ -166,7 +177,7 @@ def main(env_cfg, agent_cfg):
                     ang_stiffness=spring_cfg.get("ang_stiffness", 100.0),
                     damping=spring_cfg["damping"],
                     axis_weights=tuple(spring_cfg["axis_weights"]),
-                    gravity_comp=1.0,
+                    gravity_comp=0.0,
                     curriculum_factor=1.0,
                     env_ids=torch.tensor([0], device=base_env.device),
                 )

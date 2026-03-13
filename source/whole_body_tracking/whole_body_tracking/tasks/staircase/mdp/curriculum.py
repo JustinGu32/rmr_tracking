@@ -144,7 +144,9 @@ def apply_spring_force(
     # Per-axis weighted spring force
     weights = torch.tensor(axis_weights, device=env.device)  # (3,)
     spring_force = weights * stiffness * pos_error + damping * vel_error  # (num_envs, 3)
-    # spring_force = weights * stiffness * pos_error  # (num_envs, 3)
+
+    # Unilateral Z-axis: only push up, never pull down
+    spring_force[:, 2] = torch.clamp(spring_force[:, 2], min=0.0)
 
     # Angular spring torque: Kp_ang * axis_angle_error(ref_quat, cur_quat)
     quat_error = quat_mul(ref_quat_w, quat_inv(cur_quat_w))  # (num_envs, 4)

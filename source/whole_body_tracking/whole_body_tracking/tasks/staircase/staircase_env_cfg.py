@@ -420,21 +420,20 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # spring_force_cfg: dict = {
-    #     "command_name": "motion",
-    #     "body_names": ["torso_link"],
-    #     "stiffness": 250.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
-    #     "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
-    #     "damping": 15.0,            # Velocity damping (Kd)
-    #     "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
-    #     "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
-    # }
-    spring_force_cfg = None
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 2000.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
+        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
+        "damping": 15.0,            # Velocity damping (Kd)
+        "axis_weights": [0.25, 0.25, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
+        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
+    }
 
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005
