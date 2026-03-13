@@ -1,4 +1,7 @@
+import os
+
 from isaaclab.utils import configclass
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -35,6 +38,61 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             "right_elbow_link",
             "right_wrist_yaw_link",
         ]
+
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.events.assistive_spring_force = EventTerm(
+                func=mdp.apply_assistive_spring_force,
+                mode="interval",
+                interval_range_s=(0.0, 0.0),
+                params={
+                    "command_name": "motion",
+                    "asset_name": "robot",
+                    "stiffness": 400.0,
+                    "ang_stiffness": 150.0,
+                    "damping": 20.0,
+                    "axis_weights": (1.0, 1.0, 2.0),
+                    "curriculum_factor": 1.0,
+                },
+            )
+            self.curriculum.adr = CurrTerm(
+                func=mdp.AssistiveForceScheduler,
+                params={
+                    "command_name": "motion",
+                    "pos_tol": 0.15,
+                    "init_difficulty": 0,
+                    "min_difficulty": 0,
+                    "max_difficulty": 10,
+                },
+            )
+            self.curriculum.spring_force_adr = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "events.assistive_spring_force.params.curriculum_factor",
+                    "modify_fn": mdp.assistive_force_interpolate_fn,
+                    "modify_params": {
+                        "difficulty_term_str": "adr",
+                        "cutoff_steps": 240000,
+                    },
+                },
+            )
+
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        if os.environ.get("WBT_MOTION_JOINT_POS") == "1":
+            self.rewards.motion_joint_pos = RewTerm(
+                func=mdp.motion_joint_position_error_exp,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.15},
+            )
 
 @configclass
 class G1StaircasePlayCfg(G1StaircaseEnvCfg):
@@ -98,6 +156,61 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
             weight=2.0,
             params={"command_name": "motion", "std": 0.1},
         )
+
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.events.assistive_spring_force = EventTerm(
+                func=mdp.apply_assistive_spring_force,
+                mode="interval",
+                interval_range_s=(0.0, 0.0),
+                params={
+                    "command_name": "motion",
+                    "asset_name": "robot",
+                    "stiffness": 400.0,
+                    "ang_stiffness": 150.0,
+                    "damping": 20.0,
+                    "axis_weights": (1.0, 1.0, 2.0),
+                    "curriculum_factor": 1.0,
+                },
+            )
+            self.curriculum.adr = CurrTerm(
+                func=mdp.AssistiveForceScheduler,
+                params={
+                    "command_name": "motion",
+                    "pos_tol": 0.15,
+                    "init_difficulty": 0,
+                    "min_difficulty": 0,
+                    "max_difficulty": 10,
+                },
+            )
+            self.curriculum.spring_force_adr = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "events.assistive_spring_force.params.curriculum_factor",
+                    "modify_fn": mdp.assistive_force_interpolate_fn,
+                    "modify_params": {
+                        "difficulty_term_str": "adr",
+                        "cutoff_steps": 240000,
+                    },
+                },
+            )
+
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        if os.environ.get("WBT_MOTION_JOINT_POS") == "1":
+            self.rewards.motion_joint_pos = RewTerm(
+                func=mdp.motion_joint_position_error_exp,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.15},
+            )
 
 @configclass
 class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):

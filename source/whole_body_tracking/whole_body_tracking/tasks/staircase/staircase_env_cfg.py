@@ -268,23 +268,6 @@ class EventCfg:
         params={"velocity_range": VELOCITY_RANGE},
     )
 
-    # Assistive spring force — applied every step via event manager.
-    # The curriculum_factor param is modified at runtime by the ADR curriculum.
-    assistive_spring_force = EventTerm(
-        func=mdp.apply_assistive_spring_force,
-        mode="interval",
-        interval_range_s=(0.0, 0.0),  # every step
-        params={
-            "command_name": "motion",
-            "asset_name": "robot",
-            "stiffness": 400.0,
-            "ang_stiffness": 150.0,
-            "damping": 20.0,
-            "axis_weights": (1.0, 1.0, 2.0),
-            "curriculum_factor": 1.0,  # modified by ADR curriculum
-        },
-    )
-
 
 @configclass
 class RewardsCfg:
@@ -339,6 +322,7 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
+    
     # shin_box_collision = RewTerm(
     #     func=mdp.shin_box_collision_penalty,
     #     weight=-2.0,  # Strong negative weight
@@ -372,10 +356,10 @@ class TerminationsCfg:
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
-    # anchor_pos_xy = DoneTerm(
-    #     func=mdp.bad_anchor_pos_x_y_only,
-    #     params={"command_name": "motion", "threshold": 0.25},
-    # )
+    anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
+        params={"command_name": "motion", "threshold": 0.25},
+    )
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
         params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},
@@ -398,33 +382,8 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-
-    # ADR scheduler — adjusts per-env difficulty based on tracking performance
-    adr = CurrTerm(
-        func=mdp.AssistiveForceScheduler,
-        params={
-            "command_name": "motion",
-            "pos_tol": 0.15,
-            "init_difficulty": 0,
-            "min_difficulty": 0,
-            "max_difficulty": 10,
-        },
-    )
-
-    # Interpolate spring force curriculum_factor from 1.0 → 0.0 as difficulty increases
-    # Hard cutoff after cutoff_steps physics steps (10k iters × 24 steps_per_env)
-    spring_force_adr = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "events.assistive_spring_force.params.curriculum_factor",
-            "modify_fn": mdp.assistive_force_interpolate_fn,
-            "modify_params": {
-                "difficulty_term_str": "adr",
-                "cutoff_steps": 240000,  # 10k iters × 24 steps_per_env
-            },
-        },
-    )
-
+    
+    pass
 
 ##
 # Environment configuration
@@ -447,23 +406,11 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # (spring_force_cfg removed — spring force is now managed by the event system
-    #  with ADR-based curriculum scheduling via EventCfg.assistive_spring_force
-    #  and CurriculumCfg.spring_force_adr)
-    # spring_force_cfg: dict = {
-    #     "command_name": "motion",
-    #     "body_names": ["torso_link"],
-    #     "stiffness": 250.0,
-    #     "ang_stiffness": 10.0,
-    #     "damping": 15.0,
-    #     "axis_weights": [0.5, 0.5, 2.0],
-    #     "ramp_steps": 240000,
-    # }
 
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005

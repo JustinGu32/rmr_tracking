@@ -59,3 +59,14 @@ def bad_motion_body_pos_z_only(
     body_indexes = _get_body_indexes(command, body_names)
     error = torch.abs(command.body_pos_relative_w[:, body_indexes, -1] - command.robot_body_pos_w[:, body_indexes, -1])
     return torch.any(error > threshold, dim=-1)
+
+def double_step(
+    env: ManagerBasedRLEnv, command_name: str, threshold: float, body_names: list[str] | None = None
+) -> torch.Tensor:
+    """Terminate when any foot's squared velocity error exceeds a threshold (double-stepping)."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    body_indexes = _get_body_indexes(command, body_names)
+    error = torch.sum(
+        torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
+    )
+    return torch.any(error > threshold, dim=-1)

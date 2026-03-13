@@ -102,7 +102,7 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         spawn=sim_utils.UrdfFileCfg(
             asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
             usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
-            fix_base=False,
+            fix_base=True,
             collision_props=sim_utils.CollisionPropertiesCfg(),
             joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
                 gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
@@ -442,22 +442,10 @@ class StaircaseComplianceCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg = CurriculumCfg()
 
-    # Spring-based assistive force configuration
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 250.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
-        "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
-        "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
-        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
-    }
-
-
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 6
+        self.decimation = 4
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005
