@@ -332,6 +332,14 @@ class MotionCommand(CommandTerm):
             * (self.motion.time_step_total - 1)
         ).long()
 
+        self.time_steps[env_ids] = torch.clamp(
+            self.time_steps[env_ids],
+            min=self.min_sample_idx,
+            max=min(self.max_sample_idx, self.motion.time_step_total - 1),
+        )
+        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
+        self.time_steps[env_ids[eps_mask]] = 0
+
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
         H_norm = H / math.log(self.bin_count)
@@ -490,8 +498,8 @@ class MotionCommandCfg(CommandTermCfg):
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
 
     min_sample_idx: int = 0
-    max_sample_idx: int = 0
-    steps_collect: int  = 0
+    max_sample_idx: int = 10**9
+    steps_collect: int = 1
 
     # CHIP force push config
     force_update_frequency: int = 100

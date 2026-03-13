@@ -38,9 +38,23 @@ class G1FlatEnvCfg(TrackingEnvCfg):
 
         self.terminations.bad_anchor_pos_xy = DoneTerm(
             func=mdp.bad_anchor_pos_x_y_only,
-            params={"command_name": "motion", "threshold": 0.3},
+            params={"command_name": "motion", "threshold": 0.7},
         )
 
+
+@configclass
+class G1FlatPlayEnvCfg(G1FlatEnvCfg):
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 60.0
+        self.commands.motion.min_sample_idx = 0
+        self.commands.motion.max_sample_idx = 0
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
+        self.spring_force_cfg = None
+        self.events.push_robot = None
+        self.events.force_push_robot = None
+        self.terminations.bad_anchor_pos_xy = None
 
 @configclass
 class G1FlatWoStateEstimationEnvCfg(G1FlatEnvCfg):
@@ -152,5 +166,33 @@ class G1FlatComplianceEnvCfg(G1FlatEnvCfg):
         # Termination
         self.terminations.bad_anchor_pos_xy = DoneTerm(
             func=mdp.bad_anchor_pos_x_y_only,
-            params={"command_name": "motion", "threshold": 0.3},
+            params={"command_name": "motion", "threshold": 0.7},
         )
+
+@configclass
+class G1FlatCompliancePlayEnvCfg(G1FlatComplianceEnvCfg):
+    """G1 flat tracking with CHIP feet compliance."""
+    def __post_init__(self):
+        super().__post_init__()
+        self.terminations.bad_anchor_pos_xy = None
+        self.episode_length_s = 60.0
+        self.commands.motion.min_sample_idx = 0
+        self.commands.motion.max_sample_idx = 0
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
+        self.spring_force_cfg = None
+        self.events.change_compliance = EventTerm(
+            func=mdp.change_compliance,
+            mode="interval",
+            interval_range_s=(0.02, 0.02),
+            params={
+                "command_name": "motion",
+                "compliance_lb": [0.05, 0.05, 0.05],
+                "compliance_ub": [0.05, 0.05, 0.05],
+                "compliance_duration": (1, 2),
+                "start_steps": 0,
+            }
+        )
+        self.events.push_robot = None
+        self.events.force_push_robot = None
+
