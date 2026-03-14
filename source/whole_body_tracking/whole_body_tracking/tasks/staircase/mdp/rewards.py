@@ -156,5 +156,4 @@ def double_step_penalty(
         torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
     )
     # -1 for each foot above threshold, 0 otherwise, averaged across feet
-    print("Ref feet vel: ", command.body_lin_vel_w[:, body_indexes], "\nTrue feet vel: ", command.robot_body_lin_vel_w[:, body_indexes], "\nError: ", error, "\n")
     return -(error > threshold).float().mean(dim=-1)
