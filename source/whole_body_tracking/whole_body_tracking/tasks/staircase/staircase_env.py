@@ -64,9 +64,15 @@ class StaircaseEnv(ManagerBasedRLEnv):
         if spring_cfg is None:
             return
 
-        # Linear ramp: curriculum_factor goes from 1.0 → 0.0 over ramp_steps
+        # Linear ramp: curriculum_factor starts decay at start_steps and reaches 0 at ramp_steps
+        start_steps = spring_cfg.get("start_steps", 0)
         ramp_steps = spring_cfg.get("ramp_steps", 480000)  # default: 20k iters × 24
-        t = min(self.common_step_counter / ramp_steps, 1.0)
+        
+        if self.common_step_counter <= start_steps:
+            t = 0.0
+        else:
+            t = min((self.common_step_counter - start_steps) / max(ramp_steps - start_steps, 1), 1.0)
+            
         curriculum_factor = 1.0 - t  # linear decay, no discontinuity
 
         if curriculum_factor <= 0.0:
@@ -107,21 +113,18 @@ class StaircaseEnv(ManagerBasedRLEnv):
         # Log linear ramp curriculum metrics
         spring_cfg = getattr(self.cfg, "spring_force_cfg", None)
         if spring_cfg is not None:
+            start_steps = spring_cfg.get("start_steps", 0)
             ramp_steps = spring_cfg.get("ramp_steps", 480000)
-            t = min(self.common_step_counter / ramp_steps, 1.0)
+            
+            if self.common_step_counter <= start_steps:
+                t = 0.0
+            else:
+                t = min((self.common_step_counter - start_steps) / max(ramp_steps - start_steps, 1), 1.0)
+                
             curriculum_factor = 1.0 - t
             self.extras["log"]["curriculum/curriculum_factor"] = float(curriculum_factor)
             self.extras["log"]["curriculum/ramp_progress"] = float(t)
 
-        # Log ADR metrics if still active (informational only)
-        curriculum_cfg = self.cfg.curriculum
-        if hasattr(curriculum_cfg, "adr") and curriculum_cfg.adr is not None:
-            adr_scheduler = curriculum_cfg.adr.func
-            if hasattr(adr_scheduler, "difficulty_frac"):
-                self.extras["log"]["curriculum/difficulty_frac"] = float(adr_scheduler.difficulty_frac)
-                self.extras["log"]["curriculum/mean_difficulty"] = float(
-                    adr_scheduler.current_adr_difficulties.mean()
-                )
 
         # Log spring force info
         self.extras["log"]["curriculum/spring_force_active"] = float(self._spring_force_active)

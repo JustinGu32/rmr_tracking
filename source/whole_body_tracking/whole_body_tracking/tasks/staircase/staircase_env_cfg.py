@@ -268,8 +268,6 @@ class EventCfg:
         params={"velocity_range": VELOCITY_RANGE},
     )
 
-    # (Spring-based assistive force is now applied per-step in StaircaseEnv._pre_physics_step)
-
 
 @configclass
 class RewardsCfg:
@@ -324,6 +322,7 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
+    
     # shin_box_collision = RewTerm(
     #     func=mdp.shin_box_collision_penalty,
     #     weight=-2.0,  # Strong negative weight
@@ -357,10 +356,10 @@ class TerminationsCfg:
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
-    # anchor_pos_xy = DoneTerm(
-    #     func=mdp.bad_anchor_pos_x_y_only,
-    #     params={"command_name": "motion", "threshold": 0.25},
-    # )
+    anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
+        params={"command_name": "motion", "threshold": 0.25},
+    )
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
         params={"asset_cfg": SceneEntityCfg("robot"), "command_name": "motion", "threshold": 0.8},
@@ -383,21 +382,8 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-
-    # adr = CurrTerm(
-    #     func=mdp.AssistiveForceScheduler,
-    #     params={
-    #         "command_name": "motion",
-    #         "pos_tol": 0.15,
-    #         "init_difficulty": 0,
-    #         "min_difficulty": 0,
-    #         "max_difficulty": 10,
-    #     },
-    # )
-
-    # (assistive_force_adr removed — spring force is now scaled directly
-    #  by curriculum_factor = 1 - difficulty_frac in StaircaseEnv._pre_physics_step)
-
+    
+    pass
 
 ##
 # Environment configuration
@@ -405,8 +391,12 @@ class CurriculumCfg:
 
 
 @configclass
-class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the staircase environment."""
+class StaircaseBaseCfg(ManagerBasedRLEnvCfg):
+    """Base configuration for staircase environments.
+
+    Contains the assistive spring force component shared by
+    all staircase variants (plain and compliance).
+    """
 
     # Scene settings
     scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
@@ -418,16 +408,22 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
+    
+    curriculum: CurriculumCfg | None = (
+        CurriculumCfg()
+        if os.environ.get("ENABLE_CURRICULUM", "1") == "1"
+        else None
+    )
 
     spring_force_cfg: dict = {
         "command_name": "motion",
         "body_names": ["torso_link"],
-        "stiffness": 2000.0,         # Spring stiffness (Kp) — reduced from 600 for smoother weaning
-        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
+        "stiffness": 2000.0,         # Spring stiffness (Kp)
+        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
         "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.25, 0.25, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
-        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
+        "axis_weights": [0.25, 0.25, 2.0],  # [x, y, z]
+        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
+        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
     }
 
     def __post_init__(self):
@@ -444,3 +440,10 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+
+@configclass
+class StaircaseEnvCfg(StaircaseBaseCfg):
+    """Configuration for the staircase environment (no compliance)."""
+
+    pass

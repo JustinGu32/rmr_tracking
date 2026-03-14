@@ -450,7 +450,8 @@ class StaircaseComplianceCfg(ManagerBasedRLEnvCfg):
         "ang_stiffness": 10.0,      # Angular spring stiffness (Kp_ang) — reduced from 20
         "damping": 15.0,            # Velocity damping (Kd)
         "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z] — effective: 60, 60, 400 N/m
-        "ramp_steps": 240000,       # Linear 1→0 over 20k iters (× 24 steps_per_env)
+        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
+        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
     }
 
 
