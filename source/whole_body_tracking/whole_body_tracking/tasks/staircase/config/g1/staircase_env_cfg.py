@@ -94,6 +94,61 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
                 params={"command_name": "motion", "std": 0.15},
             )
 
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.events.assistive_spring_force = EventTerm(
+                func=mdp.apply_assistive_spring_force,
+                mode="interval",
+                interval_range_s=(0.0, 0.0),
+                params={
+                    "command_name": "motion",
+                    "asset_name": "robot",
+                    "stiffness": 400.0,
+                    "ang_stiffness": 150.0,
+                    "damping": 20.0,
+                    "axis_weights": (1.0, 1.0, 2.0),
+                    "curriculum_factor": 1.0,
+                },
+            )
+            self.curriculum.adr = CurrTerm(
+                func=mdp.AssistiveForceScheduler,
+                params={
+                    "command_name": "motion",
+                    "pos_tol": 0.15,
+                    "init_difficulty": 0,
+                    "min_difficulty": 0,
+                    "max_difficulty": 10,
+                },
+            )
+            self.curriculum.spring_force_adr = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "events.assistive_spring_force.params.curriculum_factor",
+                    "modify_fn": mdp.assistive_force_interpolate_fn,
+                    "modify_params": {
+                        "difficulty_term_str": "adr",
+                        "cutoff_steps": 240000,
+                    },
+                },
+            )
+
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        if os.environ.get("WBT_MOTION_JOINT_POS") == "1":
+            self.rewards.motion_joint_pos = RewTerm(
+                func=mdp.motion_joint_position_error_exp,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.15},
+            )
+
 @configclass
 class G1StaircasePlayCfg(G1StaircaseEnvCfg):
     """G1 robot configuration for staircase playback (no perturbations)."""
@@ -102,12 +157,15 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         # Disable perturbations for clean playback
         self.events.push_robot = None
         # Disable spring force and curriculum
-        self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
         self.curriculum.spring_force_adr = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
+        self.terminations.anchor_pos_xy = None
+
         self.terminations.anchor_pos_xy = None
 
 
@@ -139,6 +197,7 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
         ]
 
         # CHIP: Add history to proprioception (optional but recommended)
+        self.observations.policy.gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
         self.observations.policy.gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=4)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
@@ -211,10 +270,66 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
                 weight=1.0,
                 params={"command_name": "motion", "std": 0.15},
             )
+        
+
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.events.assistive_spring_force = EventTerm(
+                func=mdp.apply_assistive_spring_force,
+                mode="interval",
+                interval_range_s=(0.0, 0.0),
+                params={
+                    "command_name": "motion",
+                    "asset_name": "robot",
+                    "stiffness": 400.0,
+                    "ang_stiffness": 150.0,
+                    "damping": 20.0,
+                    "axis_weights": (1.0, 1.0, 2.0),
+                    "curriculum_factor": 1.0,
+                },
+            )
+            self.curriculum.adr = CurrTerm(
+                func=mdp.AssistiveForceScheduler,
+                params={
+                    "command_name": "motion",
+                    "pos_tol": 0.15,
+                    "init_difficulty": 0,
+                    "min_difficulty": 0,
+                    "max_difficulty": 10,
+                },
+            )
+            self.curriculum.spring_force_adr = CurrTerm(
+                func=mdp.modify_term_cfg,
+                params={
+                    "address": "events.assistive_spring_force.params.curriculum_factor",
+                    "modify_fn": mdp.assistive_force_interpolate_fn,
+                    "modify_params": {
+                        "difficulty_term_str": "adr",
+                        "cutoff_steps": 240000,
+                    },
+                },
+            )
+
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        if os.environ.get("WBT_MOTION_JOINT_POS") == "1":
+            self.rewards.motion_joint_pos = RewTerm(
+                func=mdp.motion_joint_position_error_exp,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.15},
+            )
 
 @configclass
 class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
-    """G1 robot configuration for staircase with CHIP compliance."""
+    """G1 robot configuration for staircase compliance playback (no perturbations)."""
 
     def __post_init__(self):
         super().__post_init__()
@@ -224,7 +339,10 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
-        self.spring_force_cfg = None
+        # Disable spring force and curriculum
+        self.events.assistive_spring_force = None
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
 
         # self.events.change_compliance = None
         self.events.change_compliance = EventTerm(
@@ -239,7 +357,6 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
                 "start_steps": 0,
             }
         )
-        
 
 
         
@@ -272,10 +389,15 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
+        # Disable spring force and curriculum
+        self.events.assistive_spring_force = None
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
         self.spring_force_cfg = None
         self.curriculum.adr = None
         self.curriculum.spring_force_adr = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
+        self.terminations.anchor_pos_xy = None
         self.terminations.anchor_pos_xy = None
