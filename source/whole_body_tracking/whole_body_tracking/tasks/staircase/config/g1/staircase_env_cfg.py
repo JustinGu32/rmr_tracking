@@ -9,12 +9,23 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import whole_body_tracking.tasks.staircase.mdp as mdp
 from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
-from whole_body_tracking.tasks.staircase.staircase_env_cfg import StaircaseEnvCfg
+from whole_body_tracking.tasks.staircase.staircase_env_cfg import StaircaseEnvCfg, CurriculumCfg
 from whole_body_tracking.tasks.staircase.staircase_compliance_cfg import StaircaseComplianceCfg
 
 @configclass
 class G1StaircaseEnvCfg(StaircaseEnvCfg):
     """G1 robot configuration for staircase."""
+
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 2000.0,         # Spring stiffness (Kp)
+        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
+        "damping": 15.0,            # Velocity damping (Kd)
+        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z]
+        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
+        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
+    }
 
     def __post_init__(self):
         super().__post_init__()
@@ -58,6 +69,9 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
                 weight=1.0,
                 params={"command_name": "motion", "std": 0.15},
             )
+
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.curriculum = CurriculumCfg()
 
 @configclass
 class G1StaircasePlayCfg(G1StaircaseEnvCfg):

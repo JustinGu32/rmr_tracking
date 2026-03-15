@@ -457,21 +457,7 @@ class StaircaseComplianceCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg | None = (
-        CurriculumCfg()
-        if os.environ.get("ENABLE_CURRICULUM", "1") == "1"
-        else None
-    )
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 2000.0,         # Spring stiffness (Kp)
-        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
-        "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z]
-        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
-        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
-    }
+    curriculum: CurriculumCfg | None = None
 
     def __post_init__(self):
         """Post initialization."""
