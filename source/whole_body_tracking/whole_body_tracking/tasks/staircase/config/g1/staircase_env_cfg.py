@@ -39,42 +39,7 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        if os.environ.get("WBT_CURRICULUM") == "1":
-            self.events.assistive_spring_force = EventTerm(
-                func=mdp.apply_assistive_spring_force,
-                mode="interval",
-                interval_range_s=(0.0, 0.0),
-                params={
-                    "command_name": "motion",
-                    "asset_name": "robot",
-                    "stiffness": 400.0,
-                    "ang_stiffness": 150.0,
-                    "damping": 20.0,
-                    "axis_weights": (1.0, 1.0, 2.0),
-                    "curriculum_factor": 1.0,
-                },
-            )
-            self.curriculum.adr = CurrTerm(
-                func=mdp.AssistiveForceScheduler,
-                params={
-                    "command_name": "motion",
-                    "pos_tol": 0.15,
-                    "init_difficulty": 0,
-                    "min_difficulty": 0,
-                    "max_difficulty": 10,
-                },
-            )
-            self.curriculum.spring_force_adr = CurrTerm(
-                func=mdp.modify_term_cfg,
-                params={
-                    "address": "events.assistive_spring_force.params.curriculum_factor",
-                    "modify_fn": mdp.assistive_force_interpolate_fn,
-                    "modify_params": {
-                        "difficulty_term_str": "adr",
-                        "cutoff_steps": 240000,
-                    },
-                },
-            )
+
 
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
@@ -103,8 +68,9 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         self.events.push_robot = None
         # Disable spring force and curriculum
         self.spring_force_cfg = None
-        self.curriculum.adr = None
-        self.curriculum.spring_force_adr = None
+        if self.curriculum is not None:
+            self.curriculum.spring_force_linear = None
+            self.curriculum.spring_force_factor = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
@@ -157,42 +123,7 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
             params={"command_name": "motion", "std": 0.1},
         )
 
-        if os.environ.get("WBT_CURRICULUM") == "1":
-            self.events.assistive_spring_force = EventTerm(
-                func=mdp.apply_assistive_spring_force,
-                mode="interval",
-                interval_range_s=(0.0, 0.0),
-                params={
-                    "command_name": "motion",
-                    "asset_name": "robot",
-                    "stiffness": 400.0,
-                    "ang_stiffness": 150.0,
-                    "damping": 20.0,
-                    "axis_weights": (1.0, 1.0, 2.0),
-                    "curriculum_factor": 1.0,
-                },
-            )
-            self.curriculum.adr = CurrTerm(
-                func=mdp.AssistiveForceScheduler,
-                params={
-                    "command_name": "motion",
-                    "pos_tol": 0.15,
-                    "init_difficulty": 0,
-                    "min_difficulty": 0,
-                    "max_difficulty": 10,
-                },
-            )
-            self.curriculum.spring_force_adr = CurrTerm(
-                func=mdp.modify_term_cfg,
-                params={
-                    "address": "events.assistive_spring_force.params.curriculum_factor",
-                    "modify_fn": mdp.assistive_force_interpolate_fn,
-                    "modify_params": {
-                        "difficulty_term_str": "adr",
-                        "cutoff_steps": 240000,
-                    },
-                },
-            )
+
 
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
@@ -273,8 +204,9 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
         ]
 
         self.spring_force_cfg = None
-        self.curriculum.adr = None
-        self.curriculum.spring_force_adr = None
+        if self.curriculum is not None:
+            self.curriculum.spring_force_linear = None
+            self.curriculum.spring_force_factor = None
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0

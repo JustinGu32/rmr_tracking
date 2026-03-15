@@ -20,6 +20,7 @@ class StaircaseEnv(ManagerBasedRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         # These attrs are set by the apply_assistive_spring_force event function
         self._last_spring_force = None
+        self._last_spring_torque = None
         self._spring_force_active = True
         self._spring_force_curriculum_factor = 1.0
 
@@ -85,15 +86,17 @@ class StaircaseEnv(ManagerBasedRLEnv):
         self.extras["log"]["curriculum/curriculum_factor"] = float(curriculum_factor)
 
         # Log spring force info (set by the event function)
-        spring_force_active = getattr(self, "_spring_force_active", True)
+        spring_force_active = getattr(self, "_spring_force_active", curriculum_factor > 0.0)
         self.extras["log"]["curriculum/spring_force_active"] = float(spring_force_active)
         last_force = getattr(self, "_last_spring_force", None)
+        force_mag = 0.0
+        force_xy = 0.0
+        force_z = 0.0
         if last_force is not None:
             force_mag = torch.norm(last_force, dim=-1).mean()
-            self.extras["log"]["curriculum/spring_force_magnitude"] = float(force_mag)
             # Per-axis: XY (horizontal) and Z (vertical)
             force_xy = torch.norm(last_force[:, :2], dim=-1).mean()
             force_z = last_force[:, 2].abs().mean()
-            self.extras["log"]["curriculum/spring_force_xy"] = float(force_xy)
-            self.extras["log"]["curriculum/spring_force_z"] = float(force_z)
-
+        self.extras["log"]["curriculum/spring_force_magnitude"] = float(force_mag)
+        self.extras["log"]["curriculum/spring_force_xy"] = float(force_xy)
+        self.extras["log"]["curriculum/spring_force_z"] = float(force_z)

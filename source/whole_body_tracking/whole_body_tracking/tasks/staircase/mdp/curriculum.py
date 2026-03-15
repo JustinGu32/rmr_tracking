@@ -14,23 +14,43 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
+# Linear decay scheduler for assistive forces
+# ---------------------------------------------------------------------------
+class LinearForceScheduler(ManagerTermBase):
+    """Linearly decays assistance from 1.0 to 0.0 based on environment steps."""
+    def __init__(self, cfg, env):
+        super().__init__(cfg, env)
+        self.difficulty_frac = 0.0  # 0.0 = max assist, 1.0 = min assist (forces off)
+
+    def __call__(
+        self,
+        env: ManagerBasedRLEnv,
+        env_ids: Sequence[int],
+        command_name: str = "motion",
+        start_steps: int = 120000,
+        ramp_steps: int = 240000,
+    ):
+        if env.common_step_counter <= start_steps:
+            self.difficulty_frac = 0.0
+        else:
+            t = (env.common_step_counter - start_steps) / max(ramp_steps - start_steps, 1)
+            self.difficulty_frac = min(float(t), 1.0)
+            
+        return self.difficulty_frac
+
+# ---------------------------------------------------------------------------
 # Interpolation helper (mirrors dexsuite's initial_final_interpolate_fn)
 # ---------------------------------------------------------------------------
 
-def initial_final_interpolate_fn(env: ManagerBasedRLEnv, env_id, data, initial_value, final_value, difficulty_term_str):
-    """Interpolate between initial_value and final_value based on difficulty_frac.
-
-    Supports arbitrarily nested lists/tuples. Scalars are interpolated at the leaves.
-    """
-    difficulty_term: AssistiveForceScheduler = getattr(env.curriculum_manager.cfg, difficulty_term_str).func
+def linear_interpolate_fn(env: ManagerBasedRLEnv, env_ids, data, initial_value, final_value, difficulty_term_str):
+    """Interpolate between initial_value and final_value based on difficulty_frac."""
+    difficulty_term: LinearForceScheduler = getattr(env.curriculum_manager.cfg, difficulty_term_str).func
     frac = difficulty_term.difficulty_frac
-    if frac < 0.1:
-        return mdp.modify_env_param.NO_CHANGE
-
     initial_value_tensor = torch.tensor(initial_value, device=env.device)
     final_value_tensor = torch.tensor(final_value, device=env.device)
-
+    # _recurse allows arbitrarily nested lists/tuples
     return _recurse(initial_value_tensor.tolist(), final_value_tensor.tolist(), data, frac)
+
 
 
 def _recurse(iv_elem, fv_elem, data_elem, frac):
@@ -42,122 +62,7 @@ def _recurse(iv_elem, fv_elem, data_elem, frac):
     return float(new_val)
 
 
-# ---------------------------------------------------------------------------
-# Assistive-force curriculum interpolation (modify_fn for modify_term_cfg)
-# ---------------------------------------------------------------------------
 
-# def assistive_force_interpolate_fn(
-#     env: ManagerBasedRLEnv,
-#     env_ids,
-#     data,
-#     difficulty_term_str,
-#     cutoff_steps: int = 240000,
-# ):
-#    """Interpolate curriculum_factor from 1.0 → 0.0 based on ADR difficulty,
-#    with a hard cutoff after ``cutoff_steps`` physics steps.
-
-#    Option A (active): ADR-based scheduling with hard cutoff.
-#      - Before cutoff: curriculum_factor = 1 - difficulty_frac
-#      - After cutoff:  curriculum_factor = 0  (forces fully off)
-
-#    Args:
-#        cutoff_steps: Physics step count after which forces are hard-zeroed.
-#                      Default 240000 = 10k iters × 24 steps_per_env.
-#    """
-    # Hard cutoff: force fully off after cutoff_steps
-#    if env.common_step_counter >= cutoff_steps:
-#        return 0.0
-
-    # Before cutoff: ADR-based scheduling
-#    difficulty_term: AssistiveForceScheduler = getattr(
-#        env.curriculum_manager.cfg, difficulty_term_str
-#    ).func
-#    frac = difficulty_term.difficulty_frac
-
-#    new_factor = 1.0 - frac  # full assist at difficulty 0, no assist at max
-#    return float(new_factor)
-
-
-# --- Option B (uncomment to use instead of Option A above) ---
-# Gradual ramp-to-zero safety net: if ADR hasn't fully removed forces
-# by ramp_start_steps, linearly ramp whatever remains to 0 by cutoff_steps.
-# This avoids any cliff even if ADR is slow to reach max difficulty.
-#
-def assistive_force_interpolate_fn(
-    env: ManagerBasedRLEnv,
-    env_ids,
-    data,
-    difficulty_term_str,
-    cutoff_steps: int = 240000,
-    ramp_start_steps: int = 168000,  # start safety ramp at ~7k iters (70% of cutoff)
-):
-    """ADR-based scheduling with gradual ramp-to-zero safety net.
-
-    - Before ramp_start: curriculum_factor = 1 - difficulty_frac (pure ADR)
-    - ramp_start → cutoff: linearly blend ADR factor toward 0
-    - After cutoff: curriculum_factor = 0  (forces fully off)
-    Args:
-        cutoff_steps: Physics step count after which forces are hard-zeroed.
-        ramp_start_steps: Step at which the safety ramp begins blending toward 0.
-    """
-    if env.common_step_counter >= cutoff_steps:
-        return 0.0
-
-    difficulty_term: AssistiveForceScheduler = getattr(
-        env.curriculum_manager.cfg, difficulty_term_str
-    ).func
-    frac = difficulty_term.difficulty_frac
-    adr_factor = 1.0 - frac
-
-    if env.common_step_counter >= ramp_start_steps:
-        # Safety ramp: linearly blend adr_factor → 0 over remaining window
-        ramp_progress = (env.common_step_counter - ramp_start_steps) / (cutoff_steps - ramp_start_steps)
-        adr_factor = adr_factor * (1.0 - ramp_progress)
-
-    return float(adr_factor)
-
-
-# ---------------------------------------------------------------------------
-# Adaptive difficulty scheduler (mirrors dexsuite's DifficultyScheduler)
-# ---------------------------------------------------------------------------
-
-class AssistiveForceScheduler(ManagerTermBase):
-    """Adaptive scheduler that reduces assistance as motion tracking improves.
-
-    Tracks per-environment difficulty levels. When anchor position tracking error
-    falls below ``pos_tol``, difficulty increases (less assistance). Otherwise it
-    decreases (more assistance). The normalised mean difficulty is exposed as
-    ``difficulty_frac`` for use in curriculum interpolation terms.
-    """
-
-    def __init__(self, cfg, env):
-        super().__init__(cfg, env)
-        init_difficulty = self.cfg.params.get("init_difficulty", 0)
-        self.current_adr_difficulties = torch.ones(env.num_envs, device=env.device) * init_difficulty
-        self.difficulty_frac = 0.0
-
-    def __call__(
-        self,
-        env: ManagerBasedRLEnv,
-        env_ids: Sequence[int],
-        command_name: str = "motion",
-        pos_tol: float = 0.15,
-        init_difficulty: int = 0,
-        min_difficulty: int = 0,
-        max_difficulty: int = 10,
-    ):
-        command = env.command_manager.get_term(command_name)
-        pos_err = command.metrics["error_anchor_pos"][env_ids]
-
-        move_up = pos_err < pos_tol  # tracking well → increase difficulty (reduce assist)
-        self.current_adr_difficulties[env_ids] = torch.where(
-            move_up,
-            self.current_adr_difficulties[env_ids] + 1,
-            self.current_adr_difficulties[env_ids] - 1,
-        ).clamp(min=min_difficulty, max=max_difficulty)
-
-        self.difficulty_frac = torch.mean(self.current_adr_difficulties) / max(max_difficulty, 1)
-        return self.difficulty_frac
 
 
 # ---------------------------------------------------------------------------
@@ -166,15 +71,15 @@ class AssistiveForceScheduler(ManagerTermBase):
 
 def apply_spring_force(
     env: ManagerBasedRLEnv,
-    command_name: str,
+    env_ids: torch.Tensor | None,
+    command_name: str = "motion",
     asset_name: str = "robot",
     stiffness: float = 500.0,
     ang_stiffness: float = 50.0,
     damping: float = 20.0,
     axis_weights: tuple[float, float, float] = (0.3, 0.3, 5.0),
     gravity_comp: float = 0.0,
-    curriculum_factor: float = 1.0,
-    env_ids: torch.Tensor | None = None,
+    curriculum_factor: float | None = None,
 ):
     """Apply a PD spring force pulling the robot's anchor body toward the reference motion.
 
@@ -188,6 +93,7 @@ def apply_spring_force(
 
     Args:
         env: The environment.
+        env_ids: Optional tensor of env indices to apply force to. If None, applies to all.
         command_name: Name of the motion command term.
         asset_name: Name of the robot asset in the scene.
         stiffness: Spring stiffness (Kp).
@@ -195,9 +101,27 @@ def apply_spring_force(
         damping: Velocity damping (Kd).
         gravity_comp: Fraction of gravity to compensate (0.0–1.0).
         axis_weights: Per-axis multiplier on spring stiffness [x, y, z].
-        curriculum_factor: Scaling factor from curriculum (1.0 = full assist, 0.0 = none).
-        env_ids: Optional tensor of env indices to apply force to. If None, applies to all.
+        curriculum_factor: Scaling factor. If None, checks env._spring_force_curriculum_factor.
     """
+    if curriculum_factor is None:
+        curriculum_factor = getattr(env, "_spring_force_curriculum_factor", 1.0)
+
+    # Keep env-side state in sync for logging (read in StaircaseEnv._reset_idx).
+    if torch.is_tensor(curriculum_factor):
+        curriculum_factor_log = float(curriculum_factor.mean().item())
+    else:
+        curriculum_factor_log = float(curriculum_factor)
+    env._spring_force_curriculum_factor = curriculum_factor_log
+    env._spring_force_active = curriculum_factor_log > 0.0
+        
+    # Also fetch config defaults from env.spring_force_cfg if present
+    spring_cfg = getattr(env.cfg, "spring_force_cfg", None)
+    if spring_cfg is not None:
+        stiffness = spring_cfg.get("stiffness", stiffness)
+        ang_stiffness = spring_cfg.get("ang_stiffness", ang_stiffness)
+        damping = spring_cfg.get("damping", damping)
+        axis_weights = tuple(spring_cfg.get("axis_weights", axis_weights))
+
     asset: Articulation = env.scene[asset_name]
     command = env.command_manager.get_term(command_name)
     anchor_idx = command.robot_anchor_body_index
@@ -222,6 +146,8 @@ def apply_spring_force(
 
     # Unilateral Z-axis: only push up, never pull down
     spring_force[:, 2] = torch.clamp(spring_force[:, 2], min=0.0)
+    # Use max(0, force) to ensure no negative force is applied when descending
+    # spring_force = torch.clamp(spring_force, min=0.0)
 
     # Angular spring torque: Kp_ang * axis_angle_error(ref_quat, cur_quat)
     quat_error = quat_mul(ref_quat_w, quat_inv(cur_quat_w))  # (num_envs, 4)
@@ -253,5 +179,12 @@ def apply_spring_force(
             forces, torques, body_ids=[anchor_idx], is_global=True
         )
 
-    return total_force
+    if env._spring_force_active:
+        env._last_spring_force = total_force
+        env._last_spring_torque = total_torque
+    else:
+        env._last_spring_force = None
+        env._last_spring_torque = None
 
+    return total_force
+    

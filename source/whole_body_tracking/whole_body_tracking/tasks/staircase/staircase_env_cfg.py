@@ -268,6 +268,24 @@ class EventCfg:
         params={"velocity_range": VELOCITY_RANGE},
     )
 
+    # Spring force is applied intervally (every step) and modulated by the curriculum
+    assistive_spring_force = EventTerm(
+        func=mdp.apply_spring_force,
+        mode="interval",
+        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
+        params={
+            "command_name": "motion",
+            "asset_name": "robot",
+            # We defer stiffness, damping, etc to the environment class's spring_force_cfg
+            # Therefore `apply_spring_force` needs to fetch param values dynamically
+            "stiffness": 2000.0,
+            "ang_stiffness": 300.0,
+            "damping": 15.0,
+            "axis_weights": (0.5, 0.5, 2.0),
+            "curriculum_factor": 1.0,
+        },
+    )
+
 
 @configclass
 class RewardsCfg:
@@ -382,8 +400,27 @@ class TerminationsCfg:
 @configclass
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
-    
-    pass
+
+    spring_force_linear = CurrTerm(
+        func=mdp.LinearForceScheduler,
+        params={
+            "command_name": "motion",
+            "start_steps": 120000,
+            "ramp_steps": 360000,
+        },
+    )
+    spring_force_factor = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.assistive_spring_force.params.curriculum_factor",
+            "modify_fn": mdp.linear_interpolate_fn,
+            "modify_params": {
+                "initial_value": 1.0,
+                "final_value": 0.0,
+                "difficulty_term_str": "spring_force_linear",
+            },
+        },
+    )
 
 ##
 # Environment configuration
@@ -404,8 +441,21 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
-
+    curriculum: CurriculumCfg | None = (
+        CurriculumCfg()
+        if os.environ.get("ENABLE_CURRICULUM", "1") == "1"
+        else None
+    )
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 2000.0,         # Spring stiffness (Kp)
+        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
+        "damping": 15.0,            # Velocity damping (Kd)
+        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z]
+        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
+        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
+    }
 
     def __post_init__(self):
         """Post initialization."""
