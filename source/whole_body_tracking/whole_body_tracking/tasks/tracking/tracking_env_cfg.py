@@ -431,7 +431,7 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         # Todo: define with WandB/data collection
-        self.decimation = 8 # MODIFY BASED ON DATASET
+        self.decimation = 6 # MODIFY BASED ON DATASET
         self.episode_length_s = 100.0
         # simulation settings
         self.sim.dt = 0.005

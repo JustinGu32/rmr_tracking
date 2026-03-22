@@ -10,7 +10,7 @@ Usage (from rmr_tracking or with PYTHONPATH including rmr_tracking):
 Headless + save video (for servers without display):
   --headless          Disable interactive viewer (required on servers).
   --video             Record simulation to a video file (uses offscreen rendering).
-  --video_folder DIR  Where to save the video (default: videos/sim2sim_isaaclab).
+  --video_folder DIR  Where to save the video (default: videos/vision).
   --video_length N    Steps to record (default: 500).
   Example: python scripts/sim2sim_mine_isaaclab.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/foo.pt --headless --video --video_folder ./out
 """
@@ -342,27 +342,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.scene.contact_forces.debug_vis = False
     if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "motion") and hasattr(env_cfg.commands.motion, "debug_vis"):
         env_cfg.commands.motion.debug_vis = False
-        
-    print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
-    env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
-    print("[INFO] Environment created.", flush=True)
-    if isinstance(env.unwrapped, DirectMARLEnv):
-        env = multi_agent_to_single_agent(env)
-    if record_video:
-        video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab")))
-        video_length = getattr(args_cli, "video_length", 500)
-        os.makedirs(video_folder, exist_ok=True)
-        env = gym.wrappers.RecordVideo(
-            env,
-            video_folder=video_folder,
-            step_trigger=lambda step: step == 0,
-            video_length=video_length,
-            disable_logger=True,
-        )
-        print(f"[INFO] Video recording: first {video_length} steps -> {video_folder}")
 
     # Load diffusion policy (Isaac ordering: no MuJoCo conversion inside agent)
     print("[INFO] Loading diffusion policy (DiffusionAgentIsaac); wandb download can be slow...", flush=True)
+    model_name = ""
     if args_cli.checkpoint:
         policy = DiffusionAgentIsaac(
             checkpoint_path=args_cli.checkpoint,
@@ -371,6 +354,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             warmup=False,
             deterministic=args_cli.deterministic,
         )
+        model_name = args_cli.checkpoint.split("/")[-3]
     else:
         policy = DiffusionAgentIsaac(
             wandb_path=args_cli.wandb_path,
@@ -380,18 +364,52 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             warmup=False,
             deterministic=args_cli.deterministic,
         )
+        model_name = args_cli.wandb_path.split("/")[-1]
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
-    
+
     # Load encoders (SigLIP2 + DeFM)
     print("[INFO] Loading vision encoders (SigLIP2 + DeFM)...", flush=True)
     siglip_model, siglip_processor, defm_model = load_vision_encoders(device)
     print("[INFO] Vision encoders loaded.", flush=True)
     
+    print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
+    env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
+    print("[INFO] Environment created.", flush=True)
+    if isinstance(env.unwrapped, DirectMARLEnv):
+        env = multi_agent_to_single_agent(env)
+    if record_video:
+        video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab")))
+        video_length = getattr(args_cli, "video_length", 500)
+        video_name = model_name
+        os.makedirs(video_folder, exist_ok=True)
+        # Match video FPS to sim control rate (1 step = decimation*dt sec) so playback is smooth.
+        # With obstacles, heavier physics can make wall-clock step time variable; explicit fps
+        # ensures encoding is consistent and avoids jitter from wrong/default fps.
+        video_fps = round(1.0 / (env_cfg.decimation * env_cfg.sim.dt))
+        env = gym.wrappers.RecordVideo(
+            env,
+            video_folder=video_folder,
+            step_trigger=lambda step: step == 0,
+            video_length=video_length,
+            name_prefix=video_name,
+            disable_logger=True,
+            fps=video_fps,
+        )
+        print(f"[INFO] Video recording: first {video_length} steps @ {video_fps} FPS -> {video_folder} (prefix: {video_name} -> {video_name}-step-0.mp4)")
+    
     # Guidance
     guidance_fn = None
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
-        guidance_config = {"target_velocity": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]}
+        guidance_config = {
+            "dataset_class": "G1Dataset_root_separate",
+            "target_velocity": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            # FOR REDUCED:
+            # "dataset_class": "G1Dataset",
+            # "root_pos_indices": (58, 61),
+            # "root_vel_indices": (64, 70) # THIS IS FOR REDUCED. when running for limited, just comment this out
+            "root_vel_indices": (3, 9) # this is for root only
+        }
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")

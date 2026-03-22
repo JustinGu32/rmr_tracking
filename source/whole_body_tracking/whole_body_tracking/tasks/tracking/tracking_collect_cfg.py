@@ -285,7 +285,7 @@ class ObservationsCfg:
         
         def __post_init__(self):
             self.enable_corruption = False
-            self.concatenate_terms = True
+            self.concatenate_terms = False
     # observation groups
     policy: PolicyCfg = PolicyDeployCfg() # PolicySimCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
@@ -318,16 +318,16 @@ class EventCfg:
             "operation": "add",
         },
     )
-    teleport = EventTerm(
-        func=mdp.teleport_root_with_noise,
-        mode='interval',
-        interval_range_s=(0.0, .1),
-        params={
-            "asset_cfg": SceneEntityCfg("robot"),
-            "root_pos_noise_range": (-0.01, 0.01),
-            "root_rot_noise_range": (-0.02, 0.02),
-        },
-    )
+    # teleport = EventTerm(
+    #     func=mdp.teleport_root_with_noise,
+    #     mode='interval',
+    #     interval_range_s=(0.0, .1),
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("robot"),
+    #         "root_pos_noise_range": (-0.01, 0.01),
+    #         "root_rot_noise_range": (-0.02, 0.02),
+    #     },
+    # )
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -339,12 +339,12 @@ class EventCfg:
 
     
     # collect
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(0, .1),
-        params={"velocity_range": VELOCITY_RANGE_COLLECT2},
-    )
+    # push_robot = EventTerm(
+    #     func=mdp.push_by_setting_velocity,
+    #     mode="interval",
+    #     interval_range_s=(0, .1),
+    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    # )
 
     # random_body_forces = EventTerm(
     #     func=mdp.apply_random_body_forces,
@@ -535,15 +535,32 @@ class TrackingCollectCfg(ManagerBasedRLEnvCfg):
 
         # 3. Add single randomization event for all pillars
         if num_obstacles > 0:
-            self.events.randomize_obstacles = EventTerm(
-                func=mdp.randomize_multiple_obstacles_avoiding_path,
-                mode="reset",
-                params={
-                    "asset_names": obstacle_names,
-                    "command_name": "motion",
-                    "x_range": (-4.0, 4.0),
-                    "y_range": (-4.0, 4.0),
-                    "min_dist_to_path": 2.0,
-                    "min_dist_between_obstacles": 1.0,
-                },
-            )
+            obstacles_on_path = os.environ.get("OBSTACLES_ON_PATH", "0").strip().lower() in ("1", "true", "yes")
+            if obstacles_on_path:
+                # Place obstacles in front of the robot in a line, equally spaced (aligned with robot heading).
+                self.events.randomize_obstacles = EventTerm(
+                    func=mdp.randomize_multiple_obstacles_on_path,
+                    mode="reset",
+                    params={
+                        "asset_names": obstacle_names,
+                        "command_name": "motion",
+                        "start_distance": 1,
+                        "spacing": 0.7,
+                        "lateral_spread": 0.5,
+                        "forward_sign": -1.0,
+                    },
+                )
+            else:
+                # Default: place obstacles away from the path (for data collection / training).
+                self.events.randomize_obstacles = EventTerm(
+                    func=mdp.randomize_multiple_obstacles_avoiding_path,
+                    mode="reset",
+                    params={
+                        "asset_names": obstacle_names,
+                        "command_name": "motion",
+                        "x_range": (-4.0, 4.0),
+                        "y_range": (-4.0, 4.0),
+                        "min_dist_to_path": 2.0,
+                        "min_dist_between_obstacles": 1.0,
+                    },
+                )

@@ -360,3 +360,83 @@ def randomize_multiple_obstacles_avoiding_path(
         current_states[:, 7:] = 0.0 
         
         obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)
+
+
+def randomize_multiple_obstacles_on_path(
+    env: ManagerBasedEnv,
+    env_ids: torch.Tensor,
+    command_name: str,
+    asset_names: list[str],
+    start_distance: float = 0.5,
+    spacing: float = 0.4,
+    lateral_spread: float = 0.0,
+    forward_sign: float = -1.0,
+):
+    """
+    Place obstacles in front of the robot in a line, equally spaced.
+    Use for evaluation / sim2sim (OBSTACLES_ON_PATH=1). Forward direction comes from path velocity.
+    start_distance: distance to first obstacle; spacing: distance between consecutive ones.
+    lateral_spread: 0 = center line; >0 staggers left/right. forward_sign: -1 = ahead, 1 = behind.
+    """
+    if not asset_names:
+        return
+
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    if env_ids is None:
+        env_ids = torch.arange(env.scene.num_envs, device=env.device)
+
+    anchor_idx = command.motion_anchor_body_index
+    raw_motion_pos = command.motion._body_pos_w[:, anchor_idx, :3]
+    raw_motion_quat = command.motion._body_quat_w[:, anchor_idx, :]
+    start_steps = command.time_steps[env_ids]
+    episode_length = command.steps_collect if (command.steps_collect and command.steps_collect > 0) else 500
+    max_steps = raw_motion_pos.shape[0]
+    episode_length = min(episode_length, max_steps)
+
+    device = env.device
+    num_envs_to_reset = len(env_ids)
+    obstacles = [env.scene[name] for name in asset_names]
+    num_obstacles = len(obstacles)
+
+    final_positions = torch.zeros(num_envs_to_reset, num_obstacles, 3, device=device)
+    final_positions[..., :] = 100.0
+    final_positions[..., 2] = 1.0
+
+    for i in range(num_envs_to_reset):
+        t_start = int(start_steps[i].item())
+        t_end = min(t_start + episode_length, max_steps)
+        if t_start >= max_steps:
+            continue
+        # Robot "start" = path start (same frame as motion)
+        start_xy = raw_motion_pos[t_start, :2].clone()
+        # Forward = direction in front of the robot (path velocity; forward_sign flips if motion convention is opposite)
+        if t_end - t_start >= 2:
+            look_ahead = min(20, t_end - t_start - 1)
+            path_dir = raw_motion_pos[t_start + look_ahead, :2] - raw_motion_pos[t_start, :2]
+            forward_norm = torch.norm(path_dir)
+            if forward_norm > 1e-6:
+                forward = (forward_sign * path_dir / forward_norm).to(device)
+            else:
+                forward = torch.tensor([0.0, 1.0], device=device)
+        else:
+            forward = torch.tensor([0.0, 1.0], device=device)
+        perp = torch.tensor([-forward[1].item(), forward[0].item()], device=device)
+        # Equally spaced: start_distance, start_distance + spacing, start_distance + 2*spacing, ...
+        for obs_idx in range(num_obstacles):
+            d = start_distance + obs_idx * spacing
+            lat = lateral_spread * (1 if obs_idx % 2 == 0 else -1)
+            pos_xy = start_xy + d * forward + lat * perp
+            final_positions[i, obs_idx, 0] = pos_xy[0]
+            final_positions[i, obs_idx, 1] = pos_xy[1]
+
+    env_origins = env.scene.env_origins[env_ids]
+    global_positions = final_positions + env_origins.unsqueeze(1)
+    quat = torch.zeros(num_envs_to_reset, 4, device=device)
+    quat[..., 0] = 1.0
+
+    for obs_idx, obstacle_asset in enumerate(obstacles):
+        current_states = obstacle_asset.data.root_state_w[env_ids].clone()
+        current_states[:, :3] = global_positions[:, obs_idx, :]
+        current_states[:, 3:7] = quat
+        current_states[:, 7:] = 0.0
+        obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)
