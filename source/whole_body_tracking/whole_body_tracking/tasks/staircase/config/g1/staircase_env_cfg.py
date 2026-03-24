@@ -78,14 +78,15 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
     """G1 robot configuration for staircase playback (no perturbations)."""
     def __post_init__(self):
         super().__post_init__()
-        # Disable perturbations for clean playback
-        self.events.push_robot = None
+        # Disable perturbations for clean playback (unless --push flag is set)
+        if os.environ.get("WBT_PUSH") != "1":
+            self.events.push_robot = None
         # Disable spring force and curriculum
         self.spring_force_cfg = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None
-        self.episode_length_s = 20.0
+        self.episode_length_s = 25.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
         self.terminations.anchor_pos_xy = None
@@ -163,10 +164,12 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
 
     def __post_init__(self):
         super().__post_init__()
-        self.events.push_robot = None
-        self.events.force_push_robot = None
+        if os.environ.get("WBT_PUSH") != "1":
+            self.events.push_robot = None
+        if os.environ.get("WBT_PUSH_FEET") != "1":
+            self.events.force_push_robot = None
         self.terminations.anchor_pos_xy = None
-        self.episode_length_s = 20.0
+        self.episode_length_s = 25.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
         self.spring_force_cfg = None
@@ -178,8 +181,8 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
             interval_range_s=(0.02, 0.02),
             params={
                 "command_name": "motion",
-                "compliance_lb": [0.05, 0.05, 0.05],
-                "compliance_ub": [0.05, 0.05, 0.05],
+                "compliance_lb": [0.00, 0.00, 0.00],
+                "compliance_ub": [0.09, 0.09, 0.09],
                 "compliance_duration": (1, 2),
                 "start_steps": 0,
             }
@@ -221,7 +224,7 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None
-        self.episode_length_s = 20.0
+        self.episode_length_s = 25.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
         self.terminations.anchor_pos_xy = None
