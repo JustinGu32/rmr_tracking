@@ -552,20 +552,20 @@ class ZarrMotionLoader:
         self.num_clips = len(self.clip_start_idx)
         self.clip_lengths = self.clip_end_idx - self.clip_start_idx
 
-        # Load all data into CPU memory
-        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32)
-        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32)
-        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32)
-        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32)
-        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32)
-        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32)
+        # Load all data to the specified device (GPU if available)
+        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32, device=device)
+        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32, device=device)
+        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32, device=device)
+        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32, device=device)
+        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32, device=device)
+        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32, device=device)
         # Body indexes from robot.find_bodies() — Zarr is already in Isaac order
-        self._body_indexes = body_indexes.cpu() if isinstance(body_indexes, torch.Tensor) else torch.tensor(body_indexes, dtype=torch.long)
+        self._body_indexes = body_indexes.to(device) if isinstance(body_indexes, torch.Tensor) else torch.tensor(body_indexes, dtype=torch.long, device=device)
         self.time_step_total = self.joint_pos.shape[0]
 
         print(f"[ZarrMotionLoader] Loaded {self.num_clips} clips, "
               f"{self.time_step_total} total frames @ {self.fps} fps, "
-              f"{self._body_pos_w.shape[1]} bodies")
+              f"{self._body_pos_w.shape[1]} bodies, device={device}")
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -613,9 +613,9 @@ class MultiClipMotionCommand(MotionCommand):
         self.max_sample_idx = cfg.max_sample_idx
         self.steps_collect = cfg.steps_collect
 
-        # --- Multi-clip specific: load from Zarr (body data is in Isaac ordering) ---
+        # --- Multi-clip specific: load from Zarr directly to GPU ---
         exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
-        self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device="cpu",
+        self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
                                        exclude_props=exclude_props)
 
         # Per-env state: which clip each env is tracking and the absolute time step
@@ -711,8 +711,8 @@ class MultiClipMotionCommand(MotionCommand):
     # ── Property overrides: index on CPU, transfer slice to GPU ──────────
 
     def _idx(self, arr: torch.Tensor) -> torch.Tensor:
-        """Index a CPU motion array with GPU time_steps, return result on GPU."""
-        return arr[self.time_steps.cpu()].to(self.device, non_blocking=True)
+        """Index a motion array with GPU time_steps. All data is on GPU."""
+        return arr[self.time_steps]
 
     @property
     def joint_pos(self) -> torch.Tensor:
@@ -756,19 +756,19 @@ class MultiClipMotionCommand(MotionCommand):
 
     @property
     def ref_pos_w(self) -> torch.Tensor:
-        return self.motion._body_pos_w[self.time_steps.cpu()].to(self.device, non_blocking=True) + self._env.scene.env_origins[:, None, :]
+        return self.motion._body_pos_w[self.time_steps] + self._env.scene.env_origins[:, None, :]
 
     @property
     def ref_quat_w(self) -> torch.Tensor:
-        return self.motion._body_quat_w[self.time_steps.cpu()].to(self.device, non_blocking=True)
+        return self.motion._body_quat_w[self.time_steps]
 
     @property
     def ref_lin_vel_w(self) -> torch.Tensor:
-        return self.motion._body_lin_vel_w[self.time_steps.cpu()].to(self.device, non_blocking=True)
+        return self.motion._body_lin_vel_w[self.time_steps]
 
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
-        return self.motion._body_ang_vel_w[self.time_steps.cpu()].to(self.device, non_blocking=True)
+        return self.motion._body_ang_vel_w[self.time_steps]
 
     @property
     def vr_3point_body_quat_w(self) -> torch.Tensor:
