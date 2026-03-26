@@ -259,3 +259,81 @@ class G1Bones3ptBindedMultiTerrainEnvCfg(Bones3ptBindedMultiTerrainEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         _g1_post_init(self)
+
+
+@configclass
+class G1BonesMultiClipEnvCfg(Bones3ptEnvCfg):
+    """G1 bones multi-clip training from a Zarr store."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        _g1_post_init(self)
+        self.commands.motion = mdp.ZarrMultiMotionCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(1.0e9, 1.0e9),
+            adaptive_uniform_ratio=0.25,
+            debug_vis=True,
+            pose_range={
+                "x": (-0.05, 0.05),
+                "y": (-0.05, 0.05),
+                "z": (-0.01, 0.01),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.2, 0.2),
+            },
+            velocity_range={
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (-0.2, 0.2),
+                "roll": (-0.52, 0.52),
+                "pitch": (-0.52, 0.52),
+                "yaw": (-0.78, 0.78),
+            },
+            joint_position_range=(-0.1, 0.1),
+        )
+        self.commands.motion.anchor_body_name = "pelvis"
+        self.commands.motion.body_names = G1_BODY_NAMES
+
+
+@configclass
+class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
+    """G1 bones multi-clip with CHIP compliance."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.observations.policy.compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        self.observations.policy.vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
+        self.observations.critic.compliance = ObsTerm(func=mdp.compliance, params={"command_name": "motion"})
+        self.observations.critic.vr_3point_pos_compliant = ObsTerm(func=mdp.vr_3point_local_compliant_target, params={"command_name": "motion"})
+        self.observations.critic.vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_target, params={"command_name": "motion"})
+
+        # For all proprioception add 10 step history (matching CHIP paper)
+        self.observations.policy.gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=10)
+        self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=10)
+        self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=10)
+        self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=10)
+        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta" else mdp.last_action
+        self.observations.policy.actions = ObsTerm(func=action_obs_func, history_length=10)
+
+        self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)
+        self.observations.critic.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, history_length=10)
+        self.observations.critic.joint_pos = ObsTerm(func=mdp.joint_pos_rel, history_length=10)
+        self.observations.critic.joint_vel = ObsTerm(func=mdp.joint_vel_rel, history_length=10)
+        self.observations.critic.actions = ObsTerm(func=action_obs_func, history_length=10)
+
+        self.events.change_compliance = EventTerm(func=mdp.change_compliance,
+                                                  mode="interval",
+                                                  interval_range_s=(0.02, 0.02),
+                                                  params={
+                                                        "command_name": "motion",
+                                                        "compliance_lb": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                                                        "compliance_ub": [0.05, 0.05, 0.0, 0.05, 0.05, 0.05],
+                                                        "compliance_duration": (100, 200),
+                                                        "start_steps": 0
+                                                  })
+        self.rewards.vr_position = RewTerm(func=mdp.vr_position_relative_error_exp,
+                                           weight=2.0,
+                                           params={
+                                                  "command_name": "motion",
+                                                  "std": 0.1,
+                                           })

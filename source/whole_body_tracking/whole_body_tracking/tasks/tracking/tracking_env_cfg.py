@@ -193,8 +193,8 @@ class CommandsCfg:
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    # joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
-    joint_pos = mdp.ReferenceJointPositionActionCfg(asset_name="robot", joint_names=[".*"], command_name="motion")
+    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
+    # joint_pos = mdp.ReferenceJointPositionActionCfg(asset_name="robot", joint_names=[".*"], command_name="motion")
 
 
 @configclass
@@ -487,3 +487,12 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # PPO output mode: delta uses ReferenceJointPositionAction (x_ref + raw_action),
+        # target uses standard JointPositionAction (default_pos + scale * raw_action)
+        if os.environ.get("WBT_PPO_OUTPUT") == "delta":
+            self.actions.joint_pos = mdp.ReferenceJointPositionActionCfg(
+                asset_name="robot", joint_names=[".*"], command_name="motion"
+            )
+            self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+            self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)

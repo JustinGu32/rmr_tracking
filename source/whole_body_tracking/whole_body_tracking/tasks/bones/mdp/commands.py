@@ -1077,3 +1077,340 @@ class BindedMultiMotionCommandCfg(MultiMotionCommandCfg):
     """
 
     class_type: type = BindedMultiMotionCommand
+
+
+class ZarrMotionLoader:
+    """Load motions from a Zarr store containing multiple clips.
+
+    All data is loaded onto the specified device. Per-env indexing is done at
+    training time by ZarrMultiMotionCommand.
+    """
+
+    def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
+                 exclude_props: list[str] | None = None):
+        import zarr as _zarr
+
+        assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
+        store = _zarr.open(zarr_path, mode="r")
+
+        self.fps = int(store["fps"][0])
+        all_clip_start = store["clip_start_idx"][:]
+        all_clip_end = store["clip_end_idx"][:]
+        total_clips_raw = len(all_clip_start)
+
+        # Filter clips by content_props_desc if requested
+        if exclude_props and "content_props_desc" in store:
+            desc = store["content_props_desc"][:]
+            valid_mask = []
+            for i, d in enumerate(desc):
+                d_str = str(d).strip().lower()
+                excluded = any(ep.lower() in d_str for ep in exclude_props)
+                valid_mask.append(not excluded)
+            valid_indices = [i for i, v in enumerate(valid_mask) if v]
+            excluded_count = total_clips_raw - len(valid_indices)
+            print(f"[ZarrMotionLoader] Excluded {excluded_count}/{total_clips_raw} clips "
+                  f"matching props: {exclude_props}")
+        else:
+            valid_indices = list(range(total_clips_raw))
+
+        self.clip_start_idx = torch.tensor([all_clip_start[i] for i in valid_indices], dtype=torch.long)
+        self.clip_end_idx = torch.tensor([all_clip_end[i] for i in valid_indices], dtype=torch.long)
+        self.num_clips = len(self.clip_start_idx)
+        self.clip_lengths = self.clip_end_idx - self.clip_start_idx
+
+        # Load all data to the specified device
+        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32, device=device)
+        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32, device=device)
+        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32, device=device)
+        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32, device=device)
+        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32, device=device)
+        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32, device=device)
+        self._body_indexes = body_indexes.to(device) if isinstance(body_indexes, torch.Tensor) else torch.tensor(body_indexes, dtype=torch.long, device=device)
+        self.time_step_total = self.joint_pos.shape[0]
+
+        # Load wrist grasp labels if available
+        if "wrist_grasp_label" in store:
+            self._wrist_grasp_label = torch.tensor(store["wrist_grasp_label"][:], dtype=torch.bool, device=device)
+
+        print(f"[ZarrMotionLoader] Loaded {self.num_clips} clips, "
+              f"{self.time_step_total} total frames @ {self.fps} fps, "
+              f"{self._body_pos_w.shape[1]} bodies, device={device}")
+
+    @property
+    def body_pos_w(self) -> torch.Tensor:
+        return self._body_pos_w[:, self._body_indexes]
+
+    @property
+    def body_quat_w(self) -> torch.Tensor:
+        return self._body_quat_w[:, self._body_indexes]
+
+    @property
+    def body_lin_vel_w(self) -> torch.Tensor:
+        return self._body_lin_vel_w[:, self._body_indexes]
+
+    @property
+    def body_ang_vel_w(self) -> torch.Tensor:
+        return self._body_ang_vel_w[:, self._body_indexes]
+
+    @property
+    def wrist_grasp_label(self) -> torch.Tensor:
+        if hasattr(self, '_wrist_grasp_label'):
+            return self._wrist_grasp_label
+        else:
+            assert False, "No wrist grasp label in the zarr data!"
+
+
+class ZarrMultiMotionCommand(MultiMotionCommand):
+    """Multi-motion command that samples from multiple clips stored in a Zarr archive.
+
+    Extends MultiMotionCommand, replacing NPZ-based MultiMotionLoader with
+    ZarrMotionLoader and using per-clip boundary tracking instead of
+    concatenated-motion boundaries. Preserves all bones-specific features
+    (force push, compliance, VR 3-point, lookahead, DoF remapping, etc.).
+    """
+
+    cfg: "ZarrMultiMotionCommandCfg"
+
+    def __init__(self, cfg: "ZarrMultiMotionCommandCfg", env: "ManagerBasedRLEnv"):
+        # Call CommandTerm.__init__ directly (skip MultiMotionCommand which loads NPZ files)
+        CommandTerm.__init__(self, cfg, env)
+
+        self.robot: Articulation = env.scene[cfg.asset_name]
+        self.robot_anchor_body_index = self.robot.body_names.index(self.cfg.anchor_body_name)
+        self.motion_anchor_body_index = self.cfg.body_names.index(self.cfg.anchor_body_name)
+        self.body_indexes = torch.tensor(
+            self.robot.find_bodies(self.cfg.body_names, preserve_order=True)[0], dtype=torch.long, device=self.device
+        )
+
+        # Load from Zarr instead of NPZ files
+        exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
+        self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
+                                       exclude_props=exclude_props)
+
+        self.min_sample_idx = cfg.min_sample_idx
+        self.max_sample_idx = cfg.max_sample_idx
+
+        # Per-env clip tracking
+        self.clip_ids = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.clip_start = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.clip_end = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        # Keep motion_ids as alias for clip_ids (for compatibility with parent properties)
+        self.motion_ids = self.clip_ids
+
+        # Move clip indices to GPU
+        self.motion.clip_start_idx = self.motion.clip_start_idx.to(self.device)
+        self.motion.clip_end_idx = self.motion.clip_end_idx.to(self.device)
+        self.motion.clip_lengths = self.motion.clip_lengths.to(self.device)
+
+        # Lookahead (from MultiMotionCommand)
+        self.look_ahead_steps_init = (
+            torch.arange(self.cfg.look_ahead_frames, device=self.device, dtype=torch.long)
+            * self.cfg.look_ahead_frame_skips
+        ).view(1, -1).repeat(self.num_envs, 1)
+
+        self.body_pos_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 3, device=self.device)
+        self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
+        self.body_quat_relative_w[:, :, 0] = 1.0
+
+        # Adaptive sampling: per-clip failure tracking
+        self.bin_count = self.motion.num_clips
+        self.bin_failed_count = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
+        self._current_bin_failed = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
+        self.kernel = torch.tensor(
+            [self.cfg.adaptive_lambda**i for i in range(self.cfg.adaptive_kernel_size)], device=self.device
+        )
+        self.kernel = self.kernel / self.kernel.sum()
+
+        # VR 3-point (from MultiMotionCommand)
+        self.vr_3point_body_indices = [self.robot.body_names.index(name) for name in self.cfg.vr_3point_body]
+        self.vr_3point_body_indices_motion = [self.cfg.body_names.index(name) for name in self.cfg.vr_3point_body]
+        self.vr_3point_body_offsets = torch.tensor(
+            self.cfg.vr_3point_body_offset, dtype=torch.float32, device=self.device
+        ).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+        self.vr_3point_ground_clamp_indices = [
+            i for i, name in enumerate(self.cfg.vr_3point_body)
+            if name in self.cfg.vr_3point_ground_clamp_bodies
+        ]
+
+        # DoF remapping (from MultiMotionCommand)
+        self.isaaclab_to_mujoco_dof = [0, 3, 6, 9, 13, 17, 1, 4, 7, 10, 14, 18, 2, 5, 8, 11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28]
+        self.mujoco_to_isaaclab_dof = [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+        self.lower_joint_indices_mujoco = list(range(12))
+        self.lower_joint_isaaclab_indices = [self.isaaclab_to_mujoco_dof[i] for i in self.lower_joint_indices_mujoco]
+
+        self.down_dir = torch.tensor(
+            [0.0, 0.0, -1.0], dtype=torch.float32, device=self.device
+        ).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+
+        # Force push (from MultiMotionCommand)
+        self.force_update_frequency = self.cfg.force_update_frequency
+        self.max_force = self.cfg.max_force
+        self.num_bodies = len(self.cfg.body_names)
+        self.body_force_dir_buf = torch.randn(
+            self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device, requires_grad=False
+        )
+        self.body_force_dir_buf /= torch.norm(self.body_force_dir_buf, dim=-1, keepdim=True)
+        self.body_force_magnitude_buf = torch.rand(
+            self.num_envs, dtype=torch.float, device=self.device, requires_grad=False
+        )
+        self.force_push_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.force_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.force_config_init = False
+        self.force_push_ids = self.robot.find_bodies(self.cfg.force_push_body, preserve_order=True)[0]
+        self.non_force_push_ids_rel = []
+        self.force_push_ids_rel = []
+        for i, idx in enumerate(self.body_indexes.tolist()):
+            if idx not in self.force_push_ids:
+                self.non_force_push_ids_rel.append(i)
+            else:
+                self.force_push_ids_rel.append(i)
+        self.force_push_body_offsets = torch.tensor(
+            self.cfg.force_push_body_offset, dtype=torch.float32, device=self.device
+        ).view(1, -1, 3).repeat(self.num_envs, 1, 1)
+        self.last_force_applied = torch.zeros(
+            self.num_envs, len(self.force_push_ids), 3, dtype=torch.float, device=self.device, requires_grad=False
+        )
+        self.force_push_no_contact_indices = [
+            i for i, name in enumerate(self.cfg.force_push_body)
+            if name in self.cfg.force_push_no_push_on_contact
+        ]
+        if self.force_push_no_contact_indices:
+            no_contact_names = [self.cfg.force_push_body[i] for i in self.force_push_no_contact_indices]
+            self.force_push_no_contact_body_ids = self.robot.find_bodies(no_contact_names, preserve_order=True)[0]
+        else:
+            self.force_push_no_contact_body_ids = []
+
+        # Compliance (from MultiMotionCommand)
+        self.compliance_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.compliance_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
+        self.eef_stiffness_buf = torch.zeros(self.num_envs, len(self.cfg.force_push_body), dtype=torch.float32, device=self.device)
+        self.compliance_config_init = False
+
+        # Metrics
+        self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_anchor_lin_vel"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_anchor_ang_vel"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_body_pos"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_body_rot"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_joint_pos"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["error_joint_vel"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
+        self.metrics["force applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+
+        # Initial clip assignment
+        self._assign_random_clips(torch.arange(self.num_envs, device=self.device))
+
+    def _assign_random_clips(self, env_ids: torch.Tensor):
+        """Assign random clips and random start frames to the given envs."""
+        n = len(env_ids)
+        clip_ids = torch.randint(0, self.motion.num_clips, (n,), device=self.device)
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
+        self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
+
+        # Random start within each clip
+        clip_lens = self.clip_end[env_ids] - self.clip_start[env_ids]
+        offsets = (torch.rand(n, device=self.device) * (clip_lens - 1).float()).long()
+        self.time_steps[env_ids] = self.clip_start[env_ids] + offsets
+
+    @property
+    def future_time_steps(self) -> torch.Tensor:
+        return torch.clip(
+            self.look_ahead_steps_init + self.time_steps[:, None],
+            max=self.clip_end[:, None] - 1
+        ).flatten().long()
+
+    def _adaptive_sampling(self, env_ids: Sequence[int]):
+        """Track failures per clip for adaptive sampling."""
+        env_ids_t = torch.as_tensor(env_ids, device=self.device)
+        episode_failed = self._env.termination_manager.terminated[env_ids_t]
+        if torch.any(episode_failed):
+            fail_clips = self.clip_ids[env_ids_t][episode_failed]
+            self._current_bin_failed[:] = torch.bincount(
+                fail_clips, minlength=self.motion.num_clips
+            ).float()
+
+    def _resample_command(self, env_ids: Sequence[int]):
+        if len(env_ids) == 0:
+            return
+
+        env_ids_t = torch.as_tensor(env_ids, device=self.device)
+        self._adaptive_sampling(env_ids)
+
+        # Assign new random clips
+        self._assign_random_clips(env_ids_t)
+
+        # Reset robot state (same as parent)
+        root_pos = self.body_pos_w[:, 0].clone()
+        root_ori = self.body_quat_w[:, 0].clone()
+        root_lin_vel = self.body_lin_vel_w[:, 0].clone()
+        root_ang_vel = self.body_ang_vel_w[:, 0].clone()
+
+        range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=self.device)
+        rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
+        root_pos[env_ids] += rand_samples[:, 0:3]
+        orientations_delta = quat_from_euler_xyz(rand_samples[:, 3], rand_samples[:, 4], rand_samples[:, 5])
+        root_ori[env_ids] = quat_mul(orientations_delta, root_ori[env_ids])
+        range_list = [self.cfg.velocity_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
+        ranges = torch.tensor(range_list, device=self.device)
+        rand_samples = sample_uniform(ranges[:, 0], ranges[:, 1], (len(env_ids), 6), device=self.device)
+        root_lin_vel[env_ids] += rand_samples[:, :3]
+        root_ang_vel[env_ids] += rand_samples[:, 3:]
+
+        joint_pos = self.joint_pos.clone()
+        joint_vel = self.joint_vel.clone()
+        joint_pos += sample_uniform(*self.cfg.joint_position_range, joint_pos.shape, joint_pos.device)
+        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
+        joint_pos[env_ids] = torch.clip(
+            joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
+        )
+        self.robot.write_joint_state_to_sim(joint_pos[env_ids], joint_vel[env_ids], env_ids=env_ids)
+        self.robot.write_root_state_to_sim(
+            torch.cat([root_pos[env_ids], root_ori[env_ids], root_lin_vel[env_ids], root_ang_vel[env_ids]], dim=-1),
+            env_ids=env_ids,
+        )
+
+    def _update_command(self):
+        self.time_steps += 1
+        # Check which envs have exceeded their clip boundary
+        env_ids = torch.where(self.time_steps >= self.clip_end)[0]
+        self._resample_command(env_ids)
+
+        anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+        anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+        robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+        robot_anchor_quat_w_repeat = self.robot_anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+
+        delta_pos_w = robot_anchor_pos_w_repeat
+        delta_pos_w[..., 2] = anchor_pos_w_repeat[..., 2]
+        delta_ori_w = yaw_quat(quat_mul(robot_anchor_quat_w_repeat, quat_inv(anchor_quat_w_repeat)))
+
+        self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
+        self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_repeat)
+
+        self.bin_failed_count = (
+            self.cfg.adaptive_alpha * self._current_bin_failed
+            + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
+        )
+        self._current_bin_failed.zero_()
+
+
+@configclass
+class ZarrMultiMotionCommandCfg(MultiMotionCommandCfg):
+    """Configuration for multi-clip motion command using a Zarr store."""
+
+    class_type: type = ZarrMultiMotionCommand
+
+    zarr_path: str = MISSING
+    """Path to the Zarr motion store."""
+
+    exclude_objects: bool = True
+    """Whether to exclude motions with object manipulation (content_props). Default: True."""
+
+    # Override motion_files — not used in zarr mode
+    motion_files: list[str] = []

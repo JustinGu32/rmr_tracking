@@ -29,10 +29,15 @@ class ReferenceJointPositionAction(JointPositionAction):
         x_ref = motion_command.joint_pos
         if not isinstance(self._joint_ids, slice):
             x_ref = x_ref[:, self._joint_ids]
-        
+
+        # Clip raw delta to prevent simulation blowup from large initial std
+        delta = self._raw_actions
+        if self.cfg.delta_clip is not None:
+            delta = torch.clamp(delta, min=-self.cfg.delta_clip, max=self.cfg.delta_clip)
+
         # PD target = x_ref + delta (no scale — PPO output is the actual radian delta)
-        self._processed_actions = x_ref + self._raw_actions
-        # clip actions
+        self._processed_actions = x_ref + delta
+        # clip processed actions (absolute joint positions)
         if self.cfg.clip is not None:
             self._processed_actions = torch.clamp(
                 self._processed_actions, min=self._clip[:, :, 0], max=self._clip[:, :, 1]
@@ -46,3 +51,7 @@ class ReferenceJointPositionActionCfg(JointPositionActionCfg):
     class_type: type = ReferenceJointPositionAction
     command_name: str = "motion"
     """Name of the MotionCommand term in the command manager."""
+
+    delta_clip: float | None = 0.5
+    """Max absolute delta in radians. Clips raw PPO output before adding to x_ref.
+    Prevents simulation blowup from large initial exploration noise. Default: 0.5 rad (~28 deg)."""

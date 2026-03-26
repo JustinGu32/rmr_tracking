@@ -45,6 +45,17 @@ def vr_3point_local_orn_target(env: ManagerBasedEnv, command_name: str) -> torch
     return ref_3point_root.view(env.num_envs, -1)
 
 
+def last_action_pseudotarget(env: ManagerBasedEnv) -> torch.Tensor:
+    """Last action in pseudo-target units: (processed_actions - default_pos) / scale.
+
+    For target mode this equals the raw PPO output (backward compatible).
+    For delta mode this equals (x_ref + delta - default_pos) / scale, matching the ONNX output format.
+    """
+    action_term = env.action_manager.get_term("joint_pos")
+    default_pos = env.scene["robot"].data.default_joint_pos
+    return (action_term.processed_actions - default_pos) / action_term._scale
+
+
 def compliance(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     return command.eef_stiffness_buf * 10.0

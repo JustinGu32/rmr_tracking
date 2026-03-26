@@ -141,19 +141,19 @@ conda activate env_isaaclab
 #    --crane \
 #    --video --video_interval 10000
 
-# # 10. delta + push-none + no-cmd-obs
-# python scripts/rsl_rl/train_bones.py \
-#    --task=Bones-Flat-chip-G1-v0 \
-#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
-#    --headless \
-#    --logger wandb \
-#    --log_project_name bones_crane_ablation \
-#    --run_name crane_a5000 \
-#    --ppo_output delta \
-#    --push none \
-#    --no_command_obs \
-#    --crane \
-#    --video --video_interval 10000
+# 10. delta + push-none + no-cmd-obs
+python scripts/rsl_rl/train_bones.py \
+   --task=Bones-Flat-chip-G1-v0 \
+   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+   --headless \
+   --logger wandb \
+   --log_project_name bones_crane_ablation \
+   --run_name crane_a5000 \
+   --ppo_output delta \
+   --push none \
+   --no_command_obs \
+   --crane \
+   --video --video_interval 10000
 
 # # 11. target + push-none
 # python scripts/rsl_rl/train_bones.py \
@@ -168,16 +168,16 @@ conda activate env_isaaclab
 #    --crane \
 #    --video --video_interval 10000
 
-# 12. target + push-none + no-cmd-obs
-python scripts/rsl_rl/train_bones.py \
-   --task=Bones-Flat-chip-G1-v0 \
-   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
-   --headless \
-   --logger wandb \
-   --log_project_name bones_crane_ablation \
-   --run_name crane_a5000 \
-   --ppo_output target \
-   --push none \
-   --no_command_obs \
-   --crane \
-   --video --video_interval 10000
+# # 12. target + push-none + no-cmd-obs
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_crane_ablation \
+#    --run_name crane_a5000 \
+#    --ppo_output target \
+#    --push none \
+#    --no_command_obs \
+#    --crane \
+#    --video --video_interval 10000
