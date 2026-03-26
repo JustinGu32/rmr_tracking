@@ -17,11 +17,11 @@ mkdir -p logs/slurm
 
 # # Run training
 # cd /move/u/takaraet/rmr_tracking
-conda run -n rmr --live-stream python scripts/rsl_rl/train.py \
+ scripts/rsl_rl/train.py \
     --task=Tracking-MultiClip-Flat-G1-v0 \
-    --zarr_path=/move/u/takaraet/rmr_tracking/data/test_train.zarr \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
     --num_envs=4096 \
     --headless \
     --logger wandb \
     --log_project_name multiclip_tracking \
-    --run_name multiclip_100clip_test
+    --run_name locomotion
