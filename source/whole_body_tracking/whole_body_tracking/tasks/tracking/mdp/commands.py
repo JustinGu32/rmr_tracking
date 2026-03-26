@@ -552,13 +552,13 @@ class ZarrMotionLoader:
         self.num_clips = len(self.clip_start_idx)
         self.clip_lengths = self.clip_end_idx - self.clip_start_idx
 
-        # Load all data into CPU pinned memory for fast GPU transfer
-        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32).pin_memory()
-        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32).pin_memory()
-        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32).pin_memory()
-        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32).pin_memory()
-        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32).pin_memory()
-        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32).pin_memory()
+        # Load all data into CPU memory
+        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32)
+        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32)
+        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32)
+        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32)
+        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32)
+        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32)
         # Body indexes from robot.find_bodies() — Zarr is already in Isaac order
         self._body_indexes = body_indexes.cpu() if isinstance(body_indexes, torch.Tensor) else torch.tensor(body_indexes, dtype=torch.long)
         self.time_step_total = self.joint_pos.shape[0]

@@ -3,7 +3,7 @@
 #SBATCH --partition=move  --account=move
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm/multiclip_%j.out
 #SBATCH --error=logs/slurm/multiclip_%j.err
@@ -17,11 +17,12 @@ mkdir -p logs/slurm
 
 # # Run training
 # cd /move/u/takaraet/rmr_tracking
- scripts/rsl_rl/train.py \
+conda run -n rmr --live-stream python scripts/rsl_rl/train.py \
     --task=Tracking-MultiClip-Flat-G1-v0 \
-    --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
     --num_envs=4096 \
     --headless \
     --logger wandb \
     --log_project_name multiclip_tracking \
-    --run_name locomotion
+    --run_name locomotion_33hz
+
