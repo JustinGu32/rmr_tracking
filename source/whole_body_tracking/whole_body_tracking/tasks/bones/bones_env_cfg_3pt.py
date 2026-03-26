@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -12,9 +13,8 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
+from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
-import os
 
 ##
 # Pre-defined configs
@@ -22,7 +22,7 @@ import os
 from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
-import whole_body_tracking.tasks.tracking.mdp as mdp
+import whole_body_tracking.tasks.bones.mdp as mdp
 
 ##
 # Scene definition
@@ -44,35 +44,6 @@ VELOCITY_RANGE_SOFT = {
     "roll": (-0.26, 0.26),
     "pitch": (-0.26, 0.26),
     "yaw": (-0.39, 0.39),
-}
-
-VELOCITY_RANGE_Null = {
-    "x":  (-0.0, 0.0),
-    "y":  (-0.0, 0.0),
-    "z":  (-0.0, 0.0),
-    "roll": (-0.0, 0.0),
-    "pitch":(-.0, 0.0),
-    "yaw":  (-0.0, 0.0),
-}
-
-
-VELOCITY_RANGE_COLLECT = {
-    "x": (-0.05, 0.05),
-    "y": (-0.05, 0.05),
-    "z": (-0.025, 0.025),
-    "roll": (-0.02, 0.02),
-    "pitch": (-0.02, 0.02),
-    "yaw": (-0.02, 0.02),
-}
-
-
-VELOCITY_RANGE_COLLECT2= {
-    "x": (-0.1, 0.1),
-    "y": (-0.1, 0.1),
-    "z": (-0.05, 0.05),
-    "roll": (-0.02, 0.02),
-    "pitch": (-0.02, 0.02),
-    "yaw": (-0.02, 0.02),
 }
 
 
@@ -111,33 +82,6 @@ class MySceneCfg(InteractiveSceneCfg):
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
 
-    # Depth camera mounted on the D435 link (head)
-    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    # import ipdb; ipdb.set_trace();
-    depth_camera: TiledCameraCfg | None = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            debug_vis=True,
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-                convention="ros",
-            ),
-        )
-        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-        else None
-    )
-
-
 
 ##
 # MDP settings
@@ -148,53 +92,44 @@ class MySceneCfg(InteractiveSceneCfg):
 class CommandsCfg:
     """Command specifications for the MDP."""
 
-    motion = mdp.MotionCommandCfg(
+    # motion = mdp.MotionCommandCfg(
+    #     asset_name="robot",
+    #     resampling_time_range=(1.0e9, 1.0e9),
+    #     debug_vis=True,
+    #     pose_range={
+    #         "x": (-0.05, 0.05),
+    #         "y": (-0.05, 0.05),
+    #         "z": (-0.01, 0.01),
+    #         "roll": (-0.1, 0.1),
+    #         "pitch": (-0.1, 0.1),
+    #         "yaw": (-0.2, 0.2),
+    #     },
+    #     velocity_range=VELOCITY_RANGE,
+    #     joint_position_range=(-0.1, 0.1),
+    # )
+    motion = mdp.MultiMotionCommandCfg(
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
+        adaptive_uniform_ratio=0.25,
         debug_vis=True,
-        # Todo: define as parameter instead
         pose_range={
-            "x": (-0.02, 0.02),
-            "y": (-0.02, 0.02),
-            "z": (-0.005, 0.005),
+            "x": (-0.05, 0.05),
+            "y": (-0.05, 0.05),
+            "z": (-0.01, 0.01),
             "roll": (-0.1, 0.1),
             "pitch": (-0.1, 0.1),
-            "yaw": (-0.1, 0.1),
+            "yaw": (-0.2, 0.2),
         },
-        velocity_range=VELOCITY_RANGE_SOFT,
-        joint_position_range=(-0.05, 0.05),
-
-        # pose_range={
-        #     "x": (-0.05, 0.05),
-        #     "y": (-0.05, 0.05),
-        #     "z": (-0.01, 0.01),
-        #     "roll": (-0.1, 0.1),
-        #     "pitch": (-0.1, 0.1),
-        #     "yaw": (-0.2, 0.2),
-        # },
-        # velocity_range=VELOCITY_RANGE,
-        # joint_position_range=(-0.1, 0.1),
-
-        # pose_range={
-        #     "x": (0.0, 0.0),
-        #     "y": (0.0, 0.0),
-        #     "z": (0.0, 0.0),
-        #     "roll":  (0.0, 0.0),
-        #     "pitch": (0.0, 0.0),
-        #     "yaw":   (0.0, 0.0),
-        # },
-        # velocity_range=VELOCITY_RANGE_Null,
-        # joint_position_range=(0.0, 0.0),
-        # joint_position_range=(-.1, .1),
+        velocity_range=VELOCITY_RANGE,
+        joint_position_range=(-0.1, 0.1),
     )
-
 
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
 
-    # joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
-    joint_pos = mdp.ReferenceJointPositionActionCfg(asset_name="robot", joint_names=[".*"], command_name="motion")
+    joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
+    # joint_pos = mdp.ReferenceJointPositionActionCfg(asset_name="robot", joint_names=[".*"], command_name="motion")
 
 
 @configclass
@@ -202,18 +137,23 @@ class ObservationsCfg:
     """Observation specifications for the MDP."""
 
     @configclass
-    class PolicyDeployCfg(ObsGroup):
+    class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
+        # command = ObsTerm(func=mdp.command_lower_body, params={"command_name":"motion"})
+        vr_3point_pos = ObsTerm(func=mdp.vr_3point_local_target, params={"command_name":"motion"})
+        vr_3point_orn = ObsTerm(func=mdp.vr_3point_local_orn_target, params={"command_name":"motion"})
+        #command = ObsTerm(func=mdp.command_lookahead, params={"command_name":"motion"})
         # motion_anchor_pos_b = ObsTerm(
-        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
+        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.2, n_max=0.2)
         # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-1.0, n_max=1.0))
+        gravity_dir = ObsTerm(func=mdp.projected_gravity, params={"command_name": "motion"}, noise=Unoise(n_min=-0.01, n_max=0.01))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
@@ -222,7 +162,7 @@ class ObservationsCfg:
         def __post_init__(self):
             self.enable_corruption = True
             self.concatenate_terms = True
-            
+
     @configclass
     class PrivilegedCfg(ObsGroup):
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
@@ -235,27 +175,10 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
-    
-    @configclass
-    class DiffusionCollect(ObsGroup):
-        """New policy observations."""
 
-        body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
-        body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.02, n_max=0.02))
-        body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
-        body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
-        
-        # comment these two when exporting
-        dof_pos = ObsTerm(func=mdp.joint_pos_rel)
-        dof_vel = ObsTerm(func=mdp.joint_vel_rel) 
-        
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
     # observation groups
-    policy: PolicyCfg = PolicyDeployCfg()
+    policy: PolicyCfg = PolicyCfg()
     critic: PrivilegedCfg = PrivilegedCfg()
-    diffusion_collect: DiffusionCollect = DiffusionCollect() 
 
 
 @configclass
@@ -284,16 +207,7 @@ class EventCfg:
             "operation": "add",
         },
     )
-    # teleport = EventTerm(
-    #     func=mdp.teleport_root_with_noise,
-    #     mode='interval',
-    #     interval_range_s=(0.0, .1),
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "root_pos_noise_range": (-0.01, 0.01),
-    #         "root_rot_noise_range": (-0.02, 0.02),
-    #     },
-    # )
+
     base_com = EventTerm(
         func=mdp.randomize_rigid_body_com,
         mode="startup",
@@ -303,37 +217,23 @@ class EventCfg:
         },
     )
 
-    #train 
     # interval
-    push_robot = EventTerm(
-        func=mdp.push_by_setting_velocity,
-        mode="interval",
-        interval_range_s=(1.0, 3.0),
-        params={"velocity_range": VELOCITY_RANGE_SOFT},
-    )
-
-    # collect
     # push_robot = EventTerm(
     #     func=mdp.push_by_setting_velocity,
     #     mode="interval",
-    #     interval_range_s=(0, .1),
-    #     params={"velocity_range": VELOCITY_RANGE_COLLECT2},
+    #     interval_range_s=(1.0, 3.0),
+    #     params={"velocity_range": VELOCITY_RANGE},
     # )
 
-    # random_body_forces = EventTerm(
-    #     func=mdp.apply_random_body_forces,
-    #     mode="interval",
-    #     interval_range_s=(0.0, .1),
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("robot"),
-    #         "command_name": "motion",
-    #         "body_names": ["left_ankle_roll_link", 'right_ankle_roll_link'],
-    #         "force_std": (20.0, 20.0, 45.0),
-    #         # "force_std": (50.0, 50.0, 45.0),
-
-    #         "torque_std": (5.0, 5.0, 5.0),
-    #     },
-    # )
+    # force push robot
+    force_push_robot = EventTerm(
+        func=mdp.force_based_push,
+        mode="interval",
+        interval_range_s=(0.02, 0.02),
+        params={"force_duration": [50,100],
+                "command_name": "motion",
+                "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
+    )
 
 
 @configclass
@@ -371,20 +271,6 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    motion_joint_pos = RewTerm(
-        func=mdp.motion_joint_position_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.15},
-    )
-    # double_step_penalty = RewTerm(
-    #     func=mdp.double_step_penalty,
-    #     weight=0.5,
-    #     params={
-    #         "command_name": "motion",
-    #         "threshold": 2.0,
-    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
-    #     },
-    # )
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -409,10 +295,8 @@ class RewardsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    # time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    time_out = DoneTerm(func=mdp.my_time_out, 
-                        params={"command_name": "motion",},
-                        time_out=True)
+    time_out = DoneTerm(func=mdp.time_out, time_out=True)
+    motion_ended = DoneTerm(func=mdp.motion_ended, params={"command_name": "motion"})
     anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
@@ -434,14 +318,6 @@ class TerminationsCfg:
             ],
         },
     )
-    # double_step = DoneTerm(
-    #     func=mdp.double_step,
-    #     params={
-    #         "command_name": "motion",
-    #         "threshold": 3.0,
-    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
-    #     },
-    # )
 
 
 @configclass
@@ -457,11 +333,11 @@ class CurriculumCfg:
 
 
 @configclass
-class TrackingEnvCfg(ManagerBasedRLEnvCfg):
+class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the locomotion velocity-tracking environment."""
 
     # Scene settings
-    scene: MySceneCfg = MySceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: MySceneCfg = MySceneCfg(num_envs=8192, env_spacing=2.5)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -475,7 +351,6 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        # Todo: define with WandB/data collection
         self.decimation = 4
         self.episode_length_s = 10.0
         # simulation settings
@@ -487,3 +362,54 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # --- CLI flag overrides (via env vars set by train_bones.py) ---
+        # PPO output mode
+        if os.environ.get("BONES_PPO_OUTPUT") == "delta":
+            self.actions.joint_pos = mdp.ReferenceJointPositionActionCfg(
+                asset_name="robot", joint_names=[".*"], command_name="motion"
+            )
+            self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+            self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+
+        # Push perturbation (default: normal)
+        push_mode = os.environ.get("BONES_PUSH", "normal")
+        if push_mode != "none":
+            vel_range = VELOCITY_RANGE_SOFT if push_mode == "soft" else VELOCITY_RANGE
+            self.events.push_robot = EventTerm(
+                func=mdp.push_by_setting_velocity,
+                mode="interval",
+                interval_range_s=(1.0, 3.0),
+                params={"velocity_range": vel_range},
+            )
+
+        # Double-step penalty
+        if os.environ.get("BONES_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        # Crane mode: penalize foot on ground when reference says it should be in the air
+        if os.environ.get("BONES_CRANE") == "1":
+            self.rewards.foot_contact_state = RewTerm(
+                func=mdp.foot_contact_state_penalty,
+                weight=5.0,
+                params={
+                    "command_name": "motion",
+                    "sensor_cfg": SceneEntityCfg(
+                        "contact_forces",
+                        body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+                    ),
+                    "height_threshold": 0.08,
+                },
+            )
+
+        # Remove command observation
+        if os.environ.get("BONES_NO_COMMAND_OBS") == "1":
+            self.observations.policy.command = None

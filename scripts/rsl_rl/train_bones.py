@@ -26,9 +26,13 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
-parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
-parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta"],
+                    help="PPO output mode: 'target' for absolute joint pos, 'delta' for reference-relative.")
+parser.add_argument("--push", type=str, default="normal", choices=["normal", "none", "soft"],
+                    help="Push perturbation: 'normal' (default), 'soft' (reduced range), 'none' (disabled).")
+parser.add_argument("--no_command_obs", action="store_true", default=False, help="Remove generated_commands observation from policy.")
+parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -41,12 +45,14 @@ if args_cli.video:
     args_cli.enable_cameras = True
 
 # Export CLI flags as env vars so __post_init__ in env configs can read them
-if args_cli.curriculum:
-    os.environ["WBT_CURRICULUM"] = "1"
 if args_cli.double_step:
-    os.environ["WBT_DOUBLE_STEP"] = "1"
-if args_cli.motion_joint_pos:
-    os.environ["WBT_MOTION_JOINT_POS"] = "1"
+    os.environ["BONES_DOUBLE_STEP"] = "1"
+os.environ["BONES_PPO_OUTPUT"] = args_cli.ppo_output
+os.environ["BONES_PUSH"] = args_cli.push
+if args_cli.no_command_obs:
+    os.environ["BONES_NO_COMMAND_OBS"] = "1"
+if args_cli.crane:
+    os.environ["BONES_CRANE"] = "1"
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:
@@ -237,6 +243,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+
+    # Auto-generate run name suffix from CLI flags
+    flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}"
+    if args_cli.no_command_obs:
+        flag_suffix += "_no-cmd-obs"
+    if args_cli.double_step:
+        flag_suffix += "_dstep"
+    if args_cli.crane:
+        flag_suffix += "_crane"
+    if agent_cfg.run_name:
+        agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
+    else:
+        agent_cfg.run_name = flag_suffix
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

@@ -40,11 +40,23 @@ class _OnnxMotionPolicyExporter(_OnnxPolicyExporter):
         self.body_lin_vel_w = cmd.motion.body_lin_vel_w.to("cpu")
         self.body_ang_vel_w = cmd.motion.body_ang_vel_w.to("cpu")
         self.time_step_total = self.joint_pos.shape[0]
+        self.ppo_output = os.environ.get("BONES_PPO_OUTPUT", "target")
+
+        action_term = env.action_manager.get_term("joint_pos")
+        self.action_scale = action_term._scale.to("cpu")
+        self.default_joint_pos = env.scene["robot"].data.default_joint_pos_nominal[0].to("cpu")
 
     def forward(self, x, time_step):
         time_step_clamped = torch.clamp(time_step.long().squeeze(-1), max=self.time_step_total - 1)
+        if self.ppo_output == "delta":
+            # PD target = x_ref + raw_action (no scale in training)
+            # Inference applies: default_joint_pos + scale * onnx_output
+            # So: onnx_output = (x_ref + raw_action - default_joint_pos) / scale
+            actions = (self.joint_pos[time_step_clamped] + self.actor(self.normalizer(x)) - self.default_joint_pos) / self.action_scale
+        else:  # target
+            actions = self.actor(self.normalizer(x))
         return (
-            self.actor(self.normalizer(x)),
+            actions,
             self.joint_pos[time_step_clamped],
             self.joint_vel[time_step_clamped],
             self.body_pos_w[time_step_clamped],

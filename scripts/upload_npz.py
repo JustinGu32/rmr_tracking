@@ -2,11 +2,11 @@ import wandb
 import os
 
 REGISTRY_NAME = "motions"
-COLLECTION_NAME = "waltz_full"
-FILE_PATH = "/move/u/justingu/rmr_tracking/artifacts/waltz_full:v0/motion.npz"
+COLLECTION_NAME = "crane"
+FILE_PATH = "/move/u/justingu/rmr_tracking/motions/crane/motion.npz"
 
 # Log to a regular project, then link to registry
-run = wandb.init(project="upload_npz", name=COLLECTION_NAME)
+run = wandb.init(project="crane", name=COLLECTION_NAME)
 
 # Create a fresh artifact
 artifact = wandb.Artifact(name=COLLECTION_NAME, type=REGISTRY_NAME)
