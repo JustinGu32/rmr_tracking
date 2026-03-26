@@ -10,6 +10,8 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import whole_body_tracking.tasks.tracking.mdp as mdp
+from whole_body_tracking.tasks.tracking.mdp.commands import MultiClipMotionCommandCfg
+
 
 @configclass
 class G1FlatEnvCfg(TrackingEnvCfg):
@@ -195,4 +197,40 @@ class G1FlatCompliancePlayEnvCfg(G1FlatComplianceEnvCfg):
         )
         self.events.push_robot = None
         self.events.force_push_robot = None
+
+
+@configclass
+class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
+    """G1 flat tracking with multi-clip Zarr motion loading."""
+    def __post_init__(self):
+        super().__post_init__()
+
+        # Grab all the existing command settings from the parent
+        parent_cfg = self.commands.motion
+
+        # Replace with multi-clip version, preserving all parent settings
+        self.commands.motion = MultiClipMotionCommandCfg(
+            asset_name=parent_cfg.asset_name,
+            resampling_time_range=parent_cfg.resampling_time_range,
+            debug_vis=parent_cfg.debug_vis,
+            zarr_path="",  # Placeholder — set at runtime by train.py via --zarr_path
+            anchor_body_name=parent_cfg.anchor_body_name,
+            body_names=parent_cfg.body_names,
+            pose_range=parent_cfg.pose_range,
+            velocity_range=parent_cfg.velocity_range,
+            joint_position_range=parent_cfg.joint_position_range,
+            adaptive_kernel_size=parent_cfg.adaptive_kernel_size,
+            adaptive_lambda=parent_cfg.adaptive_lambda,
+            adaptive_uniform_ratio=parent_cfg.adaptive_uniform_ratio,
+            adaptive_alpha=parent_cfg.adaptive_alpha,
+            min_sample_idx=parent_cfg.min_sample_idx,
+            max_sample_idx=parent_cfg.max_sample_idx,
+            steps_collect=parent_cfg.steps_collect,
+            force_update_frequency=parent_cfg.force_update_frequency,
+            max_force=parent_cfg.max_force,
+            force_push_body=parent_cfg.force_push_body,
+            force_push_body_offset=parent_cfg.force_push_body_offset,
+            vr_3point_body=parent_cfg.vr_3point_body,
+            vr_3point_body_offset=parent_cfg.vr_3point_body_offset,
+        )
 
