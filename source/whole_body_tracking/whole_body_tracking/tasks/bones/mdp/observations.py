@@ -138,7 +138,7 @@ def last_action_pseudotarget(env: ManagerBasedEnv) -> torch.Tensor:
     """Last action in pseudo-target units: (processed_actions - default_pos) / scale.
 
     For target mode this equals the raw PPO output (backward compatible).
-    For delta mode this equals (x_ref + delta - default_pos) / scale, matching the ONNX output format.
+    For delta-pseudotarget mode this equals (x_ref + delta - default_pos) / scale, matching the ONNX output format.
     """
     action_term = env.action_manager.get_term("joint_pos")
     default_pos = env.scene["robot"].data.default_joint_pos

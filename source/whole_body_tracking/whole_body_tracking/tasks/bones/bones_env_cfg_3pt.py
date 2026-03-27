@@ -6,6 +6,7 @@ from dataclasses import MISSING
 import isaaclab.sim as sim_utils
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -235,6 +236,10 @@ class EventCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
 
+    # Assistive spring force (enabled via --curriculum flag)
+    # Applied every physics step; curriculum_factor is ramped 1→0 by CurriculumCfg
+    assistive_spring_force = None
+
 
 @configclass
 class RewardsCfg:
@@ -327,6 +332,32 @@ class CurriculumCfg:
     pass
 
 
+@configclass
+class SpringForceCurriculumCfg:
+    """Curriculum that linearly decays an assistive spring force from 1→0."""
+
+    spring_force_linear = CurrTerm(
+        func=mdp.LinearForceScheduler,
+        params={
+            "command_name": "motion",
+            "start_steps": 0,
+            "ramp_steps": 120000,  # ~5k iters × 24 steps_per_env
+        },
+    )
+    spring_force_factor = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.assistive_spring_force.params.curriculum_factor",
+            "modify_fn": mdp.linear_interpolate_fn,
+            "modify_params": {
+                "initial_value": 1.0,
+                "final_value": 0.0,
+                "difficulty_term_str": "spring_force_linear",
+            },
+        },
+    )
+
+
 ##
 # Environment configuration
 ##
@@ -365,12 +396,14 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
 
         # --- CLI flag overrides (via env vars set by train_bones.py) ---
         # PPO output mode
-        if os.environ.get("BONES_PPO_OUTPUT") == "delta":
+        ppo_output = os.environ.get("BONES_PPO_OUTPUT")
+        if ppo_output in ("delta-pseudotarget", "delta-all"):
             self.actions.joint_pos = mdp.ReferenceJointPositionActionCfg(
                 asset_name="robot", joint_names=[".*"], command_name="motion"
             )
-            self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
-            self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+            if ppo_output == "delta-pseudotarget":
+                self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+                self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
 
         # Push perturbation (default: normal)
         push_mode = os.environ.get("BONES_PUSH", "normal")
@@ -399,7 +432,7 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
         if os.environ.get("BONES_CRANE") == "1":
             self.rewards.foot_contact_state = RewTerm(
                 func=mdp.foot_contact_state_penalty,
-                weight=5.0,
+                weight=2.0,
                 params={
                     "command_name": "motion",
                     "sensor_cfg": SceneEntityCfg(
@@ -413,3 +446,21 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
         # Remove command observation
         if os.environ.get("BONES_NO_COMMAND_OBS") == "1":
             self.observations.policy.command = None
+
+        # Assistive spring force curriculum
+        if os.environ.get("BONES_CURRICULUM") == "1":
+            self.events.assistive_spring_force = EventTerm(
+                func=mdp.apply_spring_force,
+                mode="interval",
+                interval_range_s=(0.005, 0.005),
+                params={
+                    "command_name": "motion",
+                    "asset_name": "robot",
+                    "stiffness": 2000.0,
+                    "ang_stiffness": 300.0,
+                    "damping": 15.0,
+                    "axis_weights": (1.0, 1.0, 1.0),
+                    "curriculum_factor": 1.0,
+                },
+            )
+            self.curriculum = SpringForceCurriculumCfg()

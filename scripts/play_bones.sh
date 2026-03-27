@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:l40s:1 
+#SBATCH --gres=gpu:a5000:1 
 #SBATCH --job-name=bones_crane
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
@@ -74,13 +74,13 @@ play_run() {
 # play_run "m97lawzi" "2026-03-25_03-59-38_crane_l40s_target_push-soft_no-cmd-obs" "target" "1"
 
 # 9. delta + push-none
-play_run "7qr0d4dy" "2026-03-25_04-00-14_crane_a5000_delta_push-none" "delta" "0"
+play_run "2qkabw5i" "2026-03-26_20-52-39_crane_a5000_delta_push-none" "delta" "0"
 
 # # 10. delta + push-none + no-cmd-obs
-# play_run "zikhwu99" "2026-03-25_04-00-37_crane_a5000_delta_push-none_no-cmd-obs" "delta" "1"
+# play_run "o038luft" "2026-03-26_12-24-02_crane_a5000_delta_push-none_no-cmd-obs_crane" "delta" "1"
 
-# # 11. target + push-none
-# play_run "ke5triph" "2026-03-25_04-01-38_crane_a5000_target_push-none" "target" "0"
+# 11. target + push-none
+# play_run "31jta9bw" "2026-03-26_20-52-39_crane_a5000_target_push-none" "target" "0"
 
 # # 12. target + push-none + no-cmd-obs
-# play_run "bbjay056" "2026-03-25_04-02-37_crane_a5000_target_push-none_no-cmd-obs" "target" "1"
+# play_run "bt6pmkkr" "2026-03-26_12-24-02_crane_a5000_target_push-none_no-cmd-obs_crane" "target" "1"

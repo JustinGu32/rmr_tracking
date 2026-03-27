@@ -138,22 +138,20 @@ conda activate env_isaaclab
 #    --run_name crane_a5000 \
 #    --ppo_output delta \
 #    --push none \
-#    --crane \
-#    --video --video_interval 10000
+#    --crane 
 
-# 10. delta + push-none + no-cmd-obs
-python scripts/rsl_rl/train_bones.py \
-   --task=Bones-Flat-chip-G1-v0 \
-   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
-   --headless \
-   --logger wandb \
-   --log_project_name bones_crane_ablation \
-   --run_name crane_a5000 \
-   --ppo_output delta \
-   --push none \
-   --no_command_obs \
-   --crane \
-   --video --video_interval 10000
+# # 10. delta + push-none + no-cmd-obs
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_crane_ablation \
+#    --run_name crane_a5000 \
+#    --ppo_output delta \
+#    --push none \
+#    --no_command_obs \
+#    --crane 
 
 # # 11. target + push-none
 # python scripts/rsl_rl/train_bones.py \
@@ -165,8 +163,7 @@ python scripts/rsl_rl/train_bones.py \
 #    --run_name crane_a5000 \
 #    --ppo_output target \
 #    --push none \
-#    --crane \
-#    --video --video_interval 10000
+#    --crane 
 
 # # 12. target + push-none + no-cmd-obs
 # python scripts/rsl_rl/train_bones.py \
@@ -179,5 +176,54 @@ python scripts/rsl_rl/train_bones.py \
 #    --ppo_output target \
 #    --push none \
 #    --no_command_obs \
+#    --crane 
+
+# --- curriculum ablations (13-16) ---
+# # 13. delta + push-none + curriculum
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_crane_ablation \
+#    --run_name crane_a5000 \
+#    --ppo_output delta \
+#    --push none \
 #    --crane \
-#    --video --video_interval 10000
+#    --curriculum
+
+# 14. delta + push-none + no curriculum (baseline, same as #9)
+python scripts/rsl_rl/train_bones.py \
+   --task=Bones-Flat-chip-G1-v0 \
+   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+   --headless \
+   --logger wandb \
+   --log_project_name bones_crane_ablation \
+   --run_name DELTA-ALL_crane_a5000 \
+   --ppo_output delta \
+   --push none
+
+# # 15. target + push-none + curriculum
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_crane_ablation \
+#    --run_name crane_a5000 \
+#    --ppo_output target \
+#    --push none \
+#    --crane \
+#    --curriculum
+
+# # 16. target + push-none + no curriculum (baseline, same as #11)
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_crane_ablation \
+#    --run_name MAIN-URDF_crane_a5000 \
+#    --ppo_output target \
+#    --push none
+

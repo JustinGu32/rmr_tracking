@@ -12,10 +12,11 @@ if TYPE_CHECKING:
 
 
 class ReferenceJointPositionAction(JointPositionAction):
-    """Joint action term where PD target = x_ref + raw_action.
+    """Joint action term where PD target = x_ref + scale * raw_action.
 
-    The PPO output directly represents the delta (x_target - x_ref) in radians.
-    No action scale is applied to the delta.
+    PPO outputs in ~[-1, 1], scaled by per-joint action scale to get the
+    radian delta from x_ref. The pseudotarget observation and ONNX output
+    use the same format as target mode: (PD_target - default_pos) / scale.
     """
 
     def __init__(self, cfg: ReferenceJointPositionActionCfg, env: ManagerBasedEnv):
@@ -30,13 +31,8 @@ class ReferenceJointPositionAction(JointPositionAction):
         if not isinstance(self._joint_ids, slice):
             x_ref = x_ref[:, self._joint_ids]
 
-        # Clip raw delta to prevent simulation blowup from large initial std
-        delta = self._raw_actions
-        if self.cfg.delta_clip is not None:
-            delta = torch.clamp(delta, min=-self.cfg.delta_clip, max=self.cfg.delta_clip)
-
-        # PD target = x_ref + delta (no scale — PPO output is the actual radian delta)
-        self._processed_actions = x_ref + delta
+        # PD target = x_ref + scale * raw_action
+        self._processed_actions = x_ref + self._raw_actions * self._scale
         # clip processed actions (absolute joint positions)
         if self.cfg.clip is not None:
             self._processed_actions = torch.clamp(
@@ -51,7 +47,3 @@ class ReferenceJointPositionActionCfg(JointPositionActionCfg):
     class_type: type = ReferenceJointPositionAction
     command_name: str = "motion"
     """Name of the MotionCommand term in the command manager."""
-
-    delta_clip: float | None = 0.5
-    """Max absolute delta in radians. Clips raw PPO output before adding to x_ref.
-    Prevents simulation blowup from large initial exploration noise. Default: 0.5 rad (~28 deg)."""

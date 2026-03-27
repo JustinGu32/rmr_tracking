@@ -120,8 +120,8 @@ def foot_contact_state_penalty(
 ) -> torch.Tensor:
     """Penalize foot being on the ground when reference motion says it should be in the air.
 
-    Derives expected contact state from reference ankle world z-height (body_pos_relative_w is in world frame).
-    On flat terrain, ground is at z~0, so ankle z > height_threshold means the foot should be lifted.
+    Triggers when reference ankle z > height_threshold (foot should be lifted)
+    AND the robot's foot is in contact with the ground (from contact sensor).
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]

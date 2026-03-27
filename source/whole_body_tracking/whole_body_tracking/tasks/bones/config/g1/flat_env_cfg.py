@@ -5,7 +5,7 @@ from isaaclab.utils import configclass
 from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 from whole_body_tracking.tasks.bones.config.g1.agents.rsl_rl_ppo_cfg import LOW_FREQ_SCALE
 from whole_body_tracking.tasks.bones.bones_env_cfg import BonesEnvCfg, ROUGH_TERRAINS_CFG
-from whole_body_tracking.tasks.bones.bones_env_cfg_3pt import Bones3ptEnvCfg
+from whole_body_tracking.tasks.bones.bones_env_cfg_3pt import Bones3ptEnvCfg, SpringForceCurriculumCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_binded import Bones3ptBindedEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_terrain import Bones3ptTerrainEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_multi_terrain import Bones3ptMultiTerrainEnvCfg
@@ -103,9 +103,19 @@ class G1BonesGraspEnvCfg(BonesEnvCfg):
 
 @configclass
 class G1Bones3ptEnvCfg(Bones3ptEnvCfg):
+    spring_force_cfg: dict = {
+        "command_name": "motion",
+        "body_names": ["torso_link"],
+        "stiffness": 2000.0,
+        "ang_stiffness": 300.0,
+        "damping": 15.0,
+        "axis_weights": [0.5, 0.5, 2.0],
+    }
+
     def __post_init__(self):
         super().__post_init__()
         _g1_post_init(self)
+
 
 
 @configclass
@@ -133,7 +143,7 @@ class G1Bones3ptComplianceEnvCfg(Bones3ptEnvCfg):
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=10)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=10)
         self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=10)
-        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta" else mdp.last_action
+        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta-pseudotarget" else mdp.last_action
         self.observations.policy.actions = ObsTerm(func=action_obs_func, history_length=10)
 
         self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)
@@ -154,7 +164,7 @@ class G1Bones3ptComplianceEnvCfg(Bones3ptEnvCfg):
                                                         "start_steps": 0
                                                   })
         self.rewards.vr_position = RewTerm(func=mdp.vr_position_relative_error_exp,
-                                           weight=2.0,
+                                           weight=2.5,
                                            params={
                                                   "command_name": "motion",
                                                   "std": 0.1,
@@ -200,7 +210,7 @@ class G1Bones3ptBindedComplianceEnvCfg(Bones3ptBindedEnvCfg):
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=10)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=10)
         self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=10)
-        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta" else mdp.last_action
+        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta-pseudotarget" else mdp.last_action
         self.observations.policy.actions = ObsTerm(func=action_obs_func, history_length=10)
 
         self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)
@@ -312,7 +322,7 @@ class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=10)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=10)
         self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=10)
-        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta" else mdp.last_action
+        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("BONES_PPO_OUTPUT") == "delta-pseudotarget" else mdp.last_action
         self.observations.policy.actions = ObsTerm(func=action_obs_func, history_length=10)
 
         self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)

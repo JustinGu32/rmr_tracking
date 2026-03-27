@@ -48,11 +48,16 @@ class _OnnxMotionPolicyExporter(_OnnxPolicyExporter):
 
     def forward(self, x, time_step):
         time_step_clamped = torch.clamp(time_step.long().squeeze(-1), max=self.time_step_total - 1)
-        if self.ppo_output == "delta":
-            # PD target = x_ref + raw_action (no scale in training)
+        if self.ppo_output == "delta-pseudotarget":
+            # PD target = x_ref + scale * raw_action
             # Inference applies: default_joint_pos + scale * onnx_output
-            # So: onnx_output = (x_ref + raw_action - default_joint_pos) / scale
-            actions = (self.joint_pos[time_step_clamped] + self.actor(self.normalizer(x)) - self.default_joint_pos) / self.action_scale
+            # So: onnx_output = (x_ref + scale * raw_action - default_joint_pos) / scale
+            #                 = raw_action + (x_ref - default_joint_pos) / scale
+            raw_action = self.actor(self.normalizer(x))
+            actions = raw_action + (self.joint_pos[time_step_clamped] - self.default_joint_pos) / self.action_scale
+        elif self.ppo_output == "delta-all":
+            # Output raw delta directly (inference must apply x_ref + scale * output)
+            actions = self.actor(self.normalizer(x))
         else:  # target
             actions = self.actor(self.normalizer(x))
         return (

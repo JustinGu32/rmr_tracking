@@ -371,11 +371,11 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    motion_joint_pos = RewTerm(
-        func=mdp.motion_joint_position_error_exp,
-        weight=1.0,
-        params={"command_name": "motion", "std": 0.15},
-    )
+    # motion_joint_pos = RewTerm(
+    #     func=mdp.motion_joint_position_error_exp,
+    #     weight=1.0,
+    #     params={"command_name": "motion", "std": 0.15},
+    # )
     # double_step_penalty = RewTerm(
     #     func=mdp.double_step_penalty,
     #     weight=0.5,
@@ -490,9 +490,11 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
 
         # PPO output mode: delta uses ReferenceJointPositionAction (x_ref + raw_action),
         # target uses standard JointPositionAction (default_pos + scale * raw_action)
-        if os.environ.get("WBT_PPO_OUTPUT") == "delta":
+        ppo_output = os.environ.get("WBT_PPO_OUTPUT")
+        if ppo_output in ("delta-pseudotarget", "delta-all"):
             self.actions.joint_pos = mdp.ReferenceJointPositionActionCfg(
                 asset_name="robot", joint_names=[".*"], command_name="motion"
             )
-            self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
-            self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+            if ppo_output == "delta-pseudotarget":
+                self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+                self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)

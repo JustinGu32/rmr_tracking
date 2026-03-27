@@ -146,7 +146,7 @@ class G1FlatComplianceEnvCfg(G1FlatEnvCfg):
         self.observations.policy.base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2), history_length=4)
         self.observations.policy.joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01), history_length=4)
         self.observations.policy.joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5), history_length=4)
-        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("WBT_PPO_OUTPUT") == "delta" else mdp.last_action
+        action_obs_func = mdp.last_action_pseudotarget if os.environ.get("WBT_PPO_OUTPUT") == "delta-pseudotarget" else mdp.last_action
         self.observations.policy.actions = ObsTerm(func=action_obs_func, history_length=4)
 
         self.observations.critic.base_lin_vel = ObsTerm(func=mdp.base_lin_vel, history_length=10)

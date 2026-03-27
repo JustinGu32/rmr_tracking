@@ -25,14 +25,18 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
+parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
+parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
+parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
-parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta"],
-                    help="PPO output mode: 'target' for absolute joint pos, 'delta' for reference-relative.")
+parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
+                    help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 parser.add_argument("--push", type=str, default="normal", choices=["normal", "none", "soft"],
                     help="Push perturbation: 'normal' (default), 'soft' (reduced range), 'none' (disabled).")
 parser.add_argument("--no_command_obs", action="store_true", default=False, help="Remove generated_commands observation from policy.")
 parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
+parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
+parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -53,6 +57,8 @@ if args_cli.no_command_obs:
     os.environ["BONES_NO_COMMAND_OBS"] = "1"
 if args_cli.crane:
     os.environ["BONES_CRANE"] = "1"
+if args_cli.curriculum:
+    os.environ["BONES_CURRICULUM"] = "1"
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:
@@ -252,11 +258,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         flag_suffix += "_dstep"
     if args_cli.crane:
         flag_suffix += "_crane"
+    if args_cli.curriculum:
+        flag_suffix += "_curriculum"
     if agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
     else:
         agent_cfg.run_name = flag_suffix
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
@@ -273,22 +283,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # load the motion file from the wandb registry
-    registry_name = args_cli.registry_name
-    if ":" not in registry_name:  # Check if the registry name includes alias, if not, append ":latest"
-        registry_name += ":latest"
+    # load the motion file from zarr path or wandb registry
     import pathlib
-    print(f"DEBUG: registry_name is {registry_name}")
-
-    import wandb
-
-    api = wandb.Api()
-    artifact = api.artifact(registry_name)
-    motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
-    if hasattr(env_cfg.commands.motion, 'motion_files'):
-        env_cfg.commands.motion.motion_files = [motion_path]
+    if args_cli.zarr_path is not None:
+        # Multi-clip training from local Zarr store
+        print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
+        env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+        env_cfg.commands.motion.exclude_objects = not args_cli.include_objects
+        registry_name = f"zarr:{args_cli.zarr_path}"
+    elif args_cli.registry_name is not None:
+        # Single-clip training from wandb registry (original path)
+        registry_name = args_cli.registry_name
+        if ":" not in registry_name:
+            registry_name += ":latest"
+        print(f"DEBUG: registry_name is {registry_name}")
+        import wandb
+        api = wandb.Api()
+        artifact = api.artifact(registry_name)
+        motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
+        if hasattr(env_cfg.commands.motion, 'motion_files'):
+            env_cfg.commands.motion.motion_files = [motion_path]
+        else:
+            env_cfg.commands.motion.motion_file = motion_path
     else:
-        env_cfg.commands.motion.motion_file = motion_path
+        raise ValueError("Either --zarr_path or --registry_name must be provided.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

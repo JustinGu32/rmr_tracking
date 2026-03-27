@@ -375,9 +375,9 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
             np.savez(tmp_motion_path, **log)
 
             import wandb
-            
-            # added to debug
-            exit() 
+
+            # # added to debug
+            # exit()
 
             COLLECTION = args_cli.output_name
             run = wandb.init(project="csv_to_npz", name=COLLECTION)

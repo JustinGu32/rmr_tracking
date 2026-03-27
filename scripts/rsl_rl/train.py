@@ -31,8 +31,8 @@ parser.add_argument("--include_objects", action="store_true", default=False, hel
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
-parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta"],
-                    help="PPO output mode: 'target' (default) or 'delta' (x_ref + raw_action).")
+parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
+                    help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)

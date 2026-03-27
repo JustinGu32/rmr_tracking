@@ -692,23 +692,30 @@ class MultiMotionCommand(CommandTerm):
             / self.bin_count
             * (self.motion.time_step_total - 1)
         ).long()
-        
+
         # Determine motion_ids from time_steps using start/end indices
         # For each time_step, find which motion it belongs to by checking against motion boundaries
         motion_ids = torch.zeros_like(self.time_steps[env_ids], dtype=torch.long, device=self.device)
         for i in range(self.motion.num_motions):
-            # Create mask for time_steps that fall within this motion's range
             start_idx = self.motion.motion_start_idx[i]
             end_idx = self.motion.motion_end_idx[i]
             mask = (self.time_steps[env_ids] >= start_idx) & (self.time_steps[env_ids] < end_idx)
             motion_ids[mask] = i
-        
+
         self.motion_ids[env_ids] = motion_ids
+
+        # Clamp time_steps relative to each env's assigned motion boundaries
+        motion_starts = self.motion.motion_start_idx[self.motion_ids[env_ids]]
+        motion_ends = self.motion.motion_end_idx[self.motion_ids[env_ids]]
+        self.time_steps[env_ids] = torch.clamp(
+            self.time_steps[env_ids],
+            min=motion_starts + self.min_sample_idx,
+            max=torch.minimum(motion_starts + self.max_sample_idx, motion_ends - 1),
+        )
 
         # 10% epsilon-reset: start from the first frame of the assigned motion
         eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
-        motion_start_frames = self.motion.motion_start_idx[self.motion_ids[env_ids]]
-        self.time_steps[env_ids[eps_mask]] = motion_start_frames[eps_mask]
+        self.time_steps[env_ids[eps_mask]] = motion_starts[eps_mask]
 
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
