@@ -20,9 +20,10 @@ mkdir -p logs/slurm
 conda run -n rmr --live-stream python scripts/rsl_rl/train.py \
     --task=Tracking-MultiClip-Flat-G1-v0 \
     --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+    --decimation=6 \
     --num_envs=4096 \
     --headless \
     --logger wandb \
     --log_project_name multiclip_tracking \
-    --run_name locomotion_33hz
+    --run_name locomotion_33hz_fast_withoutDiffusionObs
 

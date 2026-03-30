@@ -705,78 +705,97 @@ class MultiClipMotionCommand(MotionCommand):
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["force_applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
-        # Initial clip assignment
+        # Initial clip assignment (also initializes the per-step frame cache)
         self._assign_random_clips(torch.arange(self.num_envs, device=self.device))
 
-    # ── Property overrides: index on CPU, transfer slice to GPU ──────────
+    # ── Per-step frame cache ────────────────────────────────────────────
 
-    def _idx(self, arr: torch.Tensor) -> torch.Tensor:
-        """Index a motion array with GPU time_steps. All data is on GPU."""
-        return arr[self.time_steps]
+    def _cache_current_frames(self):
+        """Pre-fetch all motion data for current time_steps once per step.
+
+        This eliminates ~20 redundant scatter-gather GPU index operations
+        that previously occurred across property accessors, rewards,
+        observations, terminations, and _update_command().
+        """
+        ts = self.time_steps
+        # Filtered body arrays (body_indexes subset)
+        self._cached_joint_pos = self.motion.joint_pos[ts]
+        self._cached_joint_vel = self.motion.joint_vel[ts]
+        self._cached_body_pos_w = self.motion.body_pos_w[ts]
+        self._cached_body_quat_w = self.motion.body_quat_w[ts]
+        self._cached_body_lin_vel_w = self.motion.body_lin_vel_w[ts]
+        self._cached_body_ang_vel_w = self.motion.body_ang_vel_w[ts]
+        # Unfiltered body arrays (for ref_* properties)
+        self._cached_raw_body_pos_w = self.motion._body_pos_w[ts]
+        self._cached_raw_body_quat_w = self.motion._body_quat_w[ts]
+        self._cached_raw_body_lin_vel_w = self.motion._body_lin_vel_w[ts]
+        self._cached_raw_body_ang_vel_w = self.motion._body_ang_vel_w[ts]
+
+    # ── Property overrides: read from per-step cache ──────────────────
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self._idx(self.motion.joint_pos)
+        return self._cached_joint_pos
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        return self._idx(self.motion.joint_vel)
+        return self._cached_joint_vel
 
     @property
     def body_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w) + self._env.scene.env_origins[:, None, :]
+        return self._cached_body_pos_w + self._env.scene.env_origins[:, None, :]
 
     @property
     def body_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)
+        return self._cached_body_quat_w
 
     @property
     def body_lin_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_lin_vel_w)
+        return self._cached_body_lin_vel_w
 
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_ang_vel_w)
+        return self._cached_body_ang_vel_w
 
     @property
     def anchor_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w)[:, self.motion_anchor_body_index] + self._env.scene.env_origins
+        return self._cached_body_pos_w[:, self.motion_anchor_body_index] + self._env.scene.env_origins
 
     @property
     def anchor_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_quat_w[:, self.motion_anchor_body_index]
 
     @property
     def anchor_lin_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_lin_vel_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_lin_vel_w[:, self.motion_anchor_body_index]
 
     @property
     def anchor_ang_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_ang_vel_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_ang_vel_w[:, self.motion_anchor_body_index]
 
     @property
     def ref_pos_w(self) -> torch.Tensor:
-        return self.motion._body_pos_w[self.time_steps] + self._env.scene.env_origins[:, None, :]
+        return self._cached_raw_body_pos_w + self._env.scene.env_origins[:, None, :]
 
     @property
     def ref_quat_w(self) -> torch.Tensor:
-        return self.motion._body_quat_w[self.time_steps]
+        return self._cached_raw_body_quat_w
 
     @property
     def ref_lin_vel_w(self) -> torch.Tensor:
-        return self.motion._body_lin_vel_w[self.time_steps]
+        return self._cached_raw_body_lin_vel_w
 
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
-        return self.motion._body_ang_vel_w[self.time_steps]
+        return self._cached_raw_body_ang_vel_w
 
     @property
     def vr_3point_body_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)[:, self.vr_3point_body_indices_motion]
+        return self._cached_body_quat_w[:, self.vr_3point_body_indices_motion]
 
     @property
     def vr_3point_body_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w)[:, self.vr_3point_body_indices_motion] \
+        return self._cached_body_pos_w[:, self.vr_3point_body_indices_motion] \
             + quat_apply(self.vr_3point_body_quat_w, self.vr_3point_body_offsets) \
             + self._env.scene.env_origins[:, None, :]
 
@@ -792,6 +811,9 @@ class MultiClipMotionCommand(MotionCommand):
         clip_lens = self.clip_end[env_ids] - self.clip_start[env_ids]
         offsets = (torch.rand(n, device=self.device) * (clip_lens - 1).float()).long()
         self.time_steps[env_ids] = self.clip_start[env_ids] + offsets
+
+        # Refresh cache for newly assigned envs
+        self._cache_current_frames()
 
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
@@ -847,17 +869,22 @@ class MultiClipMotionCommand(MotionCommand):
         env_ids = torch.where(self.time_steps >= self.clip_end)[0]
         self._resample_command(env_ids)
 
-        anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        robot_anchor_quat_w_repeat = self.robot_anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+        # Refresh the per-step frame cache (one batch of GPU gathers for the whole step)
+        self._cache_current_frames()
 
-        delta_pos_w = robot_anchor_pos_w_repeat
-        delta_pos_w[..., 2] = anchor_pos_w_repeat[..., 2]
-        delta_ori_w = yaw_quat(quat_mul(robot_anchor_quat_w_repeat, quat_inv(anchor_quat_w_repeat)))
+        n_bodies = len(self.cfg.body_names)
+        # Use .expand() (zero-copy views) instead of .repeat() where tensors are only read
+        anchor_pos_w_exp = self.anchor_pos_w[:, None, :].expand(-1, n_bodies, -1)
+        anchor_quat_w_exp = self.anchor_quat_w[:, None, :].expand(-1, n_bodies, -1)
+        robot_anchor_quat_w_exp = self.robot_anchor_quat_w[:, None, :].expand(-1, n_bodies, -1)
+
+        # delta_pos_w is mutated in-place, so it needs a real copy
+        delta_pos_w = self.robot_anchor_pos_w[:, None, :].expand(-1, n_bodies, -1).clone()
+        delta_pos_w[..., 2] = anchor_pos_w_exp[..., 2]
+        delta_ori_w = yaw_quat(quat_mul(robot_anchor_quat_w_exp, quat_inv(anchor_quat_w_exp)))
 
         self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
-        self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_repeat)
+        self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_exp)
 
         self.bin_failed_count = (
             self.cfg.adaptive_alpha * self._current_bin_failed

@@ -209,6 +209,9 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
         parent_cfg = self.commands.motion
 
         # Replace with multi-clip version, preserving all parent settings
+        # Disable diffusion_collect obs group — not used during RL training
+        self.observations.diffusion_collect = None
+
         self.commands.motion = MultiClipMotionCommandCfg(
             asset_name=parent_cfg.asset_name,
             resampling_time_range=parent_cfg.resampling_time_range,

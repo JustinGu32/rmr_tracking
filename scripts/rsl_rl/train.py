@@ -31,6 +31,7 @@ parser.add_argument("--include_objects", action="store_true", default=False, hel
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -255,6 +256,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.device = correct_device
     else:
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # Override decimation if provided
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
 
     # load the motion file from zarr path or wandb registry
     import pathlib
