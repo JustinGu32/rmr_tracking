@@ -99,3 +99,13 @@ gym.register(
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
     },
 )
+
+gym.register(
+    id="Tracking-MultiClip-Flat-G1-Play-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatMultiClipPlayEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)

@@ -32,6 +32,7 @@ parser.add_argument("--curriculum", action="store_true", default=False, help="En
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
+parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -260,6 +261,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Override decimation if provided
     if args_cli.decimation is not None:
         env_cfg.decimation = args_cli.decimation
+
+    # Configure future reference motion observations
+    if args_cli.future_steps is not None:
+        steps = [int(s.strip()) for s in args_cli.future_steps.split(",")]
+        if hasattr(env_cfg.commands.motion, 'future_steps'):
+            env_cfg.commands.motion.future_steps = steps
+            print(f"[INFO] Future ref steps: {steps}")
 
     # load the motion file from zarr path or wandb registry
     import pathlib

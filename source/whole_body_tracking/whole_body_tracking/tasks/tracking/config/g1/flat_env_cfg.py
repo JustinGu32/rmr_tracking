@@ -237,3 +237,18 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
             vr_3point_body_offset=parent_cfg.vr_3point_body_offset,
         )
 
+
+@configclass
+class G1FlatMultiClipPlayEnvCfg(G1FlatMultiClipEnvCfg):
+    """Play-mode config for multi-clip: disables terminations, events, curriculum."""
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 60.0
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
+        self.spring_force_cfg = None
+        self.events.push_robot = None
+        self.events.force_push_robot = None
+        self.terminations.bad_anchor_pos_xy = None
+
+
