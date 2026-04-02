@@ -353,6 +353,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # load previously trained model
         runner.load(resume_path)
 
+    # log observation dimensions to wandb config
+    import wandb
+    if wandb.run is not None:
+        obs_mgr = env.unwrapped.observation_manager
+        for group_name in obs_mgr.active_terms:
+            term_names = obs_mgr.active_terms[group_name]
+            term_dims = obs_mgr.group_obs_term_dim[group_name]
+            for name, dim in zip(term_names, term_dims):
+                wandb.config[f"obs_dim/{group_name}/{name}"] = dim
+
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)

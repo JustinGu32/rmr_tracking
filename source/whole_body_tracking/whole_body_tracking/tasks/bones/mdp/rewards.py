@@ -74,7 +74,7 @@ def motion_global_body_angular_velocity_error_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 def vr_position_relative_error_exp(
-    env: ManagerBasedRLEnv, command_name: str, std: float
+    env: ManagerBasedRLEnv, command_name: str, std: float, body_indices: list[int] | None = None
 ) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     n_points = len(command.cfg.vr_3point_body)
@@ -87,13 +87,17 @@ def vr_position_relative_error_exp(
     vr_pos_rel_ref = command.vr_3point_body_pos_w - ref_anchor_pos[:, None, :]
     vr_pos_rel_ref = quat_apply(ref_anchor_quat_inv, vr_pos_rel_ref)
 
+    if body_indices is not None:
+        vr_pos_rel = vr_pos_rel[:, body_indices]
+        vr_pos_rel_ref = vr_pos_rel_ref[:, body_indices]
+
     error = torch.sum(
         torch.square(vr_pos_rel_ref - vr_pos_rel), dim=-1
     )
     return torch.exp(-error.mean(-1) / std**2)
 
 def vr_orientation_relative_error_exp(
-    env: ManagerBasedRLEnv, command_name: str, std: float
+    env: ManagerBasedRLEnv, command_name: str, std: float, body_indices: list[int] | None = None
 ) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     n_points = len(command.cfg.vr_3point_body)
@@ -101,6 +105,10 @@ def vr_orientation_relative_error_exp(
     vr_quat_rel = quat_mul(robot_anchor_quat_inv, command.robot_vr_3point_quat_w)
     ref_anchor_quat_inv = quat_inv(command.anchor_quat_w).view(env.num_envs, 1, 4).repeat(1, n_points, 1)
     vr_quat_rel_ref = quat_mul(ref_anchor_quat_inv, command.vr_3point_body_quat_w)
+
+    if body_indices is not None:
+        vr_quat_rel = vr_quat_rel[:, body_indices]
+        vr_quat_rel_ref = vr_quat_rel_ref[:, body_indices]
 
     error = (
         quat_error_magnitude(vr_quat_rel_ref, vr_quat_rel)

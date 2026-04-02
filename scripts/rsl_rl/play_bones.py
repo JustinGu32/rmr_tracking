@@ -18,6 +18,7 @@ import cli_args  # isort: skip
 parser = argparse.ArgumentParser(description="Play an RL agent with RSL-RL (Bones).")
 parser.add_argument("--video", action="store_true", default=False, help="Record videos during training.")
 parser.add_argument("--video_length", type=int, default=200, help="Length of the recorded video (in steps).")
+parser.add_argument("--video_folder", type=str, default=None, help="Directory to save recorded videos.")
 parser.add_argument(
     "--disable_fabric", action="store_true", default=False, help="Disable fabric and use USD I/O operations."
 )
@@ -129,7 +130,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap for video recording
     if args_cli.video:
         video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "play", wandb_run.id if args_cli.wandb_path else "local"),
+            "video_folder": args_cli.video_folder if args_cli.video_folder else os.path.join(log_dir, "videos", "play", wandb_run.id if args_cli.wandb_path else "local"),
             "step_trigger": lambda step: step == 0,
             "video_length": args_cli.video_length,
             "disable_logger": True,

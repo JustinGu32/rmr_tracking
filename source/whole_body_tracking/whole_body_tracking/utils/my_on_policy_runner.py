@@ -198,25 +198,21 @@ class MotionOnPolicyRunner(OnPolicyRunner):
         """Save the model and training information."""
         super().save(path, infos)
         if getattr(self, "logger_type", getattr(self, "_logger_type", None)) in ["wandb"]:
-            # ONNX export disabled for multi-clip zarr tasks (motion data exceeds 2GB protobuf limit)
-            # Re-export at play/deploy time with a single clip instead
             cmd = self.env.unwrapped.command_manager.get_term("motion")
             is_multiclip = hasattr(cmd.cfg, "zarr_path") and cmd.cfg.zarr_path
+            policy_path = path.split("model")[0]
+            filename = policy_path.split("/")[-2] + ".onnx"
+            policy = self.alg.policy
+            normalizer = getattr(policy, 'actor_obs_normalizer', None)
             if is_multiclip:
-                print("[INFO] Skipping ONNX export for multi-clip task (motion data > 2GB)")
+                # Policy-only ONNX (no motion data) to avoid 2GB protobuf limit
+                export_policy_as_onnx(policy, normalizer=normalizer, path=policy_path, filename=filename)
             else:
-                policy_path = path.split("model")[0]
-                filename = policy_path.split("/")[-2] + ".onnx"
-                # # v5: use self.alg.get_policy() instead of self.alg.policy
-                # policy = self.alg.get_policy() if hasattr(self.alg, 'get_policy') else self.alg.policy
-                # normalizer = policy.obs_normalizers.get("actor") if hasattr(policy, 'obs_normalizers') else getattr(policy, 'actor_obs_normalizer', None)
-                policy = self.alg.policy
-                normalizer = getattr(policy, 'actor_obs_normalizer', None)
                 export_motion_policy_as_onnx(
                     self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
                 )
-                attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
-                wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
+            attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
+            wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
 
             # link the artifact registry to this run (skip for zarr paths)
             if self.registry_name is not None and not self.registry_name.startswith("zarr:"):

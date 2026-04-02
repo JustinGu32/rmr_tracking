@@ -46,6 +46,7 @@ play_run() {
         --wandb_path="${WANDB_PROJECT}/${run_id}" \
         --video \
         --video_length="$VIDEO_LENGTH" \
+        --video_folder="videos/${run_name}" \
         --headless
 }
 
@@ -73,14 +74,21 @@ play_run() {
 # # 8. target + push-soft + no-cmd-obs
 # play_run "m97lawzi" "2026-03-25_03-59-38_crane_l40s_target_push-soft_no-cmd-obs" "target" "1"
 
-# 9. delta + push-none
-play_run "2qkabw5i" "2026-03-26_20-52-39_crane_a5000_delta_push-none" "delta" "0"
 
-# # 10. delta + push-none + no-cmd-obs
-# play_run "o038luft" "2026-03-26_12-24-02_crane_a5000_delta_push-none_no-cmd-obs_crane" "delta" "1"
+# 10. MAIN-URDF + delta-all + push-none
+play_run "zgct3u7r" "2026-03-27_03-39-09_MAIN-URDF_DELTA-ALL_crane_a5000_delta_push-none" "delta-all" "0"
 
-# 11. target + push-none
+# 11. MAIN-URDF + target + push-none
+play_run "zm1yov1z" "2026-03-27_02-36-45_MAIN-URDF_crane_a5000_target_push-none" "target" "0"
+
+# 12. MAIN-URDF + delta + push-none
+play_run "5mp8bzwk" "2026-03-27_02-36-42_MAIN-URDF_crane_a5000_delta_push-none" "delta" "0"
+
+# # 13. delta + push-none
+# play_run "2qkabw5i" "2026-03-26_20-52-39_crane_a5000_delta_push-none" "delta" "0"
+
+# # 14. target + push-none
 # play_run "31jta9bw" "2026-03-26_20-52-39_crane_a5000_target_push-none" "target" "0"
 
-# # 12. target + push-none + no-cmd-obs
-# play_run "bt6pmkkr" "2026-03-26_12-24-02_crane_a5000_target_push-none_no-cmd-obs_crane" "target" "1"
+# # 9. delta-all + push-none
+# play_run "vzrv1g2j" "2026-03-27_04-09-52_DELTA-ALL_crane_a5000_delta_push-none" "delta-all" "0"
