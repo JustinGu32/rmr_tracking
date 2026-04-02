@@ -38,10 +38,7 @@ class G1FlatEnvCfg(TrackingEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        self.terminations.bad_anchor_pos_xy = DoneTerm(
-            func=mdp.bad_anchor_pos_x_y_only,
-            params={"command_name": "motion", "threshold": 0.7},
-        )
+      
 
 
 @configclass
@@ -235,6 +232,15 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
             force_push_body_offset=parent_cfg.force_push_body_offset,
             vr_3point_body=parent_cfg.vr_3point_body,
             vr_3point_body_offset=parent_cfg.vr_3point_body_offset,
+        )
+
+        # Add clip phase to both policy and critic obs
+        from isaaclab.managers import ObservationTermCfg as ObsTerm
+        # self.observations.policy.clip_phase = ObsTerm(
+        #     func=mdp.clip_phase, params={"command_name": "motion"}
+        # )
+        self.observations.critic.clip_phase = ObsTerm(
+            func=mdp.clip_phase, params={"command_name": "motion"}
         )
 
 

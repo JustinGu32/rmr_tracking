@@ -191,6 +191,14 @@ def default_joint_pos(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEnt
     return asset.data.default_joint_pos
 
 
+# ── Clip phase observation ────────────────────────────────────────────────────
+
+def clip_phase(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Normalized progress through current clip: 0.0 = start, 1.0 = end. Shape (num_envs, 1)."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.clip_phase
+
+
 # ── Future reference motion observations ──────────────────────────────────────
 
 def future_ref_joint_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:

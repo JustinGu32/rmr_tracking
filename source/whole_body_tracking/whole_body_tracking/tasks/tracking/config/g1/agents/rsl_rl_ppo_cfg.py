@@ -19,7 +19,7 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     actor = RslRlMLPModelCfg(
         class_name="MLPModel",
         hidden_dims=[1024, 1024, 512],
-        activation="elu",
+        activation="swish",
         distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
             init_std=1.0,
         ),
@@ -27,7 +27,7 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     critic = RslRlMLPModelCfg(
         class_name="MLPModel",
         hidden_dims=[1024, 1024, 512],
-        activation="elu",
+        activation="swish",
     )
 
     # Deprecated but kept for backward compat with IsaacLab internals
@@ -35,7 +35,7 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_hidden_dims=[1024, 1024, 512],
         critic_hidden_dims=[1024, 1024, 512],
-        activation="elu",
+        activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

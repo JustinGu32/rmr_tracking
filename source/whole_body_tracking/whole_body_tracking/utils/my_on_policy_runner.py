@@ -16,20 +16,22 @@ from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_moti
 # ─── Activation Health Tracker ────────────────────────────────────────────────
 
 class ActivationHealthTracker:
-    """Track activation health metrics for MLP hidden layers.
+    """Track activation health and recycle dormant neurons.
 
     Logs per-layer:
-      - effective_rank: SVD-based expressivity (higher = more diverse representations)
-      - elu_saturation: fraction of neurons stuck in ELU negative saturation
+      - effective_rank: SVD-based expressivity
+      - dormant_fraction: fraction of neurons with low mean |activation|
 
+    Optionally recycles dormant neurons by re-initializing their weights.
     Registers forward hooks on Linear layers. Gated by `self.enabled`.
     """
 
-    def __init__(self, model: nn.Module, sat_threshold: float = -0.9):
-        self.sat_threshold = sat_threshold
+    def __init__(self, model: nn.Module, dormant_threshold: float = 0.025):
+        self.dormant_threshold = dormant_threshold
         self.enabled = False
         self._hooks = []
         self._activations = {}  # layer_name -> list of activation tensors
+        self._linear_layers = []  # (name, module) pairs for recycling
 
         # Hook on hidden Linear layers (skip output layer)
         linear_layers = [(name, m) for name, m in model.named_modules() if isinstance(m, nn.Linear)]
@@ -38,6 +40,13 @@ class ActivationHealthTracker:
             hook = module.register_forward_hook(self._make_hook(key))
             self._hooks.append(hook)
             self._activations[key] = []
+            self._linear_layers.append((key, module))
+
+        # Keep reference to next layer for zeroing outgoing weights
+        self._next_linear = {}
+        for i in range(len(linear_layers) - 1):
+            key = f"hidden_{linear_layers[i][0]}"
+            self._next_linear[key] = linear_layers[i + 1][1]
 
     def _make_hook(self, layer_name: str):
         def hook_fn(module, inp, out):
@@ -66,10 +75,55 @@ class ActivationHealthTracker:
             except Exception:
                 pass
 
-            # ELU saturation fraction
-            mean_acts = activations.mean(dim=0)
-            saturated = (mean_acts < self.sat_threshold).float().mean()
-            results[f"activation_health/elu_saturation_layer_{i}"] = saturated.item()
+            # Dormant fraction: neurons with very low mean |activation|
+            mean_abs_act = activations.abs().mean(dim=0)
+            dormant = (mean_abs_act < self.dormant_threshold).float().mean()
+            results[f"activation_health/dormant_fraction_layer_{i}"] = dormant.item()
+
+        return results
+
+    @torch.no_grad()
+    def recycle(self) -> dict[str, float]:
+        """Re-initialize dormant neurons. Call after compute().
+
+        For each dormant neuron:
+          - Re-init its incoming weights (orthogonal) and zero bias
+          - Zero its outgoing weights in the next layer so the reset
+            doesn't disrupt the network immediately
+
+        Returns dict with per-layer recycled counts.
+        """
+        results = {}
+        for i, (name, act_list) in enumerate(self._activations.items()):
+            if not act_list:
+                continue
+            activations = torch.cat(act_list, dim=0)
+            mean_abs_act = activations.abs().mean(dim=0)
+            dormant_mask = mean_abs_act < self.dormant_threshold
+            n_dormant = dormant_mask.sum().item()
+            results[f"activation_health/recycled_layer_{i}"] = n_dormant
+
+            if n_dormant == 0:
+                continue
+
+            # Find the Linear layer and its successor
+            _, linear = self._linear_layers[i]
+            next_linear = self._next_linear.get(name)
+
+            dormant_idx = dormant_mask.nonzero(as_tuple=True)[0]
+            device = linear.weight.device
+
+            # Re-init incoming weights for dormant neurons (orthogonal)
+            fan_in = linear.weight.shape[1]
+            for idx in dormant_idx:
+                new_weight = torch.empty(1, fan_in, device=device)
+                nn.init.orthogonal_(new_weight)
+                linear.weight.data[idx] = new_weight[0]
+                linear.bias.data[idx] = 0.0
+
+            # Zero outgoing weights so recycled neurons start quiet
+            if next_linear is not None:
+                next_linear.weight.data[:, dormant_idx] = 0.0
 
         return results
 
@@ -77,6 +131,7 @@ class ActivationHealthTracker:
         for h in self._hooks:
             h.remove()
         self._hooks.clear()
+
 
 
 # ─── Runners ──────────────────────────────────────────────────────────────────

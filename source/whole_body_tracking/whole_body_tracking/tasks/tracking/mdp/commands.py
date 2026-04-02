@@ -337,8 +337,9 @@ class MotionCommand(CommandTerm):
             min=self.min_sample_idx,
             max=min(self.max_sample_idx, self.motion.time_step_total - 1),
         )
-        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
-        self.time_steps[env_ids[eps_mask]] = 0
+        
+        # eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
+        # self.time_steps[env_ids[eps_mask]] = 0
 
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
@@ -488,7 +489,7 @@ class MotionCommandCfg(CommandTermCfg):
 
     adaptive_kernel_size: int = 1
     adaptive_lambda: float = 0.8
-    adaptive_uniform_ratio: float = 0.1
+    adaptive_uniform_ratio: float = 0.2
     adaptive_alpha: float = 0.001
 
     anchor_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
@@ -648,8 +649,10 @@ class MultiClipMotionCommand(MotionCommand):
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
         self.body_quat_relative_w[:, :, 0] = 1.0
 
-        # Adaptive sampling: per-clip failure tracking
-        self.bin_count = self.motion.num_clips
+        # Adaptive sampling: flat global-timeline bins (same approach as single-clip)
+        # Treat entire Zarr store as one concatenated sequence
+        self.total_frames = int(self.motion.clip_end_idx.max().item())
+        self.bin_count = max(self.total_frames // 50, 100)  # ~50 frames per bin
         self.bin_failed_count = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
         self._current_bin_failed = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
         self.kernel = torch.tensor(
@@ -775,6 +778,12 @@ class MultiClipMotionCommand(MotionCommand):
         return torch.cat(parts, dim=1)
 
     @property
+    def clip_phase(self) -> torch.Tensor:
+        """Normalized progress through current clip: 0.0 = start, 1.0 = end. Shape (num_envs, 1)."""
+        progress = (self.time_steps - self.clip_start).float() / (self.clip_end - self.clip_start).float().clamp(min=1)
+        return progress.unsqueeze(-1)
+
+    @property
     def body_pos_w(self) -> torch.Tensor:
         return self._cached_body_pos_w + self._env.scene.env_origins[:, None, :]
 
@@ -873,16 +882,17 @@ class MultiClipMotionCommand(MotionCommand):
 
         env_ids_t = torch.as_tensor(env_ids, device=self.device)
 
-        # Track failures per clip (adaptive sampling across clips)
+        # Track failures by global timestep bin
         episode_failed = self._env.termination_manager.terminated[env_ids_t]
         if torch.any(episode_failed):
-            fail_clips = self.clip_ids[env_ids_t][episode_failed]
-            self._current_bin_failed[:] = torch.bincount(
-                fail_clips, minlength=self.motion.num_clips
-            ).float()
+            fail_bins = torch.clamp(
+                (self.time_steps[env_ids_t][episode_failed] * self.bin_count) // max(self.total_frames, 1),
+                0, self.bin_count - 1,
+            )
+            self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count).float()
 
-        # Assign new random clips
-        self._assign_random_clips(env_ids_t)
+        # Adaptive sampling over global timeline
+        self._adaptive_sampling(env_ids_t)
 
         # Reset robot state (same as parent)
         root_pos = self.body_pos_w[:, 0].clone()
@@ -915,6 +925,56 @@ class MultiClipMotionCommand(MotionCommand):
             env_ids=env_ids,
         )
 
+    def _adaptive_sampling(self, env_ids: torch.Tensor):
+        """Sample start positions from failure-weighted global timeline bins."""
+        n = len(env_ids)
+
+        # Build sampling distribution from failure histogram + uniform baseline
+        sampling_probabilities = self.bin_failed_count + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
+        sampling_probabilities = torch.nn.functional.pad(
+            sampling_probabilities.unsqueeze(0).unsqueeze(0),
+            (0, self.cfg.adaptive_kernel_size - 1),
+            mode="replicate",
+        )
+        sampling_probabilities = torch.nn.functional.conv1d(
+            sampling_probabilities, self.kernel.view(1, 1, -1)
+        ).view(-1)
+        sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
+
+        # Sample global bins → global frame indices
+        sampled_bins = torch.multinomial(sampling_probabilities, n, replacement=True)
+        global_frames = (
+            (sampled_bins.float() + torch.rand(n, device=self.device))
+            / self.bin_count
+            * self.total_frames
+        ).long().clamp(0, self.total_frames - 1)
+
+        # Map global frame indices → clip IDs via searchsorted
+        # clip_end_idx is sorted and contiguous, so searchsorted gives the clip index
+        clip_ids = torch.searchsorted(self.motion.clip_end_idx, global_frames, right=True)
+        clip_ids = clip_ids.clamp(0, self.motion.num_clips - 1)
+
+        # Set clip state
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
+        self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
+
+        # Clamp global frames within their clip boundaries
+        self.time_steps[env_ids] = global_frames.clamp(
+            self.clip_start[env_ids], self.clip_end[env_ids] - 1
+        )
+
+        # Refresh cache
+        self._cache_current_frames()
+
+        # Metrics
+        H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
+        H_norm = H / math.log(self.bin_count)
+        pmax, imax = sampling_probabilities.max(dim=0)
+        self.metrics["sampling_entropy"][:] = H_norm
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
+
     def _update_command(self):
         self.time_steps += 1
         # Check which envs have exceeded their clip boundary
@@ -943,11 +1003,6 @@ class MultiClipMotionCommand(MotionCommand):
             + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
         )
         self._current_bin_failed.zero_()
-
-    def _adaptive_sampling(self, env_ids: Sequence[int]):
-        """Not used — clip sampling logic is in _resample_command."""
-        pass
-
 
 @configclass
 class MultiClipMotionCommandCfg(MotionCommandCfg):
