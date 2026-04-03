@@ -286,11 +286,35 @@ class G1BonesMultiClipEnvCfg(Bones3ptEnvCfg):
     def __post_init__(self):
         super().__post_init__()
         _g1_post_init(self)
-        self.commands.motion = mdp.ZarrMultiMotionCommandCfg(
+        # self.commands.motion = mdp.ZarrMultiMotionCommandCfg(
+        #     asset_name="robot",
+        #     resampling_time_range=(1.0e9, 1.0e9),
+        #     adaptive_uniform_ratio=0.25,
+        #     debug_vis=True,
+        #     pose_range={
+        #         "x": (-0.05, 0.05),
+        #         "y": (-0.05, 0.05),
+        #         "z": (-0.01, 0.01),
+        #         "roll": (-0.1, 0.1),
+        #         "pitch": (-0.1, 0.1),
+        #         "yaw": (-0.2, 0.2),
+        #     },
+        #     velocity_range={
+        #         "x": (-0.5, 0.5),
+        #         "y": (-0.5, 0.5),
+        #         "z": (-0.2, 0.2),
+        #         "roll": (-0.52, 0.52),
+        #         "pitch": (-0.52, 0.52),
+        #         "yaw": (-0.78, 0.78),
+        #     },
+        #     joint_position_range=(-0.1, 0.1),
+        # )
+        self.commands.motion = mdp.CHIPMultiClipMotionCommandCfg(
             asset_name="robot",
             resampling_time_range=(1.0e9, 1.0e9),
             adaptive_uniform_ratio=0.25,
             debug_vis=True,
+            zarr_path="",  # Set at runtime via train script
             pose_range={
                 "x": (-0.05, 0.05),
                 "y": (-0.05, 0.05),
