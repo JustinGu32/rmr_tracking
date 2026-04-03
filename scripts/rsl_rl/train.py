@@ -31,6 +31,11 @@ parser.add_argument("--include_objects", action="store_true", default=False, hel
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
+parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
+parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
+parser.add_argument("--num_steps_per_env", type=int, default=None, help="Override num rollout steps per env per iteration.")
+parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 
@@ -259,6 +264,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
+    # Override decimation if provided
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+
+    # Override num_steps_per_env if provided
+    if args_cli.num_steps_per_env is not None:
+        agent_cfg.num_steps_per_env = args_cli.num_steps_per_env
+
+    # Configure future reference motion observations
+    if args_cli.future_steps is not None:
+        steps = [int(s.strip()) for s in args_cli.future_steps.split(",")]
+        if hasattr(env_cfg.commands.motion, 'future_steps'):
+            env_cfg.commands.motion.future_steps = steps
+            print(f"[INFO] Future ref steps: {steps}")
+
     # load the motion file from zarr path or wandb registry
     import pathlib
     if args_cli.zarr_path is not None:
@@ -276,11 +296,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         import wandb
         api = wandb.Api()
         artifact = api.artifact(registry_name)
-        motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
-        if hasattr(env_cfg.commands.motion, 'motion_files'):
-            env_cfg.commands.motion.motion_files = [motion_path]
-        else:
-            env_cfg.commands.motion.motion_file = motion_path
+        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
     else:
         raise ValueError("Either --zarr_path or --registry_name must be provided.")
 
@@ -315,6 +331,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
+    # ── Wandb resume: download checkpoint from a previous run ──
+    _wandb_resume_path = None
+    if args_cli.wandb_resume is not None:
+        import wandb as _wandb
+        api = _wandb.Api()
+        run_path = args_cli.wandb_resume
+        wandb_run = api.run(run_path)
+        model_files = [f for f in wandb_run.files() if "model" in f.name and f.name.endswith(".pt")]
+        if not model_files:
+            raise RuntimeError(f"No model checkpoints found in wandb run: {run_path}")
+        latest_file = max(model_files, key=lambda x: int(x.name.split("_")[1].split(".")[0]))
+        dl_dir = os.path.join("logs", "rsl_rl", "wandb_resume")
+        latest_file.download(dl_dir, replace=True)
+        _wandb_resume_path = os.path.join(dl_dir, latest_file.name)
+        print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
+
     # create runner from rsl-rl
     runner = OnPolicyRunner(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
@@ -328,6 +360,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
         # load previously trained model
         runner.load(resume_path)
+
+    # Load wandb checkpoint into runner (after runner is created)
+    if _wandb_resume_path is not None:
+        print(f"[INFO]: Loading wandb checkpoint: {_wandb_resume_path}")
+        runner.load(_wandb_resume_path)
+
+    # Insert LayerNorm into actor/critic MLPs if requested
+    if args_cli.layer_norm:
+        import torch.nn as _nn
+        def _insert_layer_norm(mlp: _nn.Sequential):
+            """Insert LayerNorm after each activation in an MLP Sequential."""
+            new_layers = []
+            for layer in mlp:
+                new_layers.append(layer)
+                if isinstance(layer, (_nn.SiLU, _nn.ELU, _nn.ReLU, _nn.LeakyReLU, _nn.GELU, _nn.Mish)):
+                    # Get the output dim from the preceding Linear layer
+                    for prev in reversed(new_layers[:-1]):
+                        if isinstance(prev, _nn.Linear):
+                            new_layers.append(_nn.LayerNorm(prev.out_features))
+                            break
+            # Rebuild the Sequential
+            mlp._modules.clear()
+            for idx, layer in enumerate(new_layers):
+                mlp.add_module(str(idx), layer)
+
+        policy = runner.alg.get_policy() if hasattr(runner.alg, 'get_policy') else runner.alg.policy
+        if hasattr(policy, 'mlp'):
+            _insert_layer_norm(policy.mlp)
+            print(f"[INFO] LayerNorm inserted into actor MLP: {policy.mlp}")
+        # Also apply to critic if it has a separate mlp
+        critic = getattr(runner.alg, 'critic', None) or getattr(runner.alg, 'value_function', None)
+        if critic is not None and hasattr(critic, 'mlp'):
+            _insert_layer_norm(critic.mlp)
+            print(f"[INFO] LayerNorm inserted into critic MLP")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)

@@ -376,15 +376,15 @@ class RewardsCfg:
     #     weight=1.0,
     #     params={"command_name": "motion", "std": 0.15},
     # )
-    # double_step_penalty = RewTerm(
-    #     func=mdp.double_step_penalty,
-    #     weight=0.5,
-    #     params={
-    #         "command_name": "motion",
-    #         "threshold": 2.0,
-    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
-    #     },
-    # )
+    double_step_penalty = RewTerm(
+        func=mdp.double_step_penalty,
+        weight=0.5,
+        params={
+            "command_name": "motion",
+            "threshold": 2.0,
+            "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+        },
+    )
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -434,6 +434,12 @@ class TerminationsCfg:
             ],
         },
     )
+    
+    bad_anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
+        params={"command_name": "motion", "threshold": 0.7},
+    )
+
     # double_step = DoneTerm(
     #     func=mdp.double_step,
     #     params={

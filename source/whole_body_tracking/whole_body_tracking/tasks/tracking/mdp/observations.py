@@ -200,3 +200,55 @@ def default_joint_pos(env: ManagerBasedEnv, asset_cfg: SceneEntityCfg = SceneEnt
     # import ipdb; ipdb.set_trace() 
 
     return asset.data.default_joint_pos
+
+
+# ── Clip phase observation ────────────────────────────────────────────────────
+
+def clip_phase(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Normalized progress through current clip: 0.0 = start, 1.0 = end. Shape (num_envs, 1)."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.clip_phase
+
+
+# ── Future reference motion observations ──────────────────────────────────────
+
+def future_ref_joint_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Future reference joint positions as deltas from current ref joint_pos.
+
+    Returns (num_envs, num_future_steps * num_joints) tensor.
+    Each future frame's joint_pos is expressed as (future - current) so the
+    policy sees the *change* in joint targets, which is more informative
+    than absolute values.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    future_frames = command.get_future_ref_frames()
+    current_joint_pos = command.joint_pos  # (num_envs, num_joints)
+    parts = []
+    for joint_pos_future, _, _ in future_frames:
+        parts.append(joint_pos_future - current_joint_pos)
+    return torch.cat(parts, dim=-1)
+
+
+def future_ref_body_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Future reference body positions in robot's local frame.
+
+    Returns (num_envs, num_future_steps * num_bodies * 3) tensor.
+    Each future frame's body positions are transformed into the current
+    robot anchor's local frame (position + orientation).
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    future_frames = command.get_future_ref_frames()
+    anchor_pos = command.robot_anchor_pos_w  # (num_envs, 3)
+    anchor_quat = command.robot_anchor_quat_w  # (num_envs, 4)
+    anchor_quat_inv = quat_inv(anchor_quat)
+
+    parts = []
+    for _, body_pos_w_future, _ in future_frames:
+        # Transform to local frame: R^-1 * (p_future - p_anchor)
+        diff = body_pos_w_future - anchor_pos[:, None, :]
+        local_pos = quat_apply(
+            anchor_quat_inv[:, None, :].expand_as(diff),
+            diff,
+        )
+        parts.append(local_pos.reshape(env.num_envs, -1))
+    return torch.cat(parts, dim=-1)

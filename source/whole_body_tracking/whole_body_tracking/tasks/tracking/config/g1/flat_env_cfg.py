@@ -39,10 +39,7 @@ class G1FlatEnvCfg(TrackingEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        self.terminations.bad_anchor_pos_xy = DoneTerm(
-            func=mdp.bad_anchor_pos_x_y_only,
-            params={"command_name": "motion", "threshold": 0.7},
-        )
+      
 
 
 @configclass
@@ -211,6 +208,9 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
         parent_cfg = self.commands.motion
 
         # Replace with multi-clip version, preserving all parent settings
+        # Disable diffusion_collect obs group — not used during RL training
+        self.observations.diffusion_collect = None
+
         self.commands.motion = MultiClipMotionCommandCfg(
             asset_name=parent_cfg.asset_name,
             resampling_time_range=parent_cfg.resampling_time_range,
@@ -235,4 +235,28 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
             vr_3point_body=parent_cfg.vr_3point_body,
             vr_3point_body_offset=parent_cfg.vr_3point_body_offset,
         )
+
+        # Add clip phase to both policy and critic obs
+        from isaaclab.managers import ObservationTermCfg as ObsTerm
+        # self.observations.policy.clip_phase = ObsTerm(
+        #     func=mdp.clip_phase, params={"command_name": "motion"}
+        # )
+        self.observations.critic.clip_phase = ObsTerm(
+            func=mdp.clip_phase, params={"command_name": "motion"}
+        )
+
+
+@configclass
+class G1FlatMultiClipPlayEnvCfg(G1FlatMultiClipEnvCfg):
+    """Play-mode config for multi-clip: disables terminations, events, curriculum."""
+    def __post_init__(self):
+        super().__post_init__()
+        self.episode_length_s = 60.0
+        self.curriculum.adr = None
+        self.curriculum.spring_force_adr = None
+        self.spring_force_cfg = None
+        self.events.push_robot = None
+        self.events.force_push_robot = None
+        self.terminations.bad_anchor_pos_xy = None
+
 

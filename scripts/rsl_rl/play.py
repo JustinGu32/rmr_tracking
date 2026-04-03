@@ -25,6 +25,9 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
+parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
+parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -119,6 +122,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+
+    # Override decimation if provided
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+
+    # Limit clips for smaller GPUs
+    if args_cli.max_clips is not None and hasattr(env_cfg.commands.motion, 'max_clips'):
+        env_cfg.commands.motion.max_clips = args_cli.max_clips
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

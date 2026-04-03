@@ -79,6 +79,126 @@ class ActivationHealthTracker:
         self._hooks.clear()
 
 
+# # ─── Activation Health Tracker (v5 — dormant neuron recycling) ────────────────
+#
+# class ActivationHealthTracker:
+#     """Track activation health and recycle dormant neurons.
+#
+#     Logs per-layer:
+#       - effective_rank: SVD-based expressivity
+#       - dormant_fraction: fraction of neurons with low mean |activation|
+#
+#     Optionally recycles dormant neurons by re-initializing their weights.
+#     Registers forward hooks on Linear layers. Gated by `self.enabled`.
+#     """
+#
+#     def __init__(self, model: nn.Module, dormant_threshold: float = 0.025):
+#         self.dormant_threshold = dormant_threshold
+#         self.enabled = False
+#         self._hooks = []
+#         self._activations = {}  # layer_name -> list of activation tensors
+#         self._linear_layers = []  # (name, module) pairs for recycling
+#
+#         # Hook on hidden Linear layers (skip output layer)
+#         linear_layers = [(name, m) for name, m in model.named_modules() if isinstance(m, nn.Linear)]
+#         for name, module in linear_layers[:-1]:
+#             key = f"hidden_{name}"
+#             hook = module.register_forward_hook(self._make_hook(key))
+#             self._hooks.append(hook)
+#             self._activations[key] = []
+#             self._linear_layers.append((key, module))
+#
+#         # Keep reference to next layer for zeroing outgoing weights
+#         self._next_linear = {}
+#         for i in range(len(linear_layers) - 1):
+#             key = f"hidden_{linear_layers[i][0]}"
+#             self._next_linear[key] = linear_layers[i + 1][1]
+#
+#     def _make_hook(self, layer_name: str):
+#         def hook_fn(module, inp, out):
+#             if not self.enabled:
+#                 return
+#             self._activations[layer_name].append(out.detach().cpu())
+#         return hook_fn
+#
+#     def reset(self):
+#         for key in self._activations:
+#             self._activations[key] = []
+#
+#     def compute(self) -> dict[str, float]:
+#         results = {}
+#         for i, (name, act_list) in enumerate(self._activations.items()):
+#             if not act_list:
+#                 continue
+#             activations = torch.cat(act_list, dim=0)  # (total_samples, neurons)
+#
+#             # Effective rank (SVD-based)
+#             try:
+#                 _, S, _ = torch.linalg.svd(activations, full_matrices=False)
+#                 S = S / S.sum()
+#                 entropy = -(S * (S + 1e-8).log()).sum()
+#                 results[f"activation_health/effective_rank_layer_{i}"] = entropy.exp().item()
+#             except Exception:
+#                 pass
+#
+#             # Dormant fraction: neurons with very low mean |activation|
+#             mean_abs_act = activations.abs().mean(dim=0)
+#             dormant = (mean_abs_act < self.dormant_threshold).float().mean()
+#             results[f"activation_health/dormant_fraction_layer_{i}"] = dormant.item()
+#
+#         return results
+#
+#     @torch.no_grad()
+#     def recycle(self) -> dict[str, float]:
+#         """Re-initialize dormant neurons. Call after compute().
+#
+#         For each dormant neuron:
+#           - Re-init its incoming weights (orthogonal) and zero bias
+#           - Zero its outgoing weights in the next layer so the reset
+#             doesn't disrupt the network immediately
+#
+#         Returns dict with per-layer recycled counts.
+#         """
+#         results = {}
+#         for i, (name, act_list) in enumerate(self._activations.items()):
+#             if not act_list:
+#                 continue
+#             activations = torch.cat(act_list, dim=0)
+#             mean_abs_act = activations.abs().mean(dim=0)
+#             dormant_mask = mean_abs_act < self.dormant_threshold
+#             n_dormant = dormant_mask.sum().item()
+#             results[f"activation_health/recycled_layer_{i}"] = n_dormant
+#
+#             if n_dormant == 0:
+#                 continue
+#
+#             # Find the Linear layer and its successor
+#             _, linear = self._linear_layers[i]
+#             next_linear = self._next_linear.get(name)
+#
+#             dormant_idx = dormant_mask.nonzero(as_tuple=True)[0]
+#             device = linear.weight.device
+#
+#             # Re-init incoming weights for dormant neurons (orthogonal)
+#             fan_in = linear.weight.shape[1]
+#             for idx in dormant_idx:
+#                 new_weight = torch.empty(1, fan_in, device=device)
+#                 nn.init.orthogonal_(new_weight)
+#                 linear.weight.data[idx] = new_weight[0]
+#                 linear.bias.data[idx] = 0.0
+#
+#             # Zero outgoing weights so recycled neurons start quiet
+#             if next_linear is not None:
+#                 next_linear.weight.data[:, dormant_idx] = 0.0
+#
+#         return results
+#
+#     def remove_hooks(self):
+#         for h in self._hooks:
+#             h.remove()
+#         self._hooks.clear()
+
+
 # ─── Runners ──────────────────────────────────────────────────────────────────
 
 class MyOnPolicyRunner(OnPolicyRunner):
@@ -211,6 +331,16 @@ class MotionOnPolicyRunner(OnPolicyRunner):
                 export_motion_policy_as_onnx(
                     self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
                 )
+
+            # # v5 save() — uses get_policy() and obs_normalizers
+            # policy_path = path.split("model")[0]
+            # filename = policy_path.split("/")[-2] + ".onnx"
+            # policy = self.alg.get_policy() if hasattr(self.alg, 'get_policy') else self.alg.policy
+            # normalizer = policy.obs_normalizers.get("actor") if hasattr(policy, 'obs_normalizers') else getattr(policy, 'actor_obs_normalizer', None)
+            # export_motion_policy_as_onnx(
+            #     self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
+            # )
+
             attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
             wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
 
@@ -218,4 +348,3 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             if self.registry_name is not None and not self.registry_name.startswith("zarr:"):
                 wandb.run.use_artifact(self.registry_name)
                 self.registry_name = None
-

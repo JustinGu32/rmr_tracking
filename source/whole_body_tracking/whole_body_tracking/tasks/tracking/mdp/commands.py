@@ -337,8 +337,9 @@ class MotionCommand(CommandTerm):
             min=self.min_sample_idx,
             max=min(self.max_sample_idx, self.motion.time_step_total - 1),
         )
-        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
-        self.time_steps[env_ids[eps_mask]] = 0
+        
+        # eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
+        # self.time_steps[env_ids[eps_mask]] = 0
 
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
@@ -488,7 +489,7 @@ class MotionCommandCfg(CommandTermCfg):
 
     adaptive_kernel_size: int = 1
     adaptive_lambda: float = 0.8
-    adaptive_uniform_ratio: float = 0.1
+    adaptive_uniform_ratio: float = 0.2
     adaptive_alpha: float = 0.001
 
     anchor_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
@@ -521,7 +522,7 @@ class ZarrMotionLoader:
     """
 
     def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
-                 exclude_props: list[str] | None = None):
+                 exclude_props: list[str] | None = None, max_clips: int | None = None):
         import zarr as _zarr
 
         assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
@@ -547,18 +548,30 @@ class ZarrMotionLoader:
         else:
             valid_indices = list(range(total_clips_raw))
 
+        # Limit number of clips if requested
+        if max_clips is not None and max_clips < len(valid_indices):
+            valid_indices = valid_indices[:max_clips]
+            print(f"[ZarrMotionLoader] Limited to {max_clips} clips")
+
         self.clip_start_idx = torch.tensor([all_clip_start[i] for i in valid_indices], dtype=torch.long)
         self.clip_end_idx = torch.tensor([all_clip_end[i] for i in valid_indices], dtype=torch.long)
         self.num_clips = len(self.clip_start_idx)
         self.clip_lengths = self.clip_end_idx - self.clip_start_idx
 
-        # Load all data to the specified device (GPU if available)
-        self.joint_pos = torch.tensor(store["joint_pos"][:], dtype=torch.float32, device=device)
-        self.joint_vel = torch.tensor(store["joint_vel"][:], dtype=torch.float32, device=device)
-        self._body_pos_w = torch.tensor(store["body_pos_w"][:], dtype=torch.float32, device=device)
-        self._body_quat_w = torch.tensor(store["body_quat_w"][:], dtype=torch.float32, device=device)
-        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:], dtype=torch.float32, device=device)
-        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:], dtype=torch.float32, device=device)
+        # Only load frames that are actually referenced by the selected clips
+        if max_clips is not None and max_clips < total_clips_raw:
+            frame_end = int(self.clip_end_idx.max().item())
+            print(f"[ZarrMotionLoader] Loading only first {frame_end} frames (of {store['joint_pos'].shape[0]})")
+        else:
+            frame_end = store['joint_pos'].shape[0]
+
+        # Load data to the specified device (GPU if available)
+        self.joint_pos = torch.tensor(store["joint_pos"][:frame_end], dtype=torch.float32, device=device)
+        self.joint_vel = torch.tensor(store["joint_vel"][:frame_end], dtype=torch.float32, device=device)
+        self._body_pos_w = torch.tensor(store["body_pos_w"][:frame_end], dtype=torch.float32, device=device)
+        self._body_quat_w = torch.tensor(store["body_quat_w"][:frame_end], dtype=torch.float32, device=device)
+        self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][:frame_end], dtype=torch.float32, device=device)
+        self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][:frame_end], dtype=torch.float32, device=device)
         # Body indexes from robot.find_bodies() — Zarr is already in Isaac order
         self._body_indexes = body_indexes.to(device) if isinstance(body_indexes, torch.Tensor) else torch.tensor(body_indexes, dtype=torch.long, device=device)
         self.time_step_total = self.joint_pos.shape[0]
@@ -616,7 +629,8 @@ class MultiClipMotionCommand(MotionCommand):
         # --- Multi-clip specific: load from Zarr directly to GPU ---
         exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
         self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
-                                       exclude_props=exclude_props)
+                                       exclude_props=exclude_props,
+                                       max_clips=self.cfg.max_clips)
 
         # Per-env state: which clip each env is tracking and the absolute time step
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -635,8 +649,10 @@ class MultiClipMotionCommand(MotionCommand):
         self.body_quat_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 4, device=self.device)
         self.body_quat_relative_w[:, :, 0] = 1.0
 
-        # Adaptive sampling: per-clip failure tracking
-        self.bin_count = self.motion.num_clips
+        # Adaptive sampling: flat global-timeline bins (same approach as single-clip)
+        # Treat entire Zarr store as one concatenated sequence
+        self.total_frames = int(self.motion.clip_end_idx.max().item())
+        self.bin_count = max(self.total_frames // 50, 100)  # ~50 frames per bin
         self.bin_failed_count = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
         self._current_bin_failed = torch.zeros(self.bin_count, dtype=torch.float, device=self.device)
         self.kernel = torch.tensor(
@@ -705,80 +721,144 @@ class MultiClipMotionCommand(MotionCommand):
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["force_applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
-        # Initial clip assignment
+        # Initial clip assignment (also initializes the per-step frame cache)
         self._assign_random_clips(torch.arange(self.num_envs, device=self.device))
 
-    # ── Property overrides: index on CPU, transfer slice to GPU ──────────
+    # ── Per-step frame cache ────────────────────────────────────────────
 
-    def _idx(self, arr: torch.Tensor) -> torch.Tensor:
-        """Index a motion array with GPU time_steps. All data is on GPU."""
-        return arr[self.time_steps]
+    def _cache_current_frames(self):
+        """Pre-fetch all motion data for current time_steps once per step.
+
+        This eliminates ~20 redundant scatter-gather GPU index operations
+        that previously occurred across property accessors, rewards,
+        observations, terminations, and _update_command().
+        """
+        ts = self.time_steps
+        # Filtered body arrays (body_indexes subset)
+        self._cached_joint_pos = self.motion.joint_pos[ts]
+        self._cached_joint_vel = self.motion.joint_vel[ts]
+        self._cached_body_pos_w = self.motion.body_pos_w[ts]
+        self._cached_body_quat_w = self.motion.body_quat_w[ts]
+        self._cached_body_lin_vel_w = self.motion.body_lin_vel_w[ts]
+        self._cached_body_ang_vel_w = self.motion.body_ang_vel_w[ts]
+        # Unfiltered body arrays (for ref_* properties)
+        self._cached_raw_body_pos_w = self.motion._body_pos_w[ts]
+        self._cached_raw_body_quat_w = self.motion._body_quat_w[ts]
+        self._cached_raw_body_lin_vel_w = self.motion._body_lin_vel_w[ts]
+        self._cached_raw_body_ang_vel_w = self.motion._body_ang_vel_w[ts]
+
+        # Future reference frames (for anticipatory observations)
+        if self.cfg.future_steps:
+            self._cached_future_joint_pos = []
+            self._cached_future_body_pos_w = []
+            self._cached_future_body_quat_w = []
+            for offset in self.cfg.future_steps:
+                future_ts = torch.clamp(ts + offset, max=self.clip_end - 1)
+                self._cached_future_joint_pos.append(self.motion.joint_pos[future_ts])
+                self._cached_future_body_pos_w.append(self.motion.body_pos_w[future_ts])
+                self._cached_future_body_quat_w.append(self.motion.body_quat_w[future_ts])
+
+    # ── Property overrides: read from per-step cache ──────────────────
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        return self._idx(self.motion.joint_pos)
+        return self._cached_joint_pos
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        return self._idx(self.motion.joint_vel)
+        return self._cached_joint_vel
+
+    @property
+    def command(self) -> torch.Tensor:
+        """Current ref joint_pos + joint_vel, plus future ref joint_pos if configured."""
+        parts = [self._cached_joint_pos, self._cached_joint_vel]
+        if self.cfg.future_steps:
+            for i in range(len(self.cfg.future_steps)):
+                parts.append(self._cached_future_joint_pos[i])
+        return torch.cat(parts, dim=1)
+
+    @property
+    def clip_phase(self) -> torch.Tensor:
+        """Normalized progress through current clip: 0.0 = start, 1.0 = end. Shape (num_envs, 1)."""
+        progress = (self.time_steps - self.clip_start).float() / (self.clip_end - self.clip_start).float().clamp(min=1)
+        return progress.unsqueeze(-1)
 
     @property
     def body_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w) + self._env.scene.env_origins[:, None, :]
+        return self._cached_body_pos_w + self._env.scene.env_origins[:, None, :]
 
     @property
     def body_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)
+        return self._cached_body_quat_w
 
     @property
     def body_lin_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_lin_vel_w)
+        return self._cached_body_lin_vel_w
 
     @property
     def body_ang_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_ang_vel_w)
+        return self._cached_body_ang_vel_w
 
     @property
     def anchor_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w)[:, self.motion_anchor_body_index] + self._env.scene.env_origins
+        return self._cached_body_pos_w[:, self.motion_anchor_body_index] + self._env.scene.env_origins
 
     @property
     def anchor_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_quat_w[:, self.motion_anchor_body_index]
 
     @property
     def anchor_lin_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_lin_vel_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_lin_vel_w[:, self.motion_anchor_body_index]
 
     @property
     def anchor_ang_vel_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_ang_vel_w)[:, self.motion_anchor_body_index]
+        return self._cached_body_ang_vel_w[:, self.motion_anchor_body_index]
 
     @property
     def ref_pos_w(self) -> torch.Tensor:
-        return self.motion._body_pos_w[self.time_steps] + self._env.scene.env_origins[:, None, :]
+        return self._cached_raw_body_pos_w + self._env.scene.env_origins[:, None, :]
 
     @property
     def ref_quat_w(self) -> torch.Tensor:
-        return self.motion._body_quat_w[self.time_steps]
+        return self._cached_raw_body_quat_w
 
     @property
     def ref_lin_vel_w(self) -> torch.Tensor:
-        return self.motion._body_lin_vel_w[self.time_steps]
+        return self._cached_raw_body_lin_vel_w
 
     @property
     def ref_ang_vel_w(self) -> torch.Tensor:
-        return self.motion._body_ang_vel_w[self.time_steps]
+        return self._cached_raw_body_ang_vel_w
 
     @property
     def vr_3point_body_quat_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_quat_w)[:, self.vr_3point_body_indices_motion]
+        return self._cached_body_quat_w[:, self.vr_3point_body_indices_motion]
 
     @property
     def vr_3point_body_pos_w(self) -> torch.Tensor:
-        return self._idx(self.motion.body_pos_w)[:, self.vr_3point_body_indices_motion] \
+        return self._cached_body_pos_w[:, self.vr_3point_body_indices_motion] \
             + quat_apply(self.vr_3point_body_quat_w, self.vr_3point_body_offsets) \
             + self._env.scene.env_origins[:, None, :]
+
+    def get_future_ref_frames(self):
+        """Return cached future reference frames.
+
+        Returns:
+            list of (joint_pos, body_pos_w, body_quat_w) tuples, one per future_steps offset.
+            body_pos_w includes env_origins offset.
+            Returns empty list if future_steps is not configured.
+        """
+        if not self.cfg.future_steps:
+            return []
+        result = []
+        for i in range(len(self.cfg.future_steps)):
+            result.append((
+                self._cached_future_joint_pos[i],
+                self._cached_future_body_pos_w[i] + self._env.scene.env_origins[:, None, :],
+                self._cached_future_body_quat_w[i],
+            ))
+        return result
 
     def _assign_random_clips(self, env_ids: torch.Tensor):
         """Assign random clips and random start frames to the given envs."""
@@ -793,22 +873,26 @@ class MultiClipMotionCommand(MotionCommand):
         offsets = (torch.rand(n, device=self.device) * (clip_lens - 1).float()).long()
         self.time_steps[env_ids] = self.clip_start[env_ids] + offsets
 
+        # Refresh cache for newly assigned envs
+        self._cache_current_frames()
+
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
 
         env_ids_t = torch.as_tensor(env_ids, device=self.device)
 
-        # Track failures per clip (adaptive sampling across clips)
+        # Track failures by global timestep bin
         episode_failed = self._env.termination_manager.terminated[env_ids_t]
         if torch.any(episode_failed):
-            fail_clips = self.clip_ids[env_ids_t][episode_failed]
-            self._current_bin_failed[:] = torch.bincount(
-                fail_clips, minlength=self.motion.num_clips
-            ).float()
+            fail_bins = torch.clamp(
+                (self.time_steps[env_ids_t][episode_failed] * self.bin_count) // max(self.total_frames, 1),
+                0, self.bin_count - 1,
+            )
+            self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count).float()
 
-        # Assign new random clips
-        self._assign_random_clips(env_ids_t)
+        # Adaptive sampling over global timeline
+        self._adaptive_sampling(env_ids_t)
 
         # Reset robot state (same as parent)
         root_pos = self.body_pos_w[:, 0].clone()
@@ -841,34 +925,84 @@ class MultiClipMotionCommand(MotionCommand):
             env_ids=env_ids,
         )
 
+    def _adaptive_sampling(self, env_ids: torch.Tensor):
+        """Sample start positions from failure-weighted global timeline bins."""
+        n = len(env_ids)
+
+        # Build sampling distribution from failure histogram + uniform baseline
+        sampling_probabilities = self.bin_failed_count + self.cfg.adaptive_uniform_ratio / float(self.bin_count)
+        sampling_probabilities = torch.nn.functional.pad(
+            sampling_probabilities.unsqueeze(0).unsqueeze(0),
+            (0, self.cfg.adaptive_kernel_size - 1),
+            mode="replicate",
+        )
+        sampling_probabilities = torch.nn.functional.conv1d(
+            sampling_probabilities, self.kernel.view(1, 1, -1)
+        ).view(-1)
+        sampling_probabilities = sampling_probabilities / sampling_probabilities.sum()
+
+        # Sample global bins → global frame indices
+        sampled_bins = torch.multinomial(sampling_probabilities, n, replacement=True)
+        global_frames = (
+            (sampled_bins.float() + torch.rand(n, device=self.device))
+            / self.bin_count
+            * self.total_frames
+        ).long().clamp(0, self.total_frames - 1)
+
+        # Map global frame indices → clip IDs via searchsorted
+        # clip_end_idx is sorted and contiguous, so searchsorted gives the clip index
+        clip_ids = torch.searchsorted(self.motion.clip_end_idx, global_frames, right=True)
+        clip_ids = clip_ids.clamp(0, self.motion.num_clips - 1)
+
+        # Set clip state
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
+        self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
+
+        # Clamp global frames within their clip boundaries
+        self.time_steps[env_ids] = global_frames.clamp(
+            self.clip_start[env_ids], self.clip_end[env_ids] - 1
+        )
+
+        # Refresh cache
+        self._cache_current_frames()
+
+        # Metrics
+        H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
+        H_norm = H / math.log(self.bin_count)
+        pmax, imax = sampling_probabilities.max(dim=0)
+        self.metrics["sampling_entropy"][:] = H_norm
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
+
     def _update_command(self):
         self.time_steps += 1
         # Check which envs have exceeded their clip boundary
         env_ids = torch.where(self.time_steps >= self.clip_end)[0]
         self._resample_command(env_ids)
 
-        anchor_pos_w_repeat = self.anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        anchor_quat_w_repeat = self.anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        robot_anchor_pos_w_repeat = self.robot_anchor_pos_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
-        robot_anchor_quat_w_repeat = self.robot_anchor_quat_w[:, None, :].repeat(1, len(self.cfg.body_names), 1)
+        # Refresh the per-step frame cache (one batch of GPU gathers for the whole step)
+        self._cache_current_frames()
 
-        delta_pos_w = robot_anchor_pos_w_repeat
-        delta_pos_w[..., 2] = anchor_pos_w_repeat[..., 2]
-        delta_ori_w = yaw_quat(quat_mul(robot_anchor_quat_w_repeat, quat_inv(anchor_quat_w_repeat)))
+        n_bodies = len(self.cfg.body_names)
+        # Use .expand() (zero-copy views) instead of .repeat() where tensors are only read
+        anchor_pos_w_exp = self.anchor_pos_w[:, None, :].expand(-1, n_bodies, -1)
+        anchor_quat_w_exp = self.anchor_quat_w[:, None, :].expand(-1, n_bodies, -1)
+        robot_anchor_quat_w_exp = self.robot_anchor_quat_w[:, None, :].expand(-1, n_bodies, -1)
+
+        # delta_pos_w is mutated in-place, so it needs a real copy
+        delta_pos_w = self.robot_anchor_pos_w[:, None, :].expand(-1, n_bodies, -1).clone()
+        delta_pos_w[..., 2] = anchor_pos_w_exp[..., 2]
+        delta_ori_w = yaw_quat(quat_mul(robot_anchor_quat_w_exp, quat_inv(anchor_quat_w_exp)))
 
         self.body_quat_relative_w = quat_mul(delta_ori_w, self.body_quat_w)
-        self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_repeat)
+        self.body_pos_relative_w = delta_pos_w + quat_apply(delta_ori_w, self.body_pos_w - anchor_pos_w_exp)
 
         self.bin_failed_count = (
             self.cfg.adaptive_alpha * self._current_bin_failed
             + (1 - self.cfg.adaptive_alpha) * self.bin_failed_count
         )
         self._current_bin_failed.zero_()
-
-    def _adaptive_sampling(self, env_ids: Sequence[int]):
-        """Not used — clip sampling logic is in _resample_command."""
-        pass
-
 
 @configclass
 class MultiClipMotionCommandCfg(MotionCommandCfg):
@@ -881,6 +1015,13 @@ class MultiClipMotionCommandCfg(MotionCommandCfg):
 
     exclude_objects: bool = True
     """Whether to exclude motions with object manipulation (content_props). Default: True."""
+
+    max_clips: int | None = None
+    """Maximum number of clips to load. None = load all. Useful for play/eval on smaller GPUs."""
+
+    future_steps: list[int] = []
+    """Future timestep offsets to include in observations (e.g., [5, 10, 15]).
+    Empty list = no future frames cached. Each offset is clamped to clip boundaries."""
 
     # Override motion_file — not used in multi-clip mode
     motion_file: str = ""

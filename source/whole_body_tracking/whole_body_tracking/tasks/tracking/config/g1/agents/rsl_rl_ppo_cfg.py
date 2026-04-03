@@ -15,11 +15,11 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     experiment_name = "g1_flat"
     empirical_normalization = True
 
-    # # New v5 format: separate actor/critic model configs (requires newer isaaclab_rl)
+    # # New v5 format: separate actor/critic model configs
     # actor = RslRlMLPModelCfg(
     #     class_name="MLPModel",
     #     hidden_dims=[1024, 1024, 512],
-    #     activation="elu",
+    #     activation="swish",
     #     distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
     #         init_std=1.0,
     #     ),
@@ -27,14 +27,15 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # critic = RslRlMLPModelCfg(
     #     class_name="MLPModel",
     #     hidden_dims=[1024, 1024, 512],
-    #     activation="elu",
+    #     activation="swish",
     # )
 
+    # Deprecated but kept for backward compat with IsaacLab internals
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
         actor_hidden_dims=[1024, 1024, 512],
         critic_hidden_dims=[1024, 1024, 512],
-        activation="elu",
+        activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
