@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --partition=move  --account=move
+#SBATCH --partition=humanoid  --account=move
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=20G
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --job-name=staircase
 
 set -euo pipefail
@@ -43,7 +43,9 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_late_curriculum_unilateralz_start5_end10 \
+   --run_name staircase_both_1000_gr1 \
    --video \
    --video_length 500 \
-   --video_interval 10000
+   --video_interval 10000 \
+   --curriculum \
+   --assist_mode both

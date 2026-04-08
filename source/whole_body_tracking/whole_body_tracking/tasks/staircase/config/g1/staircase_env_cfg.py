@@ -19,12 +19,13 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
     spring_force_cfg: dict = {
         "command_name": "motion",
         "body_names": ["torso_link"],
-        "stiffness": 2000.0,         # Spring stiffness (Kp)
-        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
+        "stiffness": 600.0,         # Spring stiffness (Kp)
+        "ang_stiffness": 120.0,      # Angular spring stiffness (Kp_ang)
         "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z]
-        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
-        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
+        "axis_weights": [0, 0, 1.0],  # [x, y, z]
+        "gravity_comp": 0.5,        # Full upward body-weight support before curriculum decay
+        "start_steps": 0,           # Start curriculum decay immediately
+        "ramp_steps": 240000,       # Linear 1→0 finishes at ~10k iters (× 24 steps_per_env)
     }
 
     def __post_init__(self):
@@ -50,7 +51,21 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
+        assist_mode = os.environ.get("WBT_ASSIST_MODE", "both")
+        if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
+            raise ValueError(f"Unsupported WBT_ASSIST_MODE: {assist_mode}")
 
+        if assist_mode == "gravity_only":
+            self.spring_force_cfg["stiffness"] = 0.0
+            self.spring_force_cfg["damping"] = 0.0
+            self.spring_force_cfg["ang_stiffness"] = 0.0
+        elif assist_mode == "spring_only":
+            self.spring_force_cfg["gravity_comp"] = 0.0
+        elif assist_mode == "none":
+            self.spring_force_cfg["stiffness"] = 0.0
+            self.spring_force_cfg["damping"] = 0.0
+            self.spring_force_cfg["ang_stiffness"] = 0.0
+            self.spring_force_cfg["gravity_comp"] = 0.0
 
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
@@ -72,6 +87,8 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
 
         if os.environ.get("WBT_CURRICULUM") == "1":
             self.curriculum = CurriculumCfg()
+            self.curriculum.spring_force_linear.params["start_steps"] = self.spring_force_cfg["start_steps"]
+            self.curriculum.spring_force_linear.params["ramp_steps"] = self.spring_force_cfg["ramp_steps"]
 
 @configclass
 class G1StaircasePlayCfg(G1StaircaseEnvCfg):
@@ -82,6 +99,7 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         self.events.push_robot = None
         # Disable spring force and curriculum
         self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None
@@ -170,6 +188,7 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
         self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
 
         # self.events.change_compliance = None
         self.events.change_compliance = EventTerm(
@@ -218,6 +237,7 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
         ]
 
         self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None

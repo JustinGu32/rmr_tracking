@@ -29,6 +29,13 @@ parser.add_argument("--registry_name", type=str, required=True, help="The name o
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument(
+    "--assist_mode",
+    type=str,
+    default=None,
+    choices=["both", "gravity_only", "spring_only", "none"],
+    help="Assistive force mode for staircase training.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -47,6 +54,8 @@ if args_cli.double_step:
     os.environ["WBT_DOUBLE_STEP"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
+if args_cli.assist_mode is not None:
+    os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:
