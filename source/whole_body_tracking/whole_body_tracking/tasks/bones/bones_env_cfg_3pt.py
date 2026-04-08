@@ -456,11 +456,28 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                 params={
                     "command_name": "motion",
                     "asset_name": "robot",
-                    "stiffness": 2000.0,
-                    "ang_stiffness": 300.0,
+                    "stiffness": 600.0,
+                    "ang_stiffness": 120.0,
                     "damping": 15.0,
-                    "axis_weights": (1.0, 1.0, 1.0),
+                    "axis_weights": (0.0, 0.0, 1.0),
+                    "gravity_comp": 0.5,
                     "curriculum_factor": 1.0,
                 },
             )
             self.curriculum = SpringForceCurriculumCfg()
+
+            assist_mode = os.environ.get("BONES_ASSIST_MODE", "both")
+            if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
+                raise ValueError(f"Unsupported BONES_ASSIST_MODE: {assist_mode}")
+
+            if assist_mode == "gravity_only":
+                self.events.assistive_spring_force.params["stiffness"] = 0.0
+                self.events.assistive_spring_force.params["damping"] = 0.0
+                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+            elif assist_mode == "spring_only":
+                self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+            elif assist_mode == "none":
+                self.events.assistive_spring_force.params["stiffness"] = 0.0
+                self.events.assistive_spring_force.params["damping"] = 0.0
+                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+                self.events.assistive_spring_force.params["gravity_comp"] = 0.0
