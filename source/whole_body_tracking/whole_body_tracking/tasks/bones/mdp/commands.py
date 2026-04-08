@@ -664,6 +664,13 @@ class MultiMotionCommand(CommandTerm):
         self.metrics["force_applied"] = torch.norm(self.last_force_applied, dim=-1).mean(dim=-1)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
+        # Play mode: always start from the beginning of a clip
+        if os.environ.get("BONES_START_FROM_BEGINNING") == "1":
+            # Round-robin assign motion_ids so each env cycles through clips
+            self.motion_ids[env_ids] = torch.randint(0, self.motion.num_motions, (len(env_ids),), device=self.device)
+            self.time_steps[env_ids] = self.motion.motion_start_idx[self.motion_ids[env_ids]]
+            return
+
         episode_failed = self._env.termination_manager.terminated[env_ids]
         if torch.any(episode_failed):
             current_bin_index = torch.clamp(
@@ -683,7 +690,7 @@ class MultiMotionCommand(CommandTerm):
 
         sampling_probabilities = (sampling_probabilities / (sampling_probabilities.sum()+1e-8)) * (1-self.cfg.adaptive_uniform_ratio)
         sampling_probabilities += self.cfg.adaptive_uniform_ratio / float(self.bin_count) # correct implementation
-        
+
 
         sampled_bins = torch.multinomial(sampling_probabilities, len(env_ids), replacement=True)
 

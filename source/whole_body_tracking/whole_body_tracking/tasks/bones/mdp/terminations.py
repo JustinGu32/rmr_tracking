@@ -36,6 +36,30 @@ def motion_ended(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
         return time_steps >= command.motion.time_step_total - 1
 
 
+def my_time_out(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
+    """Terminate on episode timeout OR when the motion clip has ended.
+
+    Combines both conditions under a single time_out=True DoneTerm so that
+    the RL algorithm bootstraps value (rather than treating motion completion
+    as a hard failure).
+
+    Works with MotionCommand (single motion) and MultiMotionCommand/BindedMultiMotionCommand
+    (multi-motion with per-env motion_ids).
+    """
+    command = env.command_manager.get_term(command_name)
+    time_steps = command.time_steps
+
+    episode_length_term = env.episode_length_buf >= env.max_episode_length
+
+    if hasattr(command, "motion_ids") and hasattr(command.motion, "motion_end_idx"):
+        motion_end = command.motion.motion_end_idx[command.motion_ids]
+        max_step_length_term = time_steps >= motion_end - 1
+    else:
+        max_step_length_term = time_steps >= command.motion.time_step_total - 1
+
+    return episode_length_term | max_step_length_term
+
+
 def bad_anchor_pos(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     return torch.norm(command.anchor_pos_w - command.robot_anchor_pos_w, dim=1) > threshold
@@ -44,6 +68,12 @@ def bad_anchor_pos(env: ManagerBasedRLEnv, command_name: str, threshold: float) 
 def bad_anchor_pos_z_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
     return torch.abs(command.anchor_pos_w[:, -1] - command.robot_anchor_pos_w[:, -1]) > threshold
+
+
+def bad_anchor_pos_x_y_only(env: ManagerBasedRLEnv, command_name: str, threshold: float) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    err = torch.norm(command.anchor_pos_w[:, 0:2] - command.robot_anchor_pos_w[:, 0:2], dim=1)
+    return err > threshold
 
 
 def bad_anchor_ori(

@@ -371,20 +371,6 @@ class RewardsCfg:
         params={"command_name": "motion", "std": 3.14},
     )
     action_rate_l2 = RewTerm(func=mdp.action_rate_l2, weight=-1e-1)
-    # motion_joint_pos = RewTerm(
-    #     func=mdp.motion_joint_position_error_exp,
-    #     weight=1.0,
-    #     params={"command_name": "motion", "std": 0.15},
-    # )
-    double_step_penalty = RewTerm(
-        func=mdp.double_step_penalty,
-        weight=0.5,
-        params={
-            "command_name": "motion",
-            "threshold": 2.0,
-            "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
-        },
-    )
     joint_limit = RewTerm(
         func=mdp.joint_pos_limits,
         weight=-10.0,
@@ -439,15 +425,6 @@ class TerminationsCfg:
         func=mdp.bad_anchor_pos_x_y_only,
         params={"command_name": "motion", "threshold": 0.7},
     )
-
-    # double_step = DoneTerm(
-    #     func=mdp.double_step,
-    #     params={
-    #         "command_name": "motion",
-    #         "threshold": 3.0,
-    #         "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
-    #     },
-    # )
 
 
 @configclass
@@ -504,3 +481,15 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
             if ppo_output == "delta-pseudotarget":
                 self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
                 self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+
+        # Double-step penalty: off by default, enabled via --double_step flag
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )

@@ -37,6 +37,8 @@ parser.add_argument("--no_command_obs", action="store_true", default=False, help
 parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: elu).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -250,8 +252,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
 
+    # Override activation function
+    agent_cfg.policy.activation = args_cli.activation
+
     # Auto-generate run name suffix from CLI flags
-    flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}"
+    flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}_act-{args_cli.activation}"
     if args_cli.no_command_obs:
         flag_suffix += "_no-cmd-obs"
     if args_cli.double_step:
