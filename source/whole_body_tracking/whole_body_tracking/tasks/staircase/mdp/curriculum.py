@@ -114,15 +114,6 @@ def apply_spring_force(
     env._spring_force_curriculum_factor = curriculum_factor_log
     env._spring_force_active = curriculum_factor_log > 0.0
         
-    # Also fetch config defaults from env.spring_force_cfg if present
-    spring_cfg = getattr(env.cfg, "spring_force_cfg", None)
-    if spring_cfg is not None:
-        stiffness = spring_cfg.get("stiffness", stiffness)
-        ang_stiffness = spring_cfg.get("ang_stiffness", ang_stiffness)
-        damping = spring_cfg.get("damping", damping)
-        axis_weights = tuple(spring_cfg.get("axis_weights", axis_weights))
-        gravity_comp = spring_cfg.get("gravity_comp", gravity_comp)
-
     asset: Articulation = env.scene[asset_name]
     command = env.command_manager.get_term(command_name)
     anchor_idx = command.robot_anchor_body_index

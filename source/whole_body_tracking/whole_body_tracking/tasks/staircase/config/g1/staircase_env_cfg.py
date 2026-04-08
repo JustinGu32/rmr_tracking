@@ -1,7 +1,6 @@
 import os
 
 from isaaclab.utils import configclass
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -15,18 +14,6 @@ from whole_body_tracking.tasks.staircase.staircase_compliance_cfg import Stairca
 @configclass
 class G1StaircaseEnvCfg(StaircaseEnvCfg):
     """G1 robot configuration for staircase."""
-
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 600.0,         # Spring stiffness (Kp)
-        "ang_stiffness": 120.0,      # Angular spring stiffness (Kp_ang)
-        "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0, 0, 1.0],  # [x, y, z]
-        "gravity_comp": 0.5,        # Full upward body-weight support before curriculum decay
-        "start_steps": 0,           # Start curriculum decay immediately
-        "ramp_steps": 240000,       # Linear 1→0 finishes at ~10k iters (× 24 steps_per_env)
-    }
 
     def __post_init__(self):
         super().__post_init__()
@@ -56,16 +43,16 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             raise ValueError(f"Unsupported WBT_ASSIST_MODE: {assist_mode}")
 
         if assist_mode == "gravity_only":
-            self.spring_force_cfg["stiffness"] = 0.0
-            self.spring_force_cfg["damping"] = 0.0
-            self.spring_force_cfg["ang_stiffness"] = 0.0
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
         elif assist_mode == "spring_only":
-            self.spring_force_cfg["gravity_comp"] = 0.0
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
         elif assist_mode == "none":
-            self.spring_force_cfg["stiffness"] = 0.0
-            self.spring_force_cfg["damping"] = 0.0
-            self.spring_force_cfg["ang_stiffness"] = 0.0
-            self.spring_force_cfg["gravity_comp"] = 0.0
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
 
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
@@ -87,8 +74,6 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
 
         if os.environ.get("WBT_CURRICULUM") == "1":
             self.curriculum = CurriculumCfg()
-            self.curriculum.spring_force_linear.params["start_steps"] = self.spring_force_cfg["start_steps"]
-            self.curriculum.spring_force_linear.params["ramp_steps"] = self.spring_force_cfg["ramp_steps"]
 
 @configclass
 class G1StaircasePlayCfg(G1StaircaseEnvCfg):
@@ -98,7 +83,6 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         # Disable perturbations for clean playback
         self.events.push_robot = None
         # Disable spring force and curriculum
-        self.spring_force_cfg = None
         self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
@@ -187,7 +171,6 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.episode_length_s = 20.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
-        self.spring_force_cfg = None
         self.events.assistive_spring_force = None
 
         # self.events.change_compliance = None
@@ -235,8 +218,6 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
             "right_elbow_link",
             "right_wrist_yaw_link",
         ]
-
-        self.spring_force_cfg = None
         self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None

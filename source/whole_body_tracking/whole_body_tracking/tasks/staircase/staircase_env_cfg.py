@@ -276,13 +276,11 @@ class EventCfg:
         params={
             "command_name": "motion",
             "asset_name": "robot",
-            # We defer stiffness, damping, etc to the environment class's spring_force_cfg
-            # Therefore `apply_spring_force` needs to fetch param values dynamically
-            "stiffness": 1000.0,
+            "stiffness": 600.0,
             "ang_stiffness": 120.0,
             "damping": 15.0,
             "axis_weights": (0.0, 0.0, 1.0),
-            "gravity_comp": 1.0,
+            "gravity_comp": 0.5,
             "curriculum_factor": 1.0,
         },
     )
