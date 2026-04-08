@@ -1,7 +1,6 @@
 import os
 
 from isaaclab.utils import configclass
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import EventTermCfg as EventTerm
@@ -15,17 +14,6 @@ from whole_body_tracking.tasks.staircase.staircase_compliance_cfg import Stairca
 @configclass
 class G1StaircaseEnvCfg(StaircaseEnvCfg):
     """G1 robot configuration for staircase."""
-
-    spring_force_cfg: dict = {
-        "command_name": "motion",
-        "body_names": ["torso_link"],
-        "stiffness": 2000.0,         # Spring stiffness (Kp)
-        "ang_stiffness": 300.0,      # Angular spring stiffness (Kp_ang)
-        "damping": 15.0,            # Velocity damping (Kd)
-        "axis_weights": [0.5, 0.5, 2.0],  # [x, y, z]
-        "start_steps": 120000,      # Delay decay until 5k iters (× 24 steps_per_env)
-        "ramp_steps": 360000,       # Linear 1→0 finishes at 15k iters (× 24 steps_per_env)
-    }
 
     def __post_init__(self):
         super().__post_init__()
@@ -50,7 +38,21 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
+        assist_mode = os.environ.get("WBT_ASSIST_MODE", "both")
+        if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
+            raise ValueError(f"Unsupported WBT_ASSIST_MODE: {assist_mode}")
 
+        if assist_mode == "gravity_only":
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+        elif assist_mode == "spring_only":
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+        elif assist_mode == "none":
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
 
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
@@ -82,7 +84,7 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         if os.environ.get("WBT_PUSH") != "1":
             self.events.push_robot = None
         # Disable spring force and curriculum
-        self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None
@@ -172,7 +174,7 @@ class G1StaircaseCompliancePlayCfg(G1StaircaseComplianceCfg):
         self.episode_length_s = 25.0
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
-        self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
 
         # self.events.change_compliance = None
         self.events.change_compliance = EventTerm(
@@ -220,7 +222,7 @@ class G1StaircasePlayEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        self.spring_force_cfg = None
+        self.events.assistive_spring_force = None
         if self.curriculum is not None:
             self.curriculum.spring_force_linear = None
             self.curriculum.spring_force_factor = None

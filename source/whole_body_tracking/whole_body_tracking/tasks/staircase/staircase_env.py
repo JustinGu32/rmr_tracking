@@ -19,7 +19,9 @@ class StaircaseEnv(ManagerBasedRLEnv):
     def __init__(self, cfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
         # These attrs are set by the apply_assistive_spring_force event function
+        self._last_total_assist_force = None
         self._last_spring_force = None
+        self._last_grav_force = None
         self._last_spring_torque = None
         self._spring_force_active = True
         self._spring_force_curriculum_factor = 1.0
@@ -88,15 +90,30 @@ class StaircaseEnv(ManagerBasedRLEnv):
         # Log spring force info (set by the event function)
         spring_force_active = getattr(self, "_spring_force_active", curriculum_factor > 0.0)
         self.extras["log"]["curriculum/spring_force_active"] = float(spring_force_active)
-        last_force = getattr(self, "_last_spring_force", None)
-        force_mag = 0.0
-        force_xy = 0.0
-        force_z = 0.0
-        if last_force is not None:
-            force_mag = torch.norm(last_force, dim=-1).mean()
-            # Per-axis: XY (horizontal) and Z (vertical)
-            force_xy = torch.norm(last_force[:, :2], dim=-1).mean()
-            force_z = last_force[:, 2].abs().mean()
-        self.extras["log"]["curriculum/spring_force_magnitude"] = float(force_mag)
-        self.extras["log"]["curriculum/spring_force_xy"] = float(force_xy)
-        self.extras["log"]["curriculum/spring_force_z"] = float(force_z)
+        total_force = getattr(self, "_last_total_assist_force", None)
+        spring_force = getattr(self, "_last_spring_force", None)
+        grav_force = getattr(self, "_last_grav_force", None)
+
+        def _force_stats(force_tensor: torch.Tensor | None):
+            magnitude = 0.0
+            xy = 0.0
+            z = 0.0
+            if force_tensor is not None:
+                magnitude = float(torch.norm(force_tensor, dim=-1).mean())
+                xy = float(torch.norm(force_tensor[:, :2], dim=-1).mean())
+                z = float(force_tensor[:, 2].abs().mean())
+            return magnitude, xy, z
+
+        total_mag, total_xy, total_z = _force_stats(total_force)
+        spring_mag, spring_xy, spring_z = _force_stats(spring_force)
+        grav_mag, grav_xy, grav_z = _force_stats(grav_force)
+
+        self.extras["log"]["curriculum/assist_force_magnitude"] = total_mag
+        self.extras["log"]["curriculum/assist_force_xy"] = total_xy
+        self.extras["log"]["curriculum/assist_force_z"] = total_z
+        self.extras["log"]["curriculum/spring_force_magnitude"] = spring_mag
+        self.extras["log"]["curriculum/spring_force_xy"] = spring_xy
+        self.extras["log"]["curriculum/spring_force_z"] = spring_z
+        self.extras["log"]["curriculum/grav_force_magnitude"] = grav_mag
+        self.extras["log"]["curriculum/grav_force_xy"] = grav_xy
+        self.extras["log"]["curriculum/grav_force_z"] = grav_z

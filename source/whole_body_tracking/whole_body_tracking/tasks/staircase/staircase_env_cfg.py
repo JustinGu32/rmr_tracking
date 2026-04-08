@@ -276,12 +276,11 @@ class EventCfg:
         params={
             "command_name": "motion",
             "asset_name": "robot",
-            # We defer stiffness, damping, etc to the environment class's spring_force_cfg
-            # Therefore `apply_spring_force` needs to fetch param values dynamically
-            "stiffness": 2000.0,
-            "ang_stiffness": 300.0,
+            "stiffness": 600.0,
+            "ang_stiffness": 120.0,
             "damping": 15.0,
-            "axis_weights": (0.5, 0.5, 2.0),
+            "axis_weights": (0.0, 0.0, 1.0),
+            "gravity_comp": 0.5,
             "curriculum_factor": 1.0,
         },
     )
@@ -405,8 +404,8 @@ class CurriculumCfg:
         func=mdp.LinearForceScheduler,
         params={
             "command_name": "motion",
-            "start_steps": 120000,
-            "ramp_steps": 360000,
+            "start_steps": 0,
+            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
         },
     )
     spring_force_factor = CurrTerm(

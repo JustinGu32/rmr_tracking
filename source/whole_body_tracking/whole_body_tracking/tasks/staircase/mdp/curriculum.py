@@ -114,14 +114,6 @@ def apply_spring_force(
     env._spring_force_curriculum_factor = curriculum_factor_log
     env._spring_force_active = curriculum_factor_log > 0.0
         
-    # Also fetch config defaults from env.spring_force_cfg if present
-    spring_cfg = getattr(env.cfg, "spring_force_cfg", None)
-    if spring_cfg is not None:
-        stiffness = spring_cfg.get("stiffness", stiffness)
-        ang_stiffness = spring_cfg.get("ang_stiffness", ang_stiffness)
-        damping = spring_cfg.get("damping", damping)
-        axis_weights = tuple(spring_cfg.get("axis_weights", axis_weights))
-
     asset: Articulation = env.scene[asset_name]
     command = env.command_manager.get_term(command_name)
     anchor_idx = command.robot_anchor_body_index
@@ -163,6 +155,8 @@ def apply_spring_force(
     # Total force & torque, scaled by curriculum
     total_force = (spring_force + grav_force) * curriculum_factor
     total_torque = spring_torque * curriculum_factor
+    spring_force_scaled = spring_force * curriculum_factor
+    grav_force_scaled = grav_force * curriculum_factor
 
     if env_ids is not None:
         # Apply only to specified envs
@@ -180,10 +174,14 @@ def apply_spring_force(
         )
 
     if env._spring_force_active:
-        env._last_spring_force = total_force
+        env._last_total_assist_force = total_force
+        env._last_spring_force = spring_force_scaled
+        env._last_grav_force = grav_force_scaled
         env._last_spring_torque = total_torque
     else:
+        env._last_total_assist_force = None
         env._last_spring_force = None
+        env._last_grav_force = None
         env._last_spring_torque = None
 
     return total_force

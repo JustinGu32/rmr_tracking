@@ -420,8 +420,8 @@ class CurriculumCfg:
         func=mdp.LinearForceScheduler,
         params={
             "command_name": "motion",
-            "start_steps": 120000,
-            "ramp_steps": 360000,
+            "start_steps": 0,
+            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
         },
     )
     spring_force_factor = CurrTerm(
