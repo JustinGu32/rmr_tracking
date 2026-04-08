@@ -43,7 +43,9 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name staircase \
-   --run_name staircase_late_curriculum_unilateralz_start5_end10 \
+   --run_name staircase_ignore \
    --video \
    --video_length 500 \
-   --video_interval 10000
+   --video_interval 10000 \
+   --assist_mode gravity_only \
+   --curriculum
