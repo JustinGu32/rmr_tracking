@@ -38,6 +38,8 @@ parser.add_argument("--num_steps_per_env", type=int, default=None, help="Overrid
 parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: elu).")
 parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 
 # append RSL-RL cli arguments
@@ -55,6 +57,7 @@ if args_cli.curriculum:
     os.environ["WBT_CURRICULUM"] = "1"
 if args_cli.double_step:
     os.environ["WBT_DOUBLE_STEP"] = "1"
+    os.environ["BONES_DOUBLE_STEP"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
@@ -250,6 +253,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg.policy.activation = args_cli.activation
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations

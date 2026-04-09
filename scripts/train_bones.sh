@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=move  --account=move
-#SBATCH --time=12:00:00
+#SBATCH --time=18:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
@@ -186,6 +186,7 @@ python scripts/rsl_rl/train_bones.py \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
+<<<<<<< HEAD
    --run_name crane_a5000_gravity_term \
    --ppo_output target \
    --push none \
@@ -204,6 +205,11 @@ python scripts/rsl_rl/train_bones.py \
 #   --run_name DELTA-ALL_crane_a5000 \
 #   --ppo_output delta \
 #   --push none
+=======
+   --run_name DELTA-ALL-NO-SCALE_crane_a5000_VR2 \
+   --ppo_output delta-all \
+   --push none
+>>>>>>> 8264d4d0f70ac8bbce7b56e903a84dff9eb1b799
 
 # # 15. target + push-none + curriculum
 # python scripts/rsl_rl/train_bones.py \

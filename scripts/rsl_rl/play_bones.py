@@ -7,6 +7,7 @@ python scripts/rsl_rl/play_bones.py --task=Bones-Flat-chip-G1-Play-v0 --num_envs
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -25,6 +26,13 @@ parser.add_argument(
 parser.add_argument("--num_envs", type=int, default=None, help="Number of environments to simulate.")
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
+parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (must match training).")
+parser.add_argument("--start_from_beginning", action="store_true", default=False,
+                    help="Start each episode from the beginning of the clip instead of adaptive sampling.")
+parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -33,6 +41,9 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+if args_cli.start_from_beginning:
+    os.environ["BONES_START_FROM_BEGINNING"] = "1"
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -44,6 +55,7 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
+import json
 import os
 import pathlib
 import torch
@@ -71,7 +83,10 @@ from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_moti
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Play with RSL-RL agent."""
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
+    agent_cfg.policy.activation = args_cli.activation
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -122,6 +137,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
+    # Set zarr_path for multi-clip tasks
+    if args_cli.zarr_path is not None:
+        env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+
+    # Limit clips for smaller GPUs
+    if args_cli.max_clips is not None and hasattr(env_cfg.commands.motion, 'max_clips'):
+        env_cfg.commands.motion.max_clips = args_cli.max_clips
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -171,6 +194,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         wandb_run.upload_file(onnx_path)
         print(f"[INFO]: Uploaded {onnx_path} to wandb run: {run_path}")
 
+    # Track termination counts
+    term_manager = env.unwrapped.termination_manager
+    term_counts = {name: 0 for name in term_manager.active_terms}
+    total_episodes = 0
+
     # reset environment
     obs, _ = env.reset()
     timestep = 0
@@ -181,12 +209,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, _, dones, _ = env.step(actions)
+
+        # count terminations per term
+        for name in term_manager.active_terms:
+            fired = term_manager.get_term(name)
+            term_counts[name] += int(fired.sum().item())
+        total_episodes += int(dones.sum().item())
+
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
+
+    # Save termination stats
+    term_stats = {
+        "total_episodes": total_episodes,
+        "total_steps": timestep,
+        "termination_counts": term_counts,
+    }
+    video_folder = args_cli.video_folder if args_cli.video_folder else os.path.join(log_dir, "videos", "play", wandb_run.id if args_cli.wandb_path else "local")
+    os.makedirs(video_folder, exist_ok=True)
+    stats_path = os.path.join(video_folder, "termination_stats.json")
+    with open(stats_path, "w") as f:
+        json.dump(term_stats, f, indent=2)
+    print(f"[INFO] Termination stats saved to: {stats_path}")
+    print(json.dumps(term_stats, indent=2))
 
     # close the simulator
     env.close()

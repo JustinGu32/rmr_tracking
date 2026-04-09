@@ -664,6 +664,13 @@ class MultiMotionCommand(CommandTerm):
         self.metrics["force_applied"] = torch.norm(self.last_force_applied, dim=-1).mean(dim=-1)
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
+        # Play mode: always start from the beginning of a clip
+        if os.environ.get("BONES_START_FROM_BEGINNING") == "1":
+            # Round-robin assign motion_ids so each env cycles through clips
+            self.motion_ids[env_ids] = torch.randint(0, self.motion.num_motions, (len(env_ids),), device=self.device)
+            self.time_steps[env_ids] = self.motion.motion_start_idx[self.motion_ids[env_ids]]
+            return
+
         episode_failed = self._env.termination_manager.terminated[env_ids]
         if torch.any(episode_failed):
             current_bin_index = torch.clamp(
@@ -683,7 +690,7 @@ class MultiMotionCommand(CommandTerm):
 
         sampling_probabilities = (sampling_probabilities / (sampling_probabilities.sum()+1e-8)) * (1-self.cfg.adaptive_uniform_ratio)
         sampling_probabilities += self.cfg.adaptive_uniform_ratio / float(self.bin_count) # correct implementation
-        
+
 
         sampled_bins = torch.multinomial(sampling_probabilities, len(env_ids), replacement=True)
 
@@ -1421,3 +1428,110 @@ class ZarrMultiMotionCommandCfg(MultiMotionCommandCfg):
 
     # Override motion_files — not used in zarr mode
     motion_files: list[str] = []
+
+
+# ─── CHIP-specific MultiClip subclass ────────────────────────────────────────
+
+from whole_body_tracking.tasks.tracking.mdp.commands import (
+    MultiClipMotionCommand,
+    MultiClipMotionCommandCfg,
+)
+
+
+class CHIPMultiClipMotionCommand(MultiClipMotionCommand):
+    """MultiClipMotionCommand with CHIP compliance features.
+
+    Adds on top of tracking's MultiClipMotionCommand:
+      - VR ground clamp (feet clamped above ground in compliant targets)
+      - Robot-side VR 3-point properties (for VR rewards)
+      - Force push no-push-on-contact filter (don't push grounded feet)
+      - eef_stiffness_buf sized to len(force_push_body) (6 bodies, not 3)
+      - Wrist grasp label
+      - DOF reordering (MuJoCo <-> IsaacLab) and lower body filtering
+    """
+
+    cfg: "CHIPMultiClipMotionCommandCfg"
+
+    def __init__(self, cfg: "CHIPMultiClipMotionCommandCfg", env: "ManagerBasedRLEnv"):
+        super().__init__(cfg, env)
+
+        # Fix eef_stiffness_buf size (parent hardcodes to 3)
+        self.eef_stiffness_buf = torch.zeros(
+            self.num_envs, len(self.cfg.force_push_body), dtype=torch.float32, device=self.device
+        )
+
+        # VR ground clamp indices (for vr_3point_local_compliant_target)
+        self.vr_3point_ground_clamp_indices = [
+            i for i, name in enumerate(self.cfg.vr_3point_body)
+            if name in self.cfg.vr_3point_ground_clamp_bodies
+        ]
+
+        # Force push no-push-on-contact filter
+        self.force_push_no_contact_indices = [
+            i for i, name in enumerate(self.cfg.force_push_body)
+            if name in self.cfg.force_push_no_push_on_contact
+        ]
+        if self.force_push_no_contact_indices:
+            no_contact_names = [self.cfg.force_push_body[i] for i in self.force_push_no_contact_indices]
+            self.force_push_no_contact_body_ids = self.robot.find_bodies(no_contact_names, preserve_order=True)[0]
+        else:
+            self.force_push_no_contact_body_ids = []
+
+        # DOF reordering (MuJoCo <-> IsaacLab)
+        self.isaaclab_to_mujoco_dof = [0, 3, 6, 9, 13, 17, 1, 4, 7, 10, 14, 18, 2, 5, 8, 11, 15, 19, 21, 23, 25, 27, 12, 16, 20, 22, 24, 26, 28]
+        self.mujoco_to_isaaclab_dof = [0, 6, 12, 1, 7, 13, 2, 8, 14, 3, 9, 15, 22, 4, 10, 16, 23, 5, 11, 17, 24, 18, 25, 19, 26, 20, 27, 21, 28]
+        self.lower_joint_indices_mujoco = list(range(12))
+        self.lower_joint_isaaclab_indices = [self.isaaclab_to_mujoco_dof[i] for i in self.lower_joint_indices_mujoco]
+
+    # ── Robot-side VR 3-point properties ──────────────────────────────────
+
+    @property
+    def robot_vr_3point_quat_w(self) -> torch.Tensor:
+        return self.robot.data.body_quat_w[:, self.vr_3point_body_indices]
+
+    @property
+    def robot_vr_3point_pos_w(self) -> torch.Tensor:
+        return self.robot.data.body_pos_w[:, self.vr_3point_body_indices] + quat_apply(self.robot_vr_3point_quat_w, self.vr_3point_body_offsets)
+
+    # ── Wrist grasp label ─────────────────────────────────────────────────
+
+    @property
+    def wrist_grasp_label(self) -> torch.Tensor:
+        return self.motion.wrist_grasp_label[self.time_steps]
+
+    # ── Lower body / DOF reordering properties ────────────────────────────
+
+    @property
+    def command_lower_body(self) -> torch.Tensor:
+        return torch.cat([self.joint_pos_lower_body, self.joint_vel_lower_body], dim=1)
+
+    @property
+    def joint_pos_lower_body(self) -> torch.Tensor:
+        return self.joint_pos[:, self.lower_joint_isaaclab_indices]
+
+    @property
+    def joint_vel_lower_body(self) -> torch.Tensor:
+        return self.joint_vel[:, self.lower_joint_isaaclab_indices]
+
+
+@configclass
+class CHIPMultiClipMotionCommandCfg(MultiClipMotionCommandCfg):
+    """MultiClipMotionCommandCfg with CHIP compliance config."""
+
+    class_type: type = CHIPMultiClipMotionCommand
+
+    # VR ground clamp
+    vr_3point_ground_clamp_bodies: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link"]
+
+    # Force push contact filter
+    force_push_no_push_on_contact: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link"]
+
+    # Wrist grasp label
+    has_wrist_grasp_label: bool = False
+
+    # Override defaults: CHIP uses 6 bodies (hands + torso + feet + pelvis)
+    force_push_body: list[str] = ["left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link", "left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
+    force_push_body_offset: list[list[float]] = [[0.18, -0.025, 0.0], [0.18, +0.025, 0.0], [0.0, 0.0, 0.35], [0.035, 0.0, -0.03], [0.035, 0.0, -0.03], [0.0, 0.0, 0.0]]
+
+    vr_3point_body: list[str] = ["left_wrist_yaw_link", "right_wrist_yaw_link", "torso_link", "left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
+    vr_3point_body_offset: list[list[float]] = [[0.18, -0.025, 0.0], [0.18, +0.025, 0.0], [0.0, 0.0, 0.35], [0.035, 0.0, -0.03], [0.035, 0.0, -0.03], [0.0, 0.0, 0.0]]
