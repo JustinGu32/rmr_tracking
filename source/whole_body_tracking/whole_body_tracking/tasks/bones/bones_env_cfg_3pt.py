@@ -473,7 +473,7 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                     "command_name": "motion",
                     "asset_name": "robot",
                     "stiffness": 600.0,
-                    "ang_stiffness": 120.0,
+                    "ang_stiffness": 300.0,
                     "damping": 15.0,
                     "axis_weights": (0.0, 0.0, 1.0),
                     "gravity_comp": 0.5,
@@ -483,13 +483,26 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
             self.curriculum = CurriculumCfg()
 
             assist_mode = os.environ.get("BONES_ASSIST_MODE", "both")
-            if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
+            if assist_mode not in {"both", "gravity_only", "spring_only", "none", "gravity_pelvis", "gravity_all", "both_pelvis", "both_all"}:
                 raise ValueError(f"Unsupported BONES_ASSIST_MODE: {assist_mode}")
 
-            if assist_mode == "gravity_only":
+            # By default set mode to pelvis
+            self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
+
+            if assist_mode == "gravity_pelvis":
                 self.events.assistive_spring_force.params["stiffness"] = 0.0
                 self.events.assistive_spring_force.params["damping"] = 0.0
                 self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+                self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
+            elif assist_mode == "gravity_all":
+                self.events.assistive_spring_force.params["stiffness"] = 0.0
+                self.events.assistive_spring_force.params["damping"] = 0.0
+                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+                self.events.assistive_spring_force.params["gravity_comp_mode"] = "all"
+            elif assist_mode == "both_pelvis":
+                self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
+            elif assist_mode == "both_all":
+                self.events.assistive_spring_force.params["gravity_comp_mode"] = "all"
             elif assist_mode == "spring_only":
                 self.events.assistive_spring_force.params["gravity_comp"] = 0.0
             elif assist_mode == "none":

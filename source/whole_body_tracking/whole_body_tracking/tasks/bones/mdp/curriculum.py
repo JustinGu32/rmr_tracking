@@ -79,6 +79,7 @@ def apply_spring_force(
     damping: float = 20.0,
     axis_weights: tuple[float, float, float] = (0.3, 0.3, 5.0),
     gravity_comp: float = 0.0,
+    gravity_comp_mode: str = "pelvis",
     curriculum_factor: float | None = None,
 ):
     """Apply a PD spring force pulling the robot's anchor body toward the reference motion.
@@ -100,6 +101,7 @@ def apply_spring_force(
         ang_stiffness: Angular spring stiffness (Kp_ang).
         damping: Velocity damping (Kd).
         gravity_comp: Fraction of gravity to compensate (0.0–1.0).
+        gravity_comp_mode: Whether to apply gravity comp to "pelvis" only or "all" links.
         axis_weights: Per-axis multiplier on spring stiffness [x, y, z].
         curriculum_factor: Scaling factor. If None, checks env._spring_force_curriculum_factor.
     """
@@ -138,51 +140,65 @@ def apply_spring_force(
 
     # Unilateral Z-axis: only push up, never pull down
     spring_force[:, 2] = torch.clamp(spring_force[:, 2], min=0.0)
-    # Use max(0, force) to ensure no negative force is applied when descending
-    # spring_force = torch.clamp(spring_force, min=0.0)
 
     # Angular spring torque: Kp_ang * axis_angle_error(ref_quat, cur_quat)
     quat_error = quat_mul(ref_quat_w, quat_inv(cur_quat_w))  # (num_envs, 4)
     ang_error = axis_angle_from_quat(quat_error)              # (num_envs, 3)
     spring_torque = weights * ang_stiffness * ang_error        # (num_envs, 3)
 
-    # Gravity compensation (opt-in, default off for training)
-    grav_force = torch.zeros_like(spring_force)
-    if gravity_comp > 0.0:
-        total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
-        grav_force[:, 2] = total_mass * 9.81 * gravity_comp
-
-    # Total force & torque, scaled by curriculum
-    total_force = (spring_force + grav_force) * curriculum_factor
-    total_torque = spring_torque * curriculum_factor
+    # Base spring force & torque, scaled by curriculum
     spring_force_scaled = spring_force * curriculum_factor
-    grav_force_scaled = grav_force * curriculum_factor
+    spring_torque_scaled = spring_torque * curriculum_factor
 
+    # Zero out forces for environments that just reset to prevent massive ghost forces
+    reset_mask = env.episode_length_buf == 0
+    if reset_mask.any():
+        spring_force_scaled[reset_mask] = 0.0
+        spring_torque_scaled[reset_mask] = 0.0
+
+    # Allocate full body forces structure
+    # NOTE: Set external force requires (num_envs, num_bodies, 3) array when is_global=True and multiple bodies.
+    forces = torch.zeros(env.num_envs, asset.num_bodies, 3, device=env.device)
+    torques = torch.zeros(env.num_envs, asset.num_bodies, 3, device=env.device)
+
+    # Assign spring force precisely to anchor body
+    forces[:, anchor_idx, :] = spring_force_scaled
+    torques[:, anchor_idx, :] = spring_torque_scaled
+
+    # Gravity compensation
+    grav_force_scaled = torch.zeros_like(forces)
+    if gravity_comp > 0.0:
+        if gravity_comp_mode == "pelvis":
+            total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
+            added_grav = total_mass * 9.81 * gravity_comp * curriculum_factor
+            forces[:, anchor_idx, 2] += added_grav
+            grav_force_scaled[:, anchor_idx, 2] = added_grav
+        elif gravity_comp_mode == "all":
+            masses = asset.root_physx_view.get_masses()  # (num_envs, num_bodies)
+            added_grav = masses * 9.81 * gravity_comp * curriculum_factor
+            forces[:, :, 2] += added_grav
+            grav_force_scaled[:, :, 2] = added_grav
+
+    # Apply forces
     if env_ids is not None:
-        # Apply only to specified envs
-        forces = total_force[env_ids].unsqueeze(1)   # (len(env_ids), 1, 3)
-        torques = total_torque[env_ids].unsqueeze(1)  # (len(env_ids), 1, 3)
         asset.set_external_force_and_torque(
-            forces, torques, body_ids=[anchor_idx], env_ids=env_ids, is_global=True
+            forces[env_ids], torques[env_ids], env_ids=env_ids, is_global=True
         )
     else:
-        # Apply to all envs
-        forces = total_force.unsqueeze(1)   # (num_envs, 1, 3)
-        torques = total_torque.unsqueeze(1)  # (num_envs, 1, 3)
         asset.set_external_force_and_torque(
-            forces, torques, body_ids=[anchor_idx], is_global=True
+            forces, torques, is_global=True
         )
 
+    total_force = forces[:, anchor_idx, :]
     if env._spring_force_active:
         env._last_total_assist_force = total_force
         env._last_spring_force = spring_force_scaled
-        env._last_grav_force = grav_force_scaled
-        env._last_spring_torque = total_torque
+        env._last_grav_force = grav_force_scaled[:, anchor_idx, :] if gravity_comp_mode == "pelvis" else grav_force_scaled.sum(dim=1)
+        env._last_spring_torque = torques[:, anchor_idx, :]
     else:
         env._last_total_assist_force = None
         env._last_spring_force = None
         env._last_grav_force = None
         env._last_spring_torque = None
 
-    return total_force
-    
+    return total_force    
