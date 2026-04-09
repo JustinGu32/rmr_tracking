@@ -236,9 +236,22 @@ class EventCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
 
-    # Assistive spring force (enabled via --curriculum flag)
-    # Applied every physics step; curriculum_factor is ramped 1→0 by CurriculumCfg
-    assistive_spring_force = None
+    # Spring force is applied intervally (every step) and modulated by the curriculum
+    assistive_spring_force = EventTerm(
+        func=mdp.apply_spring_force,
+        mode="interval",
+        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
+        params={
+            "command_name": "motion",
+            "asset_name": "robot",
+            "stiffness": 600.0,
+            "ang_stiffness": 120.0,
+            "damping": 15.0,
+            "axis_weights": (0.0, 0.0, 1.0),
+            "gravity_comp": 0.5,
+            "curriculum_factor": 1.0,
+        },
+    )
 
 
 @configclass
@@ -329,19 +342,12 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    pass
-
-
-@configclass
-class SpringForceCurriculumCfg:
-    """Curriculum that linearly decays an assistive spring force from 1→0."""
-
     spring_force_linear = CurrTerm(
         func=mdp.LinearForceScheduler,
         params={
             "command_name": "motion",
             "start_steps": 0,
-            "ramp_steps": 120000,  # ~5k iters × 24 steps_per_env
+            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
         },
     )
     spring_force_factor = CurrTerm(
@@ -464,7 +470,7 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                     "curriculum_factor": 1.0,
                 },
             )
-            self.curriculum = SpringForceCurriculumCfg()
+            self.curriculum = CurriculumCfg()
 
             assist_mode = os.environ.get("BONES_ASSIST_MODE", "both")
             if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:

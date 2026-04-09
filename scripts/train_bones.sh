@@ -11,9 +11,9 @@
 
 set -uo pipefail
 
-cd /move/u/justingu/rmr_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
-source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 # --- Crane ablations (12 variants) ---
@@ -180,28 +180,30 @@ conda activate env_isaaclab
 
 # --- curriculum ablations (13-16) ---
 # # 13. delta + push-none + curriculum
-# python scripts/rsl_rl/train_bones.py \
-#    --task=Bones-Flat-chip-G1-v0 \
-#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
-#    --headless \
-#    --logger wandb \
-#    --log_project_name bones_crane_ablation \
-#    --run_name crane_a5000 \
-#    --ppo_output delta \
-#    --push none \
-#    --crane \
-#    --curriculum
-
-# 14. delta + push-none + no curriculum (baseline, same as #9)
 python scripts/rsl_rl/train_bones.py \
    --task=Bones-Flat-chip-G1-v0 \
    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-   --run_name DELTA-ALL_crane_a5000 \
-   --ppo_output delta \
-   --push none
+   --run_name crane_a5000_gravity_term \
+   --ppo_output target \
+   --push none \
+   --crane \
+   --curriculum \
+   --assist_mode gravity_only \
+   --video
+
+# 14. delta + push-none + no curriculum (baseline, same as #9)
+# python scripts/rsl_rl/train_bones.py \
+#   --task=Bones-Flat-chip-G1-v0 \
+#   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#   --headless \
+#   --logger wandb \
+#   --log_project_name bones_crane_ablation \
+#   --run_name DELTA-ALL_crane_a5000 \
+#   --ppo_output delta \
+#   --push none
 
 # # 15. target + push-none + curriculum
 # python scripts/rsl_rl/train_bones.py \

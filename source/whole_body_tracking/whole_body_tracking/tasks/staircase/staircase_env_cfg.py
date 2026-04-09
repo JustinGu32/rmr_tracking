@@ -339,29 +339,6 @@ class RewardsCfg:
             "threshold": 1.0,
         },
     )
-    
-    # shin_box_collision = RewTerm(
-    #     func=mdp.shin_box_collision_penalty,
-    #     weight=-2.0,  # Strong negative weight
-    #     params={
-    #         "sensor_cfg": SceneEntityCfg(
-    #             "contact_forces",
-    #             body_names=["left_knee_link", "right_knee_link"],
-    #         ),
-    #         "box_position": BOX_POSITION,
-    #         "box_size": BOX_SIZE,
-    #         "contact_threshold": 5.0,  # 5N of force
-    #     },
-    # )
-    # feet_on_box = RewTerm(
-    #     func=mdp.feet_above_box_reward,
-    #     weight=0.5,
-    #     params={
-    #         "box_position": BOX_POSITION,
-    #         "box_size": BOX_SIZE,
-    #         "height_threshold": 0.0,  # 0cm clearance (just be above box top)
-    #     },
-    # )
 
 
 @configclass

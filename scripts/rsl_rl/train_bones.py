@@ -37,6 +37,7 @@ parser.add_argument("--no_command_obs", action="store_true", default=False, help
 parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
+parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -59,6 +60,8 @@ if args_cli.crane:
     os.environ["BONES_CRANE"] = "1"
 if args_cli.curriculum:
     os.environ["BONES_CURRICULUM"] = "1"
+if args_cli.assist_mode is not None:
+    os.environ["BONES_ASSIST_MODE"] = args_cli.assist_mode
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:

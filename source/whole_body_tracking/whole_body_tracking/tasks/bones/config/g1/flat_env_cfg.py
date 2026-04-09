@@ -5,7 +5,7 @@ from isaaclab.utils import configclass
 from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 from whole_body_tracking.tasks.bones.config.g1.agents.rsl_rl_ppo_cfg import LOW_FREQ_SCALE
 from whole_body_tracking.tasks.bones.bones_env_cfg import BonesEnvCfg, ROUGH_TERRAINS_CFG
-from whole_body_tracking.tasks.bones.bones_env_cfg_3pt import Bones3ptEnvCfg, SpringForceCurriculumCfg
+from whole_body_tracking.tasks.bones.bones_env_cfg_3pt import Bones3ptEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_binded import Bones3ptBindedEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_terrain import Bones3ptTerrainEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_multi_terrain import Bones3ptMultiTerrainEnvCfg

@@ -11,6 +11,7 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg
 from isaaclab.terrains import TerrainImporterCfg
@@ -275,6 +276,22 @@ class EventCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
 
+    # Spring force is applied intervally (every step) and modulated by the curriculum
+    assistive_spring_force = EventTerm(
+        func=mdp.apply_spring_force,
+        mode="interval",
+        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
+        params={
+            "command_name": "motion",
+            "asset_name": "robot",
+            "stiffness": 600.0,
+            "ang_stiffness": 120.0,
+            "damping": 15.0,
+            "axis_weights": (0.0, 0.0, 1.0),
+            "gravity_comp": 0.5,
+            "curriculum_factor": 1.0,
+        },
+    )
 
 @configclass
 class RewardsCfg:
@@ -367,7 +384,26 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    pass
+    spring_force_linear = CurrTerm(
+        func=mdp.LinearForceScheduler,
+        params={
+            "command_name": "motion",
+            "start_steps": 0,
+            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
+        },
+    )
+    spring_force_factor = CurrTerm(
+        func=mdp.modify_term_cfg,
+        params={
+            "address": "events.assistive_spring_force.params.curriculum_factor",
+            "modify_fn": mdp.linear_interpolate_fn,
+            "modify_params": {
+                "initial_value": 1.0,
+                "final_value": 0.0,
+                "difficulty_term_str": "spring_force_linear",
+            },
+        },
+    )
 
 ##
 # Environment configuration
