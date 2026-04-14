@@ -36,8 +36,9 @@ parser.add_argument("--push", type=str, default="normal", choices=["normal", "no
 parser.add_argument("--no_command_obs", action="store_true", default=False, help="Remove generated_commands observation from policy.")
 parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
-parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
-parser.add_argument("--assist_mode", type=str, default=None, choices=["spring_only", "none", "gravity_pelvis", "gravity_all", "both_pelvis", "both_all"], help="Assistive force mode for staircase training.")
+parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
+parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
+parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
 
@@ -60,10 +61,10 @@ if args_cli.no_command_obs:
     os.environ["BONES_NO_COMMAND_OBS"] = "1"
 if args_cli.crane:
     os.environ["BONES_CRANE"] = "1"
-if args_cli.curriculum:
-    os.environ["BONES_CURRICULUM"] = "1"
-if args_cli.assist_mode is not None:
-    os.environ["BONES_ASSIST_MODE"] = args_cli.assist_mode
+if args_cli.gravity_curriculum:
+    os.environ["BONES_GRAVITY_CURRICULUM"] = "1"
+    os.environ["BONES_START_GRAVITY"] = str(args_cli.start_gravity)
+    os.environ["BONES_GRAVITY_RAMP_STEPS"] = str(args_cli.gravity_ramp_steps)
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:
@@ -266,8 +267,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         flag_suffix += "_dstep"
     if args_cli.crane:
         flag_suffix += "_crane"
-    if args_cli.curriculum:
-        flag_suffix += "_curriculum"
+    if args_cli.gravity_curriculum:
+        flag_suffix += f"_gravcurr{args_cli.start_gravity}"
     if agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
     else:

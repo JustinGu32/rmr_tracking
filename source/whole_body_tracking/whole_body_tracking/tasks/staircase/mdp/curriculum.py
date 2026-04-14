@@ -171,11 +171,13 @@ def apply_spring_force(
         if gravity_comp_mode == "pelvis":
             total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
             added_grav = total_mass * 9.81 * gravity_comp * curriculum_factor
+            added_grav = added_grav.to(env.device)
             forces[:, anchor_idx, 2] += added_grav
             grav_force_scaled[:, anchor_idx, 2] = added_grav
         elif gravity_comp_mode == "all":
-            masses = asset.root_physx_view.get_masses()  # (num_envs, num_bodies)
+            masses = asset.root_physx_view.get_masses().to(env.device)  # (num_envs, num_bodies)
             added_grav = masses * 9.81 * gravity_comp * curriculum_factor
+            added_grav = added_grav.to(env.device)
             forces[:, :, 2] += added_grav
             grav_force_scaled[:, :, 2] = added_grav
 

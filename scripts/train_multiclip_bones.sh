@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=multiclip_bones
-#SBATCH --partition=humanoid  --account=move
+#SBATCH --partition=move  --account=move
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
@@ -28,10 +28,11 @@ conda activate env_isaaclab
 #     --headless \
 #     --logger wandb \
 #     --log_project_name multiclip_bones \
-#     --run_name bones_target_50hz_loose-terms \
+#     --run_name bones_target_50hz_gravcurr \
 #     --ppo_output target \
 #     --activation elu \
-#     --double_step
+#     --double_step \
+#     --gravity_curriculum --start_gravity -2.0 --gravity_ramp_steps 5000
 
 # # 2. delta-all, elu, 50hz, 4096 envs
 # python scripts/rsl_rl/train.py \
@@ -116,14 +117,69 @@ conda activate env_isaaclab
 #     --double_step
 
 # # 8. BASELINE: standard tracking task (no BONES/compliance), target, elu, 50hz, 4096 envs
-python scripts/rsl_rl/train.py \
-    --task=Tracking-MultiClip-Flat-G1-v0 \
-    --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
-    --num_envs=4096 \
-    --headless \
-    --logger wandb \
-    --log_project_name multiclip_bones \
-    --run_name tracking_baseline_target_50hz \
-    --ppo_output target \
-    --activation elu \
-    --double_step
+# python scripts/rsl_rl/train.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz \
+#     --ppo_output target \
+#     --activation elu \
+#     --double_step
+
+# -- tryna get stuff to work --
+
+# # 1. Base CHIP: target, elu, 50hz, 4096 envs
+# python scripts/rsl_rl/train.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_50hz_elu \
+#     --ppo_output target \
+#     --activation elu \
+#     --double_step
+
+# # 2. Swish CHIP: target, swish, 50hz, 4096 envs
+# python scripts/rsl_rl/train.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_50hz_swish \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step
+
+# # 3. BASELINE BeyondMimic: standard tracking task (no BONES/compliance), target, elu, 50hz, 4096 envs
+# python scripts/rsl_rl/train.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_elu \
+#     --ppo_output target \
+#     --activation elu \
+#     --double_step
+
+
+# # 4. Swish BeyondMimic: standard tracking task (no BONES/compliance), target, swish, 50hz, 4096 envs
+# python scripts/rsl_rl/train.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_swish \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step

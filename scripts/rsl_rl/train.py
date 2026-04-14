@@ -40,7 +40,10 @@ parser.add_argument("--ppo_output", type=str, default="target", choices=["target
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
-parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
+# parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
+parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
+parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
+parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -61,8 +64,12 @@ if args_cli.double_step:
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
-if args_cli.assist_mode is not None:
-    os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
+# if args_cli.assist_mode is not None:
+#     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
+if args_cli.gravity_curriculum:
+    os.environ["BONES_GRAVITY_CURRICULUM"] = "1"
+    os.environ["BONES_START_GRAVITY"] = str(args_cli.start_gravity)
+    os.environ["BONES_GRAVITY_RAMP_STEPS"] = str(args_cli.gravity_ramp_steps)
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:

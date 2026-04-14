@@ -219,12 +219,12 @@ class EventCfg:
     )
 
     # interval
-    # push_robot = EventTerm(
-    #     func=mdp.push_by_setting_velocity,
-    #     mode="interval",
-    #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
-    # )
+    push_robot = EventTerm(
+        func=mdp.push_by_setting_velocity,
+        mode="interval",
+        interval_range_s=(1.0, 3.0),
+        params={"velocity_range": VELOCITY_RANGE},
+    )
 
     # force push robot
     force_push_robot = EventTerm(
@@ -234,23 +234,6 @@ class EventCfg:
         params={"force_duration": [50,100],
                 "command_name": "motion",
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
-    )
-
-    # Spring force is applied intervally (every step) and modulated by the curriculum
-    assistive_spring_force = EventTerm(
-        func=mdp.apply_spring_force,
-        mode="interval",
-        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
-        params={
-            "command_name": "motion",
-            "asset_name": "robot",
-            "stiffness": 600.0,
-            "ang_stiffness": 120.0,
-            "damping": 15.0,
-            "axis_weights": (0.0, 0.0, 1.0),
-            "gravity_comp": 0.5,
-            "curriculum_factor": 1.0,
-        },
     )
 
 
@@ -320,8 +303,7 @@ class TerminationsCfg:
                         time_out=True)
     anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
-        # params={"command_name": "motion", "threshold": 0.25},
-        params={"command_name": "motion", "threshold": 0.3},
+        params={"command_name": "motion", "threshold": 0.25},
 
     )
     anchor_ori = DoneTerm(
@@ -344,7 +326,7 @@ class TerminationsCfg:
     )
     bad_anchor_pos_xy = DoneTerm(
         func=mdp.bad_anchor_pos_x_y_only,
-        params={"command_name": "motion", "threshold": 0.7},
+        params={"command_name": "motion", "threshold": 1.3},
     )
 
 
@@ -352,24 +334,13 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    spring_force_linear = CurrTerm(
-        func=mdp.LinearForceScheduler,
+    gravity_curriculum = CurrTerm(
+        func=mdp.GravityScheduler,
         params={
-            "command_name": "motion",
+            "start_gravity": (0.0, 0.0, -2.0),
+            "end_gravity": (0.0, 0.0, -9.81),
             "start_steps": 0,
-            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
-        },
-    )
-    spring_force_factor = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "events.assistive_spring_force.params.curriculum_factor",
-            "modify_fn": mdp.linear_interpolate_fn,
-            "modify_params": {
-                "initial_value": 1.0,
-                "final_value": 0.0,
-                "difficulty_term_str": "spring_force_linear",
-            },
+            "ramp_steps": 5000,
         },
     )
 
@@ -463,50 +434,13 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
         if os.environ.get("BONES_NO_COMMAND_OBS") == "1":
             self.observations.policy.command = None
 
-        # Assistive spring force curriculum
-        if os.environ.get("BONES_CURRICULUM") == "1":
-            self.events.assistive_spring_force = EventTerm(
-                func=mdp.apply_spring_force,
-                mode="interval",
-                interval_range_s=(0.005, 0.005),
-                params={
-                    "command_name": "motion",
-                    "asset_name": "robot",
-                    "stiffness": 600.0,
-                    "ang_stiffness": 300.0,
-                    "damping": 15.0,
-                    "axis_weights": (0.0, 0.0, 1.0),
-                    "gravity_comp": 0.5,
-                    "curriculum_factor": 1.0,
-                },
-            )
+        # Gravity curriculum
+        if os.environ.get("BONES_GRAVITY_CURRICULUM") == "1":
+            start_gz = float(os.environ.get("BONES_START_GRAVITY", "-2.0"))
+            ramp_steps = int(os.environ.get("BONES_GRAVITY_RAMP_STEPS", "5000"))
             self.curriculum = CurriculumCfg()
-
-            assist_mode = os.environ.get("BONES_ASSIST_MODE", "both")
-            if assist_mode not in {"both", "gravity_only", "spring_only", "none", "gravity_pelvis", "gravity_all", "both_pelvis", "both_all"}:
-                raise ValueError(f"Unsupported BONES_ASSIST_MODE: {assist_mode}")
-
-            # By default set mode to pelvis
-            self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
-
-            if assist_mode == "gravity_pelvis":
-                self.events.assistive_spring_force.params["stiffness"] = 0.0
-                self.events.assistive_spring_force.params["damping"] = 0.0
-                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
-                self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
-            elif assist_mode == "gravity_all":
-                self.events.assistive_spring_force.params["stiffness"] = 0.0
-                self.events.assistive_spring_force.params["damping"] = 0.0
-                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
-                self.events.assistive_spring_force.params["gravity_comp_mode"] = "all"
-            elif assist_mode == "both_pelvis":
-                self.events.assistive_spring_force.params["gravity_comp_mode"] = "pelvis"
-            elif assist_mode == "both_all":
-                self.events.assistive_spring_force.params["gravity_comp_mode"] = "all"
-            elif assist_mode == "spring_only":
-                self.events.assistive_spring_force.params["gravity_comp"] = 0.0
-            elif assist_mode == "none":
-                self.events.assistive_spring_force.params["stiffness"] = 0.0
-                self.events.assistive_spring_force.params["damping"] = 0.0
-                self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
-                self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+            self.curriculum.gravity_curriculum.params["start_gravity"] = (0.0, 0.0, start_gz)
+            self.curriculum.gravity_curriculum.params["ramp_steps"] = ramp_steps
+            self.sim.gravity = (0.0, 0.0, start_gz)
+        else:
+            self.curriculum = None
