@@ -74,6 +74,30 @@ def motion_global_body_angular_velocity_error_exp(
     return torch.exp(-error.mean(-1) / std**2)
 
 
+def motion_joint_position_error_exp(env: ManagerBasedRLEnv, command_name: str, std: float) -> torch.Tensor:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    error = torch.mean(torch.square(command.joint_pos - command.robot_joint_pos), dim=-1)
+    return torch.exp(-error.mean(-1) / std**2)
+
+
+def double_step_penalty(
+    env: ManagerBasedRLEnv, command_name: str, threshold: float, body_names: list[str] | None = None
+) -> torch.Tensor:
+    """Penalize when foot velocity error exceeds a threshold (indicates double-stepping).
+
+    Returns -1 for each foot whose squared velocity error exceeds the threshold, averaged across feet.
+    With two feet, returns: 0 (both fine), -0.5 (one double-stepping), -1 (both double-stepping).
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    body_indexes = _get_body_indexes(command, body_names)
+    # Per-foot squared velocity error: (num_envs, num_feet)
+    error = torch.sum(
+        torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
+    )
+    # -1 for each foot above threshold, 0 otherwise, averaged across feet
+    return -(error > threshold).float().mean(dim=-1)
+
+
 def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     first_air = contact_sensor.compute_first_air(env.step_dt, env.physics_dt)[:, sensor_cfg.body_ids]

@@ -353,6 +353,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
+            # use_two_phase=True,
         )
         model_name = args_cli.checkpoint.split("/")[-3]
     else:
@@ -363,6 +364,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
+            # use_two_phase=True,
         )
         model_name = args_cli.wandb_path.split("/")[-1]
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
@@ -402,7 +404,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
         guidance_config = {
-            "dataset_class": "G1Dataset_root_separate",
+            "dataset_class": "root_only",
             "target_velocity": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             # FOR REDUCED:
             # "dataset_class": "G1Dataset",
@@ -411,6 +413,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             "root_vel_indices": (3, 9) # this is for root only
         }
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
+        # empirically i found that this works better than the default (True) for listening to guidance
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")
         if args_cli.guidance_type == "joystick":

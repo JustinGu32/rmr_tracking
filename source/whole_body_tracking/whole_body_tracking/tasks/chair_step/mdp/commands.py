@@ -310,6 +310,8 @@ class MotionCommand(CommandTerm):
             min=self.min_sample_idx,
             max=min(self.max_sample_idx, self.motion.time_step_total - 1),
         )
+        # self.time_steps[env_ids] = 0
+        
         # Can add stride sampling to avoid near identical samples
         
         # Metrics

@@ -58,7 +58,6 @@ VELOCITY_RANGE_Null = {
 
 # Box definition
 BOX_POSITION = [-0.1, 0.50, 0.15]  # Guess and checked in sim
-# Z was originally 0.6, but TODO: check why height is being doubled when loading motion
 BOX_SIZE = [0.4572, 0.4064, 0.3]  # 18" x 16" x 16.33" (Derived from OBJ)
 
 @configclass
@@ -154,26 +153,26 @@ class CommandsCfg:
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
         pose_range={
-            "x": (-0.0, 0.0),
-            "y": (-0.0, 0.0),
-            "z": (-0.0, 0.0),
-            "roll": (-0.0, 0.0),
-            "pitch": (-0.0, 0.0),
-            "yaw": (-0.0, 0.0),
+            "x": (-0.05, 0.05),
+            "y": (-0.05, 0.05),
+            "z": (-0.01, 0.01),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.2, 0.2),
         },
-        velocity_range=VELOCITY_RANGE_Null,
+        velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
         box_position=BOX_POSITION,
     )
 
-# Aggressive pose
-# pose_range_aggressive={
-#     "x": (-0.05, 0.05),
-#     "y": (-0.05, 0.05),
-#     "z": (-0.01, 0.01),
-#     "roll": (-0.1, 0.1),
-#     "pitch": (-0.1, 0.1),
-#     "yaw": (-0.2, 0.2),
+# Null pose
+# pose_range={
+#     "x": (-0.0, 0.0),
+#     "y": (-0.0, 0.0),
+#     "z": (-0.0, 0.0),
+#     "roll": (-0.0, 0.0),
+#     "pitch": (-0.0, 0.0),
+#     "yaw": (-0.0, 0.0),
 # }
 
 @configclass
@@ -193,13 +192,9 @@ class ObservationsCfg:
 
         # observation terms (order preserved)
         command = ObsTerm(func=mdp.generated_commands, params={"command_name": "motion"})
-        # motion_anchor_pos_b = ObsTerm(
-        #     func=mdp.motion_anchor_pos_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.25, n_max=0.25)
-        # )
         motion_anchor_ori_b = ObsTerm(
             func=mdp.motion_anchor_ori_b, params={"command_name": "motion"}, noise=Unoise(n_min=-0.05, n_max=0.05)
         )
-        # base_lin_vel = ObsTerm(func=mdp.base_lin_vel, noise=Unoise(n_min=-0.5, n_max=0.5))
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))

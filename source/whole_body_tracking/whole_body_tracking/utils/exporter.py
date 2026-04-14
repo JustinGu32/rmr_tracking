@@ -40,11 +40,28 @@ class _OnnxMotionPolicyExporter(_OnnxPolicyExporter):
         self.body_lin_vel_w = cmd.motion.body_lin_vel_w.to("cpu")
         self.body_ang_vel_w = cmd.motion.body_ang_vel_w.to("cpu")
         self.time_step_total = self.joint_pos.shape[0]
+        self.ppo_output = os.environ.get("BONES_PPO_OUTPUT", "target")
+
+        action_term = env.action_manager.get_term("joint_pos")
+        self.action_scale = action_term._scale.to("cpu")
+        self.default_joint_pos = env.scene["robot"].data.default_joint_pos_nominal[0].to("cpu")
 
     def forward(self, x, time_step):
         time_step_clamped = torch.clamp(time_step.long().squeeze(-1), max=self.time_step_total - 1)
+        if self.ppo_output == "delta-pseudotarget":
+            # PD target = x_ref + scale * raw_action
+            # Inference applies: default_joint_pos + scale * onnx_output
+            # So: onnx_output = (x_ref + scale * raw_action - default_joint_pos) / scale
+            #                 = raw_action + (x_ref - default_joint_pos) / scale
+            raw_action = self.actor(self.normalizer(x))
+            actions = raw_action + (self.joint_pos[time_step_clamped] - self.default_joint_pos) / self.action_scale
+        elif self.ppo_output == "delta-all":
+            # Output raw delta directly (inference must apply x_ref + scale * output)
+            actions = self.actor(self.normalizer(x))
+        else:  # target
+            actions = self.actor(self.normalizer(x))
         return (
-            self.actor(self.normalizer(x)),
+            actions,
             self.joint_pos[time_step_clamped],
             self.joint_vel[time_step_clamped],
             self.body_pos_w[time_step_clamped],
@@ -99,6 +116,11 @@ def attach_onnx_metadata(env: ManagerBasedRLEnv, run_path: str, path: str, filen
             history_length = term_cfg["history_length"]
             observation_history_lengths.append(1 if history_length == 0 else history_length)
 
+    observation_dimensions = [
+        dim[0] if len(dim) == 1 else dim
+        for dim in env.observation_manager.group_obs_term_dim["policy"]
+    ]
+
     metadata = {
         "run_path": run_path,
         "joint_names": env.scene["robot"].data.joint_names,
@@ -107,6 +129,7 @@ def attach_onnx_metadata(env: ManagerBasedRLEnv, run_path: str, path: str, filen
         "default_joint_pos": env.scene["robot"].data.default_joint_pos_nominal.cpu().tolist(),
         "command_names": env.command_manager.active_terms,
         "observation_names": observation_names,
+        "observation_dimensions": observation_dimensions,
         "observation_history_lengths": observation_history_lengths,
         "action_scale": env.action_manager.get_term("joint_pos")._scale[0].cpu().tolist(),
         "anchor_body_name": env.command_manager.get_term("motion").cfg.anchor_body_name,

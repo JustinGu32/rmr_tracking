@@ -14,6 +14,19 @@ python scripts/rsl_rl/collect_dataset.py \
     --max_sample_idx 1000 \
     --num_obstacles 4 \
     --video
+
+python scripts/rsl_rl/collect_dataset.py \
+    --task Chair-Step-G1-Collect-v0   \
+    --num_envs 2 \
+    --wandb_path robot-mcrobotface/chair_step/q4yp8tny \
+    --num_steps_collect 60 \
+    --num_eps_collect 10000 \
+    --episode_collect_length 4 \
+    --min_delay 0 \
+    --max_delay 0 \
+    --min_sample_idx 0 \
+    --max_sample_idx 1000 \
+    --enable_cameras
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -64,7 +77,7 @@ parser.add_argument("--save_folder", type=str, default=None, help="save folder")
 
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
-parser.add_argument("--num_obstacles", type=int, default=3, help="Number of obstacles to generate.")
+parser.add_argument("--num_obstacles", type=int, default=0, help="Number of obstacles to generate.")
 parser.add_argument("--seed", type=int, default=None, help="Random seed for the experiment.")
 
 def none_or_int(value):
@@ -255,6 +268,11 @@ def main():
     knee_noise = .3 
     ankle_noise =.5
 
+    # noise_level = .15
+    # hip_noise = .15
+    # knee_noise = .15
+    # ankle_noise =.2
+
     hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
     knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]
     ankle_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if  'ankle' in name]
@@ -284,7 +302,6 @@ def main():
         'knee_noise': knee_noise,
         'ankle_noise': ankle_noise,
         'timestamp': timestamp,
-        'seed': args_cli.seed,
     }
     buff.update_meta(metadata)
     

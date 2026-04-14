@@ -8,6 +8,7 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -24,7 +25,22 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
-parser.add_argument("--registry_name", type=str, required=True, help="The name of the wand registry.")
+parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
+parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
+parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
+parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
+parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
+parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
+parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
+parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
+parser.add_argument("--num_steps_per_env", type=int, default=None, help="Override num rollout steps per env per iteration.")
+parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
+parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
+                    help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -35,6 +51,22 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# Export CLI flags as env vars so __post_init__ in env configs can read them
+if args_cli.curriculum:
+    os.environ["WBT_CURRICULUM"] = "1"
+if args_cli.double_step:
+    os.environ["WBT_DOUBLE_STEP"] = "1"
+    os.environ["BONES_DOUBLE_STEP"] = "1"
+if args_cli.motion_joint_pos:
+    os.environ["WBT_MOTION_JOINT_POS"] = "1"
+os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
+if args_cli.assist_mode is not None:
+    os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
+
+# Auto-detect distributed training (torchrun sets LOCAL_RANK)
+if "LOCAL_RANK" in os.environ:
+    args_cli.distributed = True
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -221,6 +253,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
+    agent_cfg.policy.activation = args_cli.activation
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -229,20 +262,50 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # set the environment seed
     # note: certain randomizations occur in the environment initialization so we set the seed here
     env_cfg.seed = agent_cfg.seed
-    env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+    # In multi-GPU mode, AppLauncher sets device based on LOCAL_RANK — don't override it
+    if "LOCAL_RANK" in os.environ:
+        local_rank = int(os.environ["LOCAL_RANK"])
+        correct_device = f"cuda:{local_rank}"
+        env_cfg.sim.device = correct_device
+        agent_cfg.device = correct_device
+    else:
+        env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
 
-    # load the motion file from the wandb registry
-    registry_name = args_cli.registry_name
-    if ":" not in registry_name:  # Check if the registry name includes alias, if not, append ":latest"
-        registry_name += ":latest"
+    # Override decimation if provided
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+
+    # Override num_steps_per_env if provided
+    if args_cli.num_steps_per_env is not None:
+        agent_cfg.num_steps_per_env = args_cli.num_steps_per_env
+
+    # Configure future reference motion observations
+    if args_cli.future_steps is not None:
+        steps = [int(s.strip()) for s in args_cli.future_steps.split(",")]
+        if hasattr(env_cfg.commands.motion, 'future_steps'):
+            env_cfg.commands.motion.future_steps = steps
+            print(f"[INFO] Future ref steps: {steps}")
+
+    # load the motion file from zarr path or wandb registry
     import pathlib
-    print(f"DEBUG: registry_name is {registry_name}")
-
-    import wandb
-
-    api = wandb.Api()
-    artifact = api.artifact(registry_name)
-    env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+    if args_cli.zarr_path is not None:
+        # Multi-clip training from local Zarr store
+        print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
+        env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+        env_cfg.commands.motion.exclude_objects = not args_cli.include_objects
+        registry_name = f"zarr:{args_cli.zarr_path}"
+    elif args_cli.registry_name is not None:
+        # Single-clip training from wandb registry (original path)
+        registry_name = args_cli.registry_name
+        if ":" not in registry_name:
+            registry_name += ":latest"
+        print(f"DEBUG: registry_name is {registry_name}")
+        import wandb
+        api = wandb.Api()
+        artifact = api.artifact(registry_name)
+        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+    else:
+        raise ValueError("Either --zarr_path or --registry_name must be provided.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -275,6 +338,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
+    # ── Wandb resume: download checkpoint from a previous run ──
+    _wandb_resume_path = None
+    if args_cli.wandb_resume is not None:
+        import wandb as _wandb
+        api = _wandb.Api()
+        run_path = args_cli.wandb_resume
+        wandb_run = api.run(run_path)
+        model_files = [f for f in wandb_run.files() if "model" in f.name and f.name.endswith(".pt")]
+        if not model_files:
+            raise RuntimeError(f"No model checkpoints found in wandb run: {run_path}")
+        latest_file = max(model_files, key=lambda x: int(x.name.split("_")[1].split(".")[0]))
+        dl_dir = os.path.join("logs", "rsl_rl", "wandb_resume")
+        latest_file.download(dl_dir, replace=True)
+        _wandb_resume_path = os.path.join(dl_dir, latest_file.name)
+        print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
+
     # create runner from rsl-rl
     runner = OnPolicyRunner(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
@@ -289,6 +368,40 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # load previously trained model
         runner.load(resume_path)
 
+    # Load wandb checkpoint into runner (after runner is created)
+    if _wandb_resume_path is not None:
+        print(f"[INFO]: Loading wandb checkpoint: {_wandb_resume_path}")
+        runner.load(_wandb_resume_path)
+
+    # Insert LayerNorm into actor/critic MLPs if requested
+    if args_cli.layer_norm:
+        import torch.nn as _nn
+        def _insert_layer_norm(mlp: _nn.Sequential):
+            """Insert LayerNorm after each activation in an MLP Sequential."""
+            new_layers = []
+            for layer in mlp:
+                new_layers.append(layer)
+                if isinstance(layer, (_nn.SiLU, _nn.ELU, _nn.ReLU, _nn.LeakyReLU, _nn.GELU, _nn.Mish)):
+                    # Get the output dim from the preceding Linear layer
+                    for prev in reversed(new_layers[:-1]):
+                        if isinstance(prev, _nn.Linear):
+                            new_layers.append(_nn.LayerNorm(prev.out_features))
+                            break
+            # Rebuild the Sequential
+            mlp._modules.clear()
+            for idx, layer in enumerate(new_layers):
+                mlp.add_module(str(idx), layer)
+
+        policy = runner.alg.get_policy() if hasattr(runner.alg, 'get_policy') else runner.alg.policy
+        if hasattr(policy, 'mlp'):
+            _insert_layer_norm(policy.mlp)
+            print(f"[INFO] LayerNorm inserted into actor MLP: {policy.mlp}")
+        # Also apply to critic if it has a separate mlp
+        critic = getattr(runner.alg, 'critic', None) or getattr(runner.alg, 'value_function', None)
+        if critic is not None and hasattr(critic, 'mlp'):
+            _insert_layer_norm(critic.mlp)
+            print(f"[INFO] LayerNorm inserted into critic MLP")
+
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
@@ -298,7 +411,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
-    wandb.finish()
+    try:
+        wandb.finish()
+    except (NameError, Exception):
+        pass
 
     # close the simulator
     env.close()

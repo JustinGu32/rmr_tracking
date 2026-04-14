@@ -1,5 +1,10 @@
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, RslRlPpoAlgorithmCfg
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoAlgorithmCfg,
+    # RslRlMLPModelCfg,  # Not available in isaaclab_rl v2.1.0
+)
 
 
 @configclass
@@ -9,11 +14,28 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     save_interval = 500
     experiment_name = "g1_flat"
     empirical_normalization = True
+
+    # # New v5 format: separate actor/critic model configs
+    # actor = RslRlMLPModelCfg(
+    #     class_name="MLPModel",
+    #     hidden_dims=[1024, 1024, 512],
+    #     activation="swish",
+    #     distribution_cfg=RslRlMLPModelCfg.GaussianDistributionCfg(
+    #         init_std=1.0,
+    #     ),
+    # )
+    # critic = RslRlMLPModelCfg(
+    #     class_name="MLPModel",
+    #     hidden_dims=[1024, 1024, 512],
+    #     activation="swish",
+    # )
+
+    # Deprecated but kept for backward compat with IsaacLab internals
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[512, 256, 128],
-        critic_hidden_dims=[512, 256, 128],
-        activation="elu",
+        actor_hidden_dims=[1024, 1024, 512],
+        critic_hidden_dims=[1024, 1024, 512],
+        activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

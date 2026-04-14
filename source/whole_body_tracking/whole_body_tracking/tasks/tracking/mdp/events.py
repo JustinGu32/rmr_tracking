@@ -362,81 +362,99 @@ def randomize_multiple_obstacles_avoiding_path(
         obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)
 
 
-def randomize_multiple_obstacles_on_path(
+def rand_float(size, min_val, max_val, device):
+    return (max_val - min_val) * torch.rand(size).to(device) + min_val
+
+
+def _phase_to_weight_pyramid(phase, start=0.25, end=0.75):
+    weight = torch.zeros_like(phase)
+    mask1 = phase < start
+    mask2 = phase > end
+    weight[mask1] = 1/start * phase[mask1]
+    weight[mask2] = 1/(1-end) * (1 - phase[mask2])
+    weight[~(mask1 | mask2)] = 1.0
+    return weight
+
+
+def force_based_push(
     env: ManagerBasedEnv,
     env_ids: torch.Tensor,
+    force_duration: tuple[int, int],
     command_name: str,
-    asset_names: list[str],
-    start_distance: float = 0.5,
-    spacing: float = 0.4,
-    lateral_spread: float = 0.0,
-    forward_sign: float = -1.0,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
 ):
+    """Randomize the external forces and torques applied to the bodies.
+
+    This function creates a set of random forces and torques sampled from the given ranges. The number of forces
+    and torques is equal to the number of bodies times the number of environments. The forces and torques are
+    applied to the bodies by calling ``asset.set_external_force_and_torque``. The forces and torques are only
+    applied when ``asset.write_data_to_sim()`` is called in the environment.
     """
-    Place obstacles in front of the robot in a line, equally spaced.
-    Use for evaluation / sim2sim (OBSTACLES_ON_PATH=1). Forward direction comes from path velocity.
-    start_distance: distance to first obstacle; spacing: distance between consecutive ones.
-    lateral_spread: 0 = center line; >0 staggers left/right. forward_sign: -1 = ahead, 1 = behind.
-    """
-    if not asset_names:
+    command: MotionCommand = env.command_manager.get_term(command_name)
+
+    mask_update = command.force_push_counter >= command.force_update_frequency
+    if command.force_config_init is False:
+        command.force_duration_per_env = torch.randint(*force_duration, (command.num_envs,), dtype=torch.int, device=command.device)
+        command.force_config_init = True
+    mask_finish_update = command.force_push_counter == (command.force_duration_per_env + command.force_update_frequency)
+    n_finish = int(mask_finish_update.sum())
+
+    phase = ((command.force_push_counter - command.force_update_frequency) / command.force_duration_per_env).clamp_(min=0.0, max=1.0)
+
+    # NOTE: all body force magnitude updated at once!!
+    if n_finish > 0:
+        command.body_force_magnitude_buf[mask_finish_update] = torch.rand(n_finish, device=command.device, dtype=command.body_force_magnitude_buf.dtype)
+
+    if not mask_update.any():
+        command.force_push_counter.add_(1)
         return
 
+    # Reset and re-randomize config for envs that finished their force push cycle
+    if n_finish > 0:
+        command.force_push_counter[mask_finish_update] = 0
+        command.force_duration_per_env[mask_finish_update] = torch.randint(*force_duration, (n_finish,), dtype=torch.int, device=command.device)
+        updated_dirs = torch.randn(n_finish, command.num_bodies, 3, device=command.device, dtype=command.body_force_dir_buf.dtype)
+        command.body_force_dir_buf[mask_finish_update] = updated_dirs / torch.norm(updated_dirs, dim=-1, keepdim=True).clamp_(min=1e-8)
+
+    # Compute forces only for force_push bodies (smaller allocation, no zeroing needed)
+    n_force_bodies = len(command.force_push_ids)
+    forces = torch.zeros(command.num_envs, n_force_bodies, 3, device=command.device, dtype=command.body_force_dir_buf.dtype)
+    dir_buf = command.body_force_dir_buf[:, command.force_push_ids_rel, :]
+    phase_masked = phase[mask_update]
+    weight = _phase_to_weight_pyramid(phase_masked).view(-1, 1, 1)
+    forces[mask_update] = (
+        command.body_force_magnitude_buf[mask_update].view(-1, 1, 1)
+        * weight
+        * dir_buf[mask_update]
+        * command.max_force
+    )
+
+    asset = env.scene[asset_cfg.name]
+    positions = command.robot.data.body_pos_w[:, command.force_push_ids] + math_utils.quat_apply(
+        command.robot.data.body_quat_w[:, command.force_push_ids], command.force_push_body_offsets
+    )
+    command.last_force_applied.copy_(forces)
+    command.force_push_counter.add_(1)
+    torques = torch.zeros_like(forces)
+    asset.set_external_force_and_torque(forces, torques, positions=positions, body_ids=command.force_push_ids, is_global=True)
+
+
+def change_compliance(env: ManagerBasedEnv,
+                      env_ids, command_name: str,
+                      compliance_lb: tuple[float, float],
+                      compliance_ub: tuple[float, float],
+                      compliance_duration: tuple[int, int],
+                      start_steps: int):
     command: MotionCommand = env.command_manager.get_term(command_name)
-    if env_ids is None:
-        env_ids = torch.arange(env.scene.num_envs, device=env.device)
-
-    anchor_idx = command.motion_anchor_body_index
-    raw_motion_pos = command.motion._body_pos_w[:, anchor_idx, :3]
-    raw_motion_quat = command.motion._body_quat_w[:, anchor_idx, :]
-    start_steps = command.time_steps[env_ids]
-    episode_length = command.steps_collect if (command.steps_collect and command.steps_collect > 0) else 500
-    max_steps = raw_motion_pos.shape[0]
-    episode_length = min(episode_length, max_steps)
-
-    device = env.device
-    num_envs_to_reset = len(env_ids)
-    obstacles = [env.scene[name] for name in asset_names]
-    num_obstacles = len(obstacles)
-
-    final_positions = torch.zeros(num_envs_to_reset, num_obstacles, 3, device=device)
-    final_positions[..., :] = 100.0
-    final_positions[..., 2] = 1.0
-
-    for i in range(num_envs_to_reset):
-        t_start = int(start_steps[i].item())
-        t_end = min(t_start + episode_length, max_steps)
-        if t_start >= max_steps:
-            continue
-        # Robot "start" = path start (same frame as motion)
-        start_xy = raw_motion_pos[t_start, :2].clone()
-        # Forward = direction in front of the robot (path velocity; forward_sign flips if motion convention is opposite)
-        if t_end - t_start >= 2:
-            look_ahead = min(20, t_end - t_start - 1)
-            path_dir = raw_motion_pos[t_start + look_ahead, :2] - raw_motion_pos[t_start, :2]
-            forward_norm = torch.norm(path_dir)
-            if forward_norm > 1e-6:
-                forward = (forward_sign * path_dir / forward_norm).to(device)
-            else:
-                forward = torch.tensor([0.0, 1.0], device=device)
-        else:
-            forward = torch.tensor([0.0, 1.0], device=device)
-        perp = torch.tensor([-forward[1].item(), forward[0].item()], device=device)
-        # Equally spaced: start_distance, start_distance + spacing, start_distance + 2*spacing, ...
-        for obs_idx in range(num_obstacles):
-            d = start_distance + obs_idx * spacing
-            lat = lateral_spread * (1 if obs_idx % 2 == 0 else -1)
-            pos_xy = start_xy + d * forward + lat * perp
-            final_positions[i, obs_idx, 0] = pos_xy[0]
-            final_positions[i, obs_idx, 1] = pos_xy[1]
-
-    env_origins = env.scene.env_origins[env_ids]
-    global_positions = final_positions + env_origins.unsqueeze(1)
-    quat = torch.zeros(num_envs_to_reset, 4, device=device)
-    quat[..., 0] = 1.0
-
-    for obs_idx, obstacle_asset in enumerate(obstacles):
-        current_states = obstacle_asset.data.root_state_w[env_ids].clone()
-        current_states[:, :3] = global_positions[:, obs_idx, :]
-        current_states[:, 3:7] = quat
-        current_states[:, 7:] = 0.0
-        obstacle_asset.write_root_state_to_sim(current_states, env_ids=env_ids)
+    if env.common_step_counter < start_steps:
+        return
+    if command.compliance_config_init == False:
+        command.compliance_duration_per_env = torch.randint(*compliance_duration, (command.num_envs,),dtype=torch.int, device=command.device)
+        command.compliance_ub = torch.tensor(compliance_ub, device=command.device)
+        command.compliance_lb = torch.tensor(compliance_lb, device=command.device)
+        command.compliance_config_init = True
+    command.compliance_counter += 1
+    update_mask = command.compliance_counter == command.compliance_duration_per_env
+    command.eef_stiffness_buf[update_mask] = rand_float(command.eef_stiffness_buf[update_mask].shape, command.compliance_lb, command.compliance_ub, command.device)
+    command.compliance_counter[update_mask] = 0
+    command.compliance_duration_per_env[update_mask] = torch.randint(*compliance_duration, (sum(update_mask),), dtype=torch.int, device=command.device)

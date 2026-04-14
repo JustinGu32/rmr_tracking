@@ -37,6 +37,15 @@ VELOCITY_RANGE = {
     "yaw": (-0.78, 0.78),
 }
 
+VELOCITY_RANGE_SOFT = {
+    "x": (-0.25, 0.25),
+    "y": (-0.25, 0.25),
+    "z": (-0.1, 0.1),
+    "roll": (-0.26, 0.26),
+    "pitch": (-0.26, 0.26),
+    "yaw": (-0.39, 0.39),
+}
+
 VELOCITY_RANGE_Null = {
     "x":  (-0.0, 0.0),
     "y":  (-0.0, 0.0),
@@ -144,6 +153,17 @@ class CommandsCfg:
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
         # Todo: define as parameter instead
+        pose_range={
+            "x": (-0.02, 0.02),
+            "y": (-0.02, 0.02),
+            "z": (-0.005, 0.005),
+            "roll": (-0.1, 0.1),
+            "pitch": (-0.1, 0.1),
+            "yaw": (-0.1, 0.1),
+        },
+        velocity_range=VELOCITY_RANGE_SOFT,
+        joint_position_range=(-0.05, 0.05),
+
         # pose_range={
         #     "x": (-0.05, 0.05),
         #     "y": (-0.05, 0.05),
@@ -154,16 +174,18 @@ class CommandsCfg:
         # },
         # velocity_range=VELOCITY_RANGE,
         # joint_position_range=(-0.1, 0.1),
-        pose_range={
-            "x": (0.0, 0.0),
-            "y": (0.0, 0.0),
-            "z": (0.0, 0.0),
-            "roll":  (0.0, 0.0),
-            "pitch": (0.0, 0.0),
-            "yaw":   (0.0, 0.0),
-        },
-        velocity_range=VELOCITY_RANGE_Null,
-        joint_position_range=(-0, 0),
+
+        # pose_range={
+        #     "x": (0.0, 0.0),
+        #     "y": (0.0, 0.0),
+        #     "z": (0.0, 0.0),
+        #     "roll":  (0.0, 0.0),
+        #     "pitch": (0.0, 0.0),
+        #     "yaw":   (0.0, 0.0),
+        # },
+        # velocity_range=VELOCITY_RANGE_Null,
+        # joint_position_range=(0.0, 0.0),
+        # joint_position_range=(-.1, .1),
     )
 
 
@@ -172,6 +194,7 @@ class ActionsCfg:
     """Action specifications for the MDP."""
 
     joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
+    # joint_pos = mdp.ReferenceJointPositionActionCfg(asset_name="robot", joint_names=[".*"], command_name="motion")
 
 
 @configclass
@@ -286,7 +309,7 @@ class EventCfg:
     #     func=mdp.push_by_setting_velocity,
     #     mode="interval",
     #     interval_range_s=(1.0, 3.0),
-    #     params={"velocity_range": VELOCITY_RANGE},
+    #     params={"velocity_range": VELOCITY_RANGE_SOFT},
     # )
 
     # collect
@@ -397,6 +420,11 @@ class TerminationsCfg:
             ],
         },
     )
+    
+    bad_anchor_pos_xy = DoneTerm(
+        func=mdp.bad_anchor_pos_x_y_only,
+        params={"command_name": "motion", "threshold": 0.7},
+    )
 
 
 @configclass
@@ -431,8 +459,8 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         """Post initialization."""
         # general settings
         # Todo: define with WandB/data collection
-        self.decimation = 6 # MODIFY BASED ON DATASET
-        self.episode_length_s = 100.0
+        self.decimation = 4
+        self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
@@ -442,3 +470,26 @@ class TrackingEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # PPO output mode: delta uses ReferenceJointPositionAction (x_ref + raw_action),
+        # target uses standard JointPositionAction (default_pos + scale * raw_action)
+        ppo_output = os.environ.get("WBT_PPO_OUTPUT")
+        if ppo_output in ("delta-pseudotarget", "delta-all"):
+            self.actions.joint_pos = mdp.ReferenceJointPositionActionCfg(
+                asset_name="robot", joint_names=[".*"], command_name="motion"
+            )
+            if ppo_output == "delta-pseudotarget":
+                self.observations.policy.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+                self.observations.critic.actions = ObsTerm(func=mdp.last_action_pseudotarget)
+
+        # Double-step penalty: off by default, enabled via --double_step flag
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )

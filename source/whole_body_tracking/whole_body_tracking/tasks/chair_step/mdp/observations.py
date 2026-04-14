@@ -81,3 +81,15 @@ def motion_anchor_ori_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor
     )
     mat = matrix_from_quat(ori)
     return mat[..., :2].reshape(mat.shape[0], -1)
+
+# def dist_to_box(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+#     command: MotionCommand = env.command_manager.get_term(command_name)
+
+#     pos, _ = subtract_frame_transforms(
+#         command.robot_anchor_pos_w,
+#         command.robot_anchor_quat_w,
+#         command.anchor_pos_w,
+#         command.anchor_quat_w,
+#     )
+
+#     return pos.view(env.num_envs, -1)

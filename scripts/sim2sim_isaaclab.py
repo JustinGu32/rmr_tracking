@@ -53,6 +53,8 @@ parser.add_argument("--steps", type=int, default=500, help="Number of simulation
 parser.add_argument("--deterministic", action="store_true", default=True, help="Deterministic sampling")
 parser.add_argument("--guidance_type", type=str, default=None, help="Guidance type (e.g. joystick, target_heading)")
 parser.add_argument("--guidance_scale", type=float, default=1.0, help="Guidance scale")
+parser.add_argument("--target_speed", type=float, default=0, help="Target speed")
+parser.add_argument("--target_lateral_speed", type=float, default=0, help="Target lateral speed")
 parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0", help="Isaac Lab task (e.g. Tracking-Flat-G1-v0)")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
 parser.add_argument("--motion_file", type=str, default="/move/u/justingu/whole_body_tracking/motions/takara_walk_isaac/motion.npz", help="Path to motion file for tracking command")
@@ -85,6 +87,8 @@ from isaaclab.envs import (
     multi_agent_to_single_agent,
 )
 from isaaclab_tasks.utils.hydra import hydra_task_config
+from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.envs.mdp import time_out as std_time_out
 
 # Register tasks (G1 Tracking-Flat, etc.)
 import whole_body_tracking.tasks  # noqa: E402, F401
@@ -192,7 +196,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
     if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
         env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
+    # XY anchor termination fires immediately since diffusion generates its own trajectory
+    if hasattr(env_cfg.terminations, "bad_anchor_pos_xy"):
+        env_cfg.terminations.bad_anchor_pos_xy = None
+    # my_time_out also fires when the motion clip ends (independent of episode length);
+    # replace with standard episode-length-only timeout so the robot runs continuously
+    if hasattr(env_cfg.terminations, "time_out"):
+        env_cfg.terminations.time_out = DoneTerm(func=std_time_out, time_out=True)
     print(f"[INFO] Relaxed termination thresholds for sim2sim (episode_length_s={env_cfg.episode_length_s:.1f})", flush=True)
+
+    # Load diffusion policy (Isaac ordering: no MuJoCo conversion inside agent)
+    print("[INFO] Loading diffusion policy (DiffusionAgentIsaac); wandb download can be slow...", flush=True)
+    model_name = ""
+    if args_cli.checkpoint:
+        policy = DiffusionAgentIsaac(
+            checkpoint_path=args_cli.checkpoint,
+            device=device,
+            compile=False,
+            warmup=False,
+            deterministic=args_cli.deterministic,
+        )
+        model_name = args_cli.checkpoint.split("/")[-3]
+    else:
+        policy = DiffusionAgentIsaac(
+            wandb_path=args_cli.wandb_path,
+            checkpoint_file=args_cli.wandb_file,
+            device=device,
+            compile=False,
+            warmup=False,
+            deterministic=args_cli.deterministic,
+        )
+        model_name = args_cli.wandb_path.split("/")[-1]
+    print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
     
     render_mode = "rgb_array" if record_video else None
     print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
@@ -204,41 +239,45 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab")))
         video_length = getattr(args_cli, "video_length", 500)
         os.makedirs(video_folder, exist_ok=True)
+        if args_cli.guidance_type:
+            name_prefix = f"{model_name}_speed{args_cli.target_speed}_lateral{args_cli.target_lateral_speed}_scale{args_cli.guidance_scale}"
+        else:
+            name_prefix = f"{model_name}_noguidance"
         env = gym.wrappers.RecordVideo(
             env,
             video_folder=video_folder,
             step_trigger=lambda step: step == 0,
             video_length=video_length,
+            name_prefix=name_prefix,
             disable_logger=True,
         )
         print(f"[INFO] Video recording: first {video_length} steps -> {video_folder}")
-
-    # Load diffusion policy (Isaac ordering: no MuJoCo conversion inside agent)
-    print("[INFO] Loading diffusion policy (DiffusionAgentIsaac); wandb download can be slow...", flush=True)
-    if args_cli.checkpoint:
-        policy = DiffusionAgentIsaac(
-            checkpoint_path=args_cli.checkpoint,
-            device=device,
-            compile=False,
-            warmup=False,
-            deterministic=args_cli.deterministic,
-        )
-    else:
-        policy = DiffusionAgentIsaac(
-            wandb_path=args_cli.wandb_path,
-            checkpoint_file=args_cli.wandb_file,
-            device=device,
-            compile=False,
-            warmup=False,
-            deterministic=args_cli.deterministic,
-        )
-    print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
     
     # Guidance
     guidance_fn = None
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
-        guidance_config = {"target_velocity": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0]}
+        guidance_config = {
+            # G1KimodoMotionDataset: use "kimodo_velocity" as the guidance_type arg.
+            # pelvis_linvel (indices 5:8) is WORLD-FRAME, so plain "velocity" guidance would
+            # push toward a fixed world direction regardless of heading.
+            # "kimodo_velocity" reads ra=[cos θ, sin θ] (indices 3:5) from the predicted
+            # state and rotates the body-frame target into world frame each denoising step,
+            # making the guidance heading-consistent.
+            #
+            # target_speed / target_lateral_speed are in NORMALIZED units (limits → [-1, 1]):
+            #   0.0 = stopped, 1.0 ≈ max forward speed seen in training data
+            "dataset_class": "G1KimodoMotionDataset",
+            "target_speed": args_cli.target_speed,          # normalized forward speed
+            "target_lateral_speed": args_cli.target_lateral_speed,  # normalized leftward speed
+            # FOR G1Dataset (root_separate=True) with guidance_type="velocity":
+            # "dataset_class": "root_only",
+            # "target_velocity": [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            # "root_vel_indices": (3, 9)
+            # FOR G1Dataset (full, reduced) with guidance_type="velocity":
+            # "dataset_class": "G1Dataset",
+            # "root_vel_indices": (64, 70)
+        }
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")

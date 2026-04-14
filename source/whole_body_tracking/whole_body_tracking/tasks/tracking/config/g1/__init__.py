@@ -8,7 +8,7 @@ from . import agents, flat_env_cfg
 
 gym.register(
     id="Tracking-Flat-G1-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatEnvCfg,
@@ -17,8 +17,18 @@ gym.register(
 )
 
 gym.register(
+    id="Tracking-Flat-G1-Play-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatPlayEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)
+
+gym.register(
     id="Tracking-Flat-G1-Wo-State-Estimation-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatWoStateEstimationEnvCfg,
@@ -29,7 +39,7 @@ gym.register(
 
 gym.register(
     id="Tracking-Flat-G1-Low-Freq-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatLowFreqEnvCfg,
@@ -40,7 +50,7 @@ gym.register(
 
 gym.register(
     id="Tracking-Flat-G1-Collect-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatCollectEnvCfg,
@@ -51,10 +61,51 @@ gym.register(
 
 gym.register(
     id="Tracking-Flat-G1-Sim-v0",
-    entry_point="isaaclab.envs:ManagerBasedRLEnv",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": flat_env_cfg.G1FlatSimEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-Flat-G1-Compliance-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatComplianceEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-Flat-G1-Compliance-Play-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatCompliancePlayEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)
+    
+
+gym.register(
+    id="Tracking-MultiClip-Flat-G1-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatMultiClipEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Tracking-MultiClip-Flat-G1-Play-v0",
+    entry_point="whole_body_tracking.tasks.tracking.tracking_env:TrackingEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": flat_env_cfg.G1FlatMultiClipPlayEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1FlatPPORunnerCfg",
     },
 )
