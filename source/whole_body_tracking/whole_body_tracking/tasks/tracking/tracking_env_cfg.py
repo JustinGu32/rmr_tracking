@@ -411,7 +411,7 @@ class TerminationsCfg:
         func=mdp.bad_motion_body_pos_z_only,
         params={
             "command_name": "motion",
-            "threshold": 0.25,
+            "threshold": 0.4,
             "body_names": [
                 "left_ankle_roll_link",
                 "right_ankle_roll_link",
@@ -423,7 +423,7 @@ class TerminationsCfg:
     
     bad_anchor_pos_xy = DoneTerm(
         func=mdp.bad_anchor_pos_x_y_only,
-        params={"command_name": "motion", "threshold": 0.7},
+        params={"command_name": "motion", "threshold": 1.3},
     )
 
 

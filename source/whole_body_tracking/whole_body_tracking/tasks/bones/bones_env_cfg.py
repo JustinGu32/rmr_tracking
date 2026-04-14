@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
@@ -276,22 +277,6 @@ class EventCfg:
                 "asset_cfg": SceneEntityCfg("robot", joint_names=[".*"])},
     )
 
-    # Spring force is applied intervally (every step) and modulated by the curriculum
-    assistive_spring_force = EventTerm(
-        func=mdp.apply_spring_force,
-        mode="interval",
-        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
-        params={
-            "command_name": "motion",
-            "asset_name": "robot",
-            "stiffness": 600.0,
-            "ang_stiffness": 120.0,
-            "damping": 15.0,
-            "axis_weights": (0.0, 0.0, 1.0),
-            "gravity_comp": 0.5,
-            "curriculum_factor": 1.0,
-        },
-    )
 
 @configclass
 class RewardsCfg:
@@ -384,24 +369,13 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    spring_force_linear = CurrTerm(
-        func=mdp.LinearForceScheduler,
+    gravity_curriculum = CurrTerm(
+        func=mdp.GravityScheduler,
         params={
-            "command_name": "motion",
+            "start_gravity": (0.0, 0.0, -2.0),
+            "end_gravity": (0.0, 0.0, -9.81),
             "start_steps": 0,
-            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
-        },
-    )
-    spring_force_factor = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "events.assistive_spring_force.params.curriculum_factor",
-            "modify_fn": mdp.linear_interpolate_fn,
-            "modify_params": {
-                "initial_value": 1.0,
-                "final_value": 0.0,
-                "difficulty_term_str": "spring_force_linear",
-            },
+            "ramp_steps": 5000,
         },
     )
 
@@ -441,3 +415,14 @@ class BonesEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # Gravity curriculum
+        if os.environ.get("BONES_GRAVITY_CURRICULUM") == "1":
+            start_gz = float(os.environ.get("BONES_START_GRAVITY", "-2.0"))
+            ramp_steps = int(os.environ.get("BONES_GRAVITY_RAMP_STEPS", "5000"))
+            self.curriculum = CurriculumCfg()
+            self.curriculum.gravity_curriculum.params["start_gravity"] = (0.0, 0.0, start_gz)
+            self.curriculum.gravity_curriculum.params["ramp_steps"] = ramp_steps
+            self.sim.gravity = (0.0, 0.0, start_gz)
+        else:
+            self.curriculum = None

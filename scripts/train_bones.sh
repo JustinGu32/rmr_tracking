@@ -186,14 +186,13 @@ python scripts/rsl_rl/train_bones.py \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-<<<<<<< HEAD
-   --run_name crane_a5000_gravity_term \
+   --run_name crane_a5000_both_all \
    --ppo_output target \
    --push none \
    --crane \
    --curriculum \
-   --assist_mode gravity_only \
-   --video
+   --assist_mode both_all \
+   --video --video_interval 10000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)
 # python scripts/rsl_rl/train_bones.py \
@@ -205,11 +204,6 @@ python scripts/rsl_rl/train_bones.py \
 #   --run_name DELTA-ALL_crane_a5000 \
 #   --ppo_output delta \
 #   --push none
-=======
-   --run_name DELTA-ALL-NO-SCALE_crane_a5000_VR2 \
-   --ppo_output delta-all \
-   --push none
->>>>>>> 8264d4d0f70ac8bbce7b56e903a84dff9eb1b799
 
 # # 15. target + push-none + curriculum
 # python scripts/rsl_rl/train_bones.py \

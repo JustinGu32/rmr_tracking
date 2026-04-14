@@ -369,7 +369,7 @@ class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
                                                   params={
                                                         "command_name": "motion",
                                                         "compliance_lb": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-                                                        "compliance_ub": [0.05, 0.05, 0.0, 0.05, 0.05, 0.05],
+                                                        "compliance_ub": [0.06, 0.06, 0.0, 0.06, 0.06, 0.06],
                                                         "compliance_duration": (100, 200),
                                                         "start_steps": 0
                                                   })

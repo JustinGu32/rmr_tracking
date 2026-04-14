@@ -11,9 +11,5 @@ from .observations import *  # noqa: F401, F403
 from .rewards import *  # noqa: F401, F403
 from .terminations import *  # noqa: F401, F403
 
-# Reuse curriculum helpers from staircase task
-from whole_body_tracking.tasks.staircase.mdp.curriculum import (  # noqa: F401
-    LinearForceScheduler,
-    apply_spring_force,
-    linear_interpolate_fn,
-)
+from .curriculum import GravityScheduler  # noqa: F401
+
