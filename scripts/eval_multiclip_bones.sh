@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=eval_multiclip
-#SBATCH --partition=humanoid  --account=move
+#SBATCH --partition=move  --account=move
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
@@ -18,11 +18,12 @@ conda activate env_isaaclab
 python scripts/rsl_rl/eval_multiclip.py \
     --task=Bones-MultiClip-Compliance-G1-v0 \
     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
-    --wandb_path=robot-mcrobotface/multiclip_bones/orj1uirj \
+    --wandb_path=robot-mcrobotface/multiclip_bones/u90b2ybr \
     --num_envs=16384 \
     --headless \
-    --results_dir=eval_results/multiclip_pt1 \
-    --results_name=bones_target_50hz_elu_orj1uirj
+    --results_dir=eval_results/multiclip_gravity_swish_uniform \
+    --results_name=bones_target_50hz_swish_gravcurr12.7_uniform \
+    --activation swish
 
 # python scripts/rsl_rl/eval_multiclip.py \
 #     --task=Tracking-MultiClip-Flat-G1-v0 \
