@@ -8,8 +8,11 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
 import os
+import re
 import sys
+from pathlib import Path
 
 from isaaclab.app import AppLauncher
 
@@ -41,6 +44,20 @@ parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting 
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--bones_popart", action="store_true", default=False, help="Enable local bones multi-head PopArt PPO.")
+parser.add_argument(
+    "--bones_popart_balanced",
+    action="store_true",
+    default=False,
+    help="Enable the grouped bones PopArt reward heads that emphasize original reward terms.",
+)
+parser.add_argument("--bones_popart_individual", action="store_true", default=False, help="Enable local bones multi-head PopArt PPO with individual limbs.")
+parser.add_argument(
+    "--bones_no_popart_stats",
+    action="store_true",
+    default=False,
+    help="Use the local bones vector-reward PPO path without PopArt statistic updates.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -244,6 +261,39 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
 
+try:
+    from whole_body_tracking.utils.bones_popart import (
+        BALANCED_REWARD_HEADS,
+        BonesOnPolicyRunner,
+        BonesRewardVectorWrapper,
+        DEFAULT_REWARD_HEADS,
+        INDIVIDUAL_REWARD_HEADS,
+        should_use_bones_popart_runner,
+    )
+except ModuleNotFoundError:
+    import importlib.util
+
+    _bones_popart_path = (
+        Path(__file__).resolve().parents[2]
+        / "source"
+        / "whole_body_tracking"
+        / "whole_body_tracking"
+        / "utils"
+        / "bones_popart.py"
+    )
+    _bones_popart_spec = importlib.util.spec_from_file_location("bones_popart_local", _bones_popart_path)
+    if _bones_popart_spec is None or _bones_popart_spec.loader is None:
+        raise
+    _bones_popart = importlib.util.module_from_spec(_bones_popart_spec)
+    _bones_popart_spec.loader.exec_module(_bones_popart)
+
+    BALANCED_REWARD_HEADS = _bones_popart.BALANCED_REWARD_HEADS
+    BonesOnPolicyRunner = _bones_popart.BonesOnPolicyRunner
+    BonesRewardVectorWrapper = _bones_popart.BonesRewardVectorWrapper
+    DEFAULT_REWARD_HEADS = _bones_popart.DEFAULT_REWARD_HEADS
+    INDIVIDUAL_REWARD_HEADS = _bones_popart.INDIVIDUAL_REWARD_HEADS
+    should_use_bones_popart_runner = _bones_popart.should_use_bones_popart_runner
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
@@ -258,9 +308,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Override activation function
     agent_cfg.policy.activation = args_cli.activation
+    if args_cli.bones_popart_balanced and args_cli.bones_popart_individual:
+        raise ValueError("--bones_popart_balanced and --bones_popart_individual are mutually exclusive.")
+    if hasattr(agent_cfg, "bones_popart"):
+        agent_cfg.bones_popart = dict(agent_cfg.bones_popart)
+        if args_cli.bones_popart or args_cli.bones_popart_balanced or args_cli.bones_popart_individual or args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["enabled"] = True
+        if args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["use_popart"] = False
 
     # Auto-generate run name suffix from CLI flags
     flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}_act-{args_cli.activation}"
+    if args_cli.bones_popart_balanced:
+        flag_suffix += "_popart-balanced"
+    if args_cli.bones_popart_individual:
+        flag_suffix += "_popart-individual"
     if args_cli.no_command_obs:
         flag_suffix += "_no-cmd-obs"
     if args_cli.double_step:
@@ -327,6 +389,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
 
+    # Disable contradictory reward terms depending on the populated head setting
+    if hasattr(env_cfg, "rewards") and hasattr(agent_cfg, "bones_popart"):
+        if getattr(args_cli, "bones_popart_balanced", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"):
+                env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"):
+                env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(BALANCED_REWARD_HEADS)
+        elif getattr(args_cli, "bones_popart_individual", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"):
+                env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"):
+                env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(INDIVIDUAL_REWARD_HEADS)
+        elif hasattr(env_cfg.rewards, "vr_position_upper") and hasattr(env_cfg.rewards, "vr_position_lower"):
+            agent_cfg.bones_popart["reward_heads"] = list(DEFAULT_REWARD_HEADS)
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     # wrap for video recording
@@ -345,11 +424,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    use_bones_popart = should_use_bones_popart_runner(agent_cfg)
+    if use_bones_popart:
+        env = BonesRewardVectorWrapper(env, reward_heads=agent_cfg.bones_popart.get("reward_heads"))
+
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
     # create runner from rsl-rl
-    runner = OnPolicyRunner(
+    runner_cls = BonesOnPolicyRunner if use_bones_popart else OnPolicyRunner
+    runner = runner_cls(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )
     # write git state to logs

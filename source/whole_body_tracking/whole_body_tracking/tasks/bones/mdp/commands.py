@@ -297,7 +297,6 @@ class MotionCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -735,7 +734,6 @@ class MultiMotionCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -1100,8 +1098,15 @@ class ZarrMotionLoader:
     training time by ZarrMultiMotionCommand.
     """
 
-    def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
-                 exclude_props: list[str] | None = None):
+    def __init__(
+        self,
+        zarr_path: str,
+        body_indexes: Sequence[int],
+        device: str = "cpu",
+        exclude_props: list[str] | None = None,
+        clip_start: int | None = None,
+        clip_end: int | None = None,
+    ):
         import zarr as _zarr
 
         assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
@@ -1126,6 +1131,28 @@ class ZarrMotionLoader:
                   f"matching props: {exclude_props}")
         else:
             valid_indices = list(range(total_clips_raw))
+
+        filtered_clip_count = len(valid_indices)
+        if clip_start is not None or clip_end is not None:
+            start = 0 if clip_start is None else clip_start
+            end = (filtered_clip_count - 1) if clip_end is None else clip_end
+            if start < 0 or end < 0:
+                raise ValueError(
+                    f"clip_start/clip_end must be non-negative after filtering; got start={start}, end={end}."
+                )
+            if start > end:
+                raise ValueError(
+                    f"clip_start must be <= clip_end; got start={start}, end={end}."
+                )
+            if end >= filtered_clip_count:
+                raise ValueError(
+                    f"clip_end {end} out of range for {filtered_clip_count} filtered clips."
+                )
+            valid_indices = valid_indices[start : end + 1]
+            print(
+                f"[ZarrMotionLoader] Restricted to filtered clip range [{start}, {end}] "
+                f"({len(valid_indices)} clips)"
+            )
 
         self.clip_start_idx = torch.tensor([all_clip_start[i] for i in valid_indices], dtype=torch.long)
         self.clip_end_idx = torch.tensor([all_clip_end[i] for i in valid_indices], dtype=torch.long)
@@ -1198,8 +1225,14 @@ class ZarrMultiMotionCommand(MultiMotionCommand):
 
         # Load from Zarr instead of NPZ files
         exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
-        self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
-                                       exclude_props=exclude_props)
+        self.motion = ZarrMotionLoader(
+            self.cfg.zarr_path,
+            self.body_indexes,
+            device=self.device,
+            exclude_props=exclude_props,
+            clip_start=self.cfg.clip_start,
+            clip_end=self.cfg.clip_end,
+        )
 
         self.min_sample_idx = cfg.min_sample_idx
         self.max_sample_idx = cfg.max_sample_idx
@@ -1353,7 +1386,6 @@ class ZarrMultiMotionCommand(MultiMotionCommand):
             return
 
         env_ids_t = torch.as_tensor(env_ids, device=self.device)
-        self._adaptive_sampling(env_ids)
 
         # Assign new random clips
         self._assign_random_clips(env_ids_t)
@@ -1425,6 +1457,12 @@ class ZarrMultiMotionCommandCfg(MultiMotionCommandCfg):
 
     exclude_objects: bool = True
     """Whether to exclude motions with object manipulation (content_props). Default: True."""
+
+    clip_start: int | None = None
+    """Inclusive start clip index after filtering."""
+
+    clip_end: int | None = None
+    """Inclusive end clip index after filtering."""
 
     # Override motion_files — not used in zarr mode
     motion_files: list[str] = []
@@ -1513,12 +1551,6 @@ class CHIPMultiClipMotionCommand(MultiClipMotionCommand):
     def joint_vel_lower_body(self) -> torch.Tensor:
         return self.joint_vel[:, self.lower_joint_isaaclab_indices]
 
-    def _adaptive_sampling(self, env_ids: torch.Tensor):
-        # Bones training now uses uniform global-frame sampling instead of the parent adaptive sampler.
-        if self.cfg.use_adaptive_sampling:
-            super()._adaptive_sampling(env_ids)
-        else:
-            self._uniform_sampling(env_ids)
 
 
 @configclass

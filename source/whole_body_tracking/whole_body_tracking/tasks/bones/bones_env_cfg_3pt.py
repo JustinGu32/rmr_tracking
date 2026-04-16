@@ -326,11 +326,7 @@ class TerminationsCfg:
     )
     # bad_anchor_pos_xy = DoneTerm(
     #     func=mdp.bad_anchor_pos_x_y_only,
-<<<<<<< HEAD
-    #     params={"command_name": "motion", "threshold": 0.7},
-=======
     #     params={"command_name": "motion", "threshold": 1.3},
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e
     # )
 
 
@@ -344,25 +340,22 @@ class CurriculumCfg:
             "start_gravity": (0.0, 0.0, -2.0),
             "end_gravity": (0.0, 0.0, -9.81),
             "start_steps": 0,
-<<<<<<< HEAD
-            "ramp_steps": 120000,  # Ramp up over 10k iters (× 24 steps_per_env)
+            "ramp_steps": 5000, 
         },
     )
-    spring_force_factor = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "events.assistive_spring_force.params.curriculum_factor",
-            "modify_fn": mdp.linear_interpolate_fn,
-            "modify_params": {
-                "initial_value": 1.0,
-                "final_value": 0.0,
-                "difficulty_term_str": "spring_force_linear",
-            },
-=======
-            "ramp_steps": 5000,
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e
-        },
-    )
+
+    # spring_force_factor = CurrTerm(
+    #     func=mdp.modify_term_cfg,
+    #     params={
+    #         "address": "events.assistive_spring_force.params.curriculum_factor",
+    #         "modify_fn": mdp.linear_interpolate_fn,
+    #         "modify_params": {
+    #             "initial_value": 1.0,
+    #             "final_value": 0.0,
+    #             "difficulty_term_str": "spring_force_linear",
+    #         },
+    #     },
+    # )
 
 
 ##
@@ -454,7 +447,6 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
         if os.environ.get("BONES_NO_COMMAND_OBS") == "1":
             self.observations.policy.command = None
 
-<<<<<<< HEAD
         # Assistive spring force curriculum
         if os.environ.get("BONES_CURRICULUM") == "1":
             self.events.assistive_spring_force = EventTerm(
@@ -474,7 +466,7 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
             )
             self.curriculum = CurriculumCfg()
 
-            assist_mode = os.environ.get("BONES_ASSIST_MODE", "both")
+            assist_mode = os.environ.get("BONES_ASSIST_MODE", "none")
             if assist_mode not in {"both", "gravity_only", "spring_only", "none", "gravity_pelvis", "gravity_all", "both_pelvis", "both_all"}:
                 raise ValueError(f"Unsupported BONES_ASSIST_MODE: {assist_mode}")
 
@@ -504,7 +496,6 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                 self.events.assistive_spring_force.params["gravity_comp"] = 0.0
                 self.curriculum.spring_force_linear = None
                 self.curriculum.spring_force_factor = None
-=======
         # Gravity curriculum
         if os.environ.get("BONES_GRAVITY_CURRICULUM") == "1":
             start_gz = float(os.environ.get("BONES_START_GRAVITY", "-2.0"))
@@ -515,4 +506,3 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
             self.sim.gravity = (0.0, 0.0, start_gz)
         else:
             self.curriculum = None
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e

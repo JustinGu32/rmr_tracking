@@ -179,11 +179,7 @@ def apply_spring_force(
             forces[:, anchor_idx, 2] += added_grav
             grav_force_scaled[:, anchor_idx, 2] = added_grav
         elif gravity_comp_mode == "all":
-<<<<<<< HEAD
-            masses = asset.root_physx_view.get_masses().to(device=env.device, dtype=tensor_dtype)  # (num_envs, num_bodies)
-=======
             masses = asset.root_physx_view.get_masses().to(env.device)  # (num_envs, num_bodies)
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e
             added_grav = masses * 9.81 * gravity_comp * curriculum_factor
             added_grav = added_grav.to(env.device)
             forces[:, :, 2] += added_grav

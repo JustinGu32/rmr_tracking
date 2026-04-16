@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:titanrtx:1
 #SBATCH --job-name=bones_crane
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
@@ -180,18 +180,20 @@ conda activate env_isaaclab
 
 # --- curriculum ablations (13-16) ---
 # # 13. delta + push-none + curriculum
-python scripts/rsl_rl/train_bones.py \
+python scripts/rsl_rl/old_train_bones.py \
    --task=Bones-Flat-chip-G1-v0 \
    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-   --run_name crane_a5000_pei_popart_balanced \
+   --run_name crane_a5000_baseline \
    --ppo_output target \
    --push none \
    --crane \
-   --bones_popart_balanced \
-   --video --video_interval 10000
+   --video \
+   --video_interval 10000 
+   # --bones_popart_balanced
+   # --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 5000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)
 # python scripts/rsl_rl/train_bones.py \

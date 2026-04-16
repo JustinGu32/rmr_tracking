@@ -1,0 +1,44 @@
+{
+  "clip_id": 1,
+  "clip_name": "jump_and_land_heavy_003__A001_M",
+  "clip_length_frames": 517,
+  "task": "Bones-MultiClip-Compliance-G1-v0",
+  "wandb_path": "robot-mcrobotface/multiclip_bones/tdhhyrl8",
+  "steps_run": 517,
+  "terminated_at": 8,
+  "termination_reason": "ee_body_pos",
+  "termination_errors": {
+    "step": 7,
+    "anchor_pos_err_xy": 0.0617,
+    "anchor_pos_err_z": 0.0578,
+    "anchor_pos_err_xyz": [
+      0.0401,
+      -0.0469,
+      -0.0578
+    ],
+    "ee_z_errors": {
+      "left_ankle_roll_link": {
+        "z_error": 0.2735,
+        "ref_z": 0.0323,
+        "robot_z": 0.3057
+      },
+      "right_ankle_roll_link": {
+        "z_error": 0.1796,
+        "ref_z": 0.0356,
+        "robot_z": 0.2152
+      },
+      "left_wrist_yaw_link": {
+        "z_error": 0.0042,
+        "ref_z": 1.098,
+        "robot_z": 1.0937
+      },
+      "right_wrist_yaw_link": {
+        "z_error": 0.0417,
+        "ref_z": 1.0682,
+        "robot_z": 1.0265
+      }
+    }
+  },
+  "progress_pct": 1.5,
+  "success": false
+}

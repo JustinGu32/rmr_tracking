@@ -29,6 +29,18 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
+parser.add_argument(
+    "--clip_start",
+    type=int,
+    default=None,
+    help="Inclusive start clip index for Zarr multi-clip training, applied after object filtering.",
+)
+parser.add_argument(
+    "--clip_end",
+    type=int,
+    default=None,
+    help="Inclusive end clip index for Zarr multi-clip training, applied after object filtering.",
+)
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
@@ -42,7 +54,6 @@ parser.add_argument("--ppo_output", type=str, default="target", choices=["target
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
-<<<<<<< HEAD
 parser.add_argument("--bones_popart", action="store_true", default=False, help="Enable local bones multi-head PopArt PPO.")
 parser.add_argument(
     "--bones_popart_balanced",
@@ -57,13 +68,11 @@ parser.add_argument(
     default=False,
     help="Use the local bones vector-reward PPO path without PopArt statistic updates.",
 )
-=======
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -325,31 +334,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.bones_no_popart_stats:
             agent_cfg.bones_popart["use_popart"] = False
 
-<<<<<<< HEAD
     # Auto-generate run name suffix from CLI flags
-    flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}_act-{args_cli.activation}"
+    flag_suffix = f"{args_cli.ppo_output}_act-{args_cli.activation}"
     if args_cli.bones_popart_balanced:
         flag_suffix += "_popart-balanced"
     if args_cli.bones_popart_individual:
         flag_suffix += "_popart-individual"
-    if args_cli.no_command_obs:
-        flag_suffix += "_no-cmd-obs"
     if args_cli.double_step:
         flag_suffix += "_dstep"
-    if args_cli.crane:
-        flag_suffix += "_crane"
     if args_cli.curriculum:
         flag_suffix += "_curriculum"
     if agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
     else:
         agent_cfg.run_name = flag_suffix
-=======
     # Append sampling suffix to run name
     if args_cli.sampling == "uniform" and agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_uniform"
 
->>>>>>> abc6371ded8678e97eb1502bc835e708780c4b0e
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -389,6 +391,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
         env_cfg.commands.motion.exclude_objects = not args_cli.include_objects
+        if args_cli.clip_start is not None:
+            env_cfg.commands.motion.clip_start = args_cli.clip_start
+        if args_cli.clip_end is not None:
+            env_cfg.commands.motion.clip_end = args_cli.clip_end
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)
