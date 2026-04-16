@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=multiclip_bones
-#SBATCH --partition=humanoid  --account=move
+#SBATCH --partition=move  --account=move
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
@@ -11,9 +11,9 @@
 # Create log directory
 mkdir -p logs/slurm
 
-cd /move/u/justingu/rmr_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
-source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 # ============================================================
@@ -21,7 +21,7 @@ conda activate env_isaaclab
 # ============================================================
 
 # # 1. Baseline: target, elu, 50hz, 4096 envs
-# python scripts/rsl_rl/train.py \
+# python scripts/rsl_rl/train_bones.py \
 #     --task=Bones-MultiClip-Compliance-G1-v0 \
 #     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
 #     --num_envs=4096 \
@@ -116,7 +116,7 @@ conda activate env_isaaclab
 #     --double_step
 
 # # 8. BASELINE: standard tracking task (no BONES/compliance), target, elu, 50hz, 4096 envs
-python scripts/rsl_rl/train.py \
+python scripts/rsl_rl/train_bones.py \
     --task=Tracking-MultiClip-Flat-G1-v0 \
     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
     --num_envs=4096 \
@@ -126,4 +126,5 @@ python scripts/rsl_rl/train.py \
     --run_name tracking_baseline_target_50hz \
     --ppo_output target \
     --activation elu \
-    --double_step
+    --double_step \
+    --bones_popart_balanced

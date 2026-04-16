@@ -1513,6 +1513,13 @@ class CHIPMultiClipMotionCommand(MultiClipMotionCommand):
     def joint_vel_lower_body(self) -> torch.Tensor:
         return self.joint_vel[:, self.lower_joint_isaaclab_indices]
 
+    def _adaptive_sampling(self, env_ids: torch.Tensor):
+        # Bones training now uses uniform global-frame sampling instead of the parent adaptive sampler.
+        if self.cfg.use_adaptive_sampling:
+            super()._adaptive_sampling(env_ids)
+        else:
+            self._uniform_sampling(env_ids)
+
 
 @configclass
 class CHIPMultiClipMotionCommandCfg(MultiClipMotionCommandCfg):

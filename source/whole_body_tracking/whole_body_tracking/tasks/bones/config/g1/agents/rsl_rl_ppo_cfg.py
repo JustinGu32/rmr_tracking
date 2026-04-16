@@ -30,6 +30,17 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         desired_kl=0.01,
         max_grad_norm=1.0,
     )
+    bones_popart = {
+        "enabled": False,
+        "use_popart": True,
+        "reward_heads": ["upper", "lower", "global"],
+        "actor_advantage_reduction": "sum",
+        "beta": 5.0e-4,
+        "epsilon": 1.0e-5,
+        "min_sigma": 1.0e-4,
+        "max_sigma": None,
+        "log_diagnostics": True,
+    }
 
 
 LOW_FREQ_SCALE = 0.5

@@ -342,10 +342,10 @@ class TerminationsCfg:
             ],
         },
     )
-    bad_anchor_pos_xy = DoneTerm(
-        func=mdp.bad_anchor_pos_x_y_only,
-        params={"command_name": "motion", "threshold": 0.7},
-    )
+    # bad_anchor_pos_xy = DoneTerm(
+    #     func=mdp.bad_anchor_pos_x_y_only,
+    #     params={"command_name": "motion", "threshold": 0.7},
+    # )
 
 
 @configclass
@@ -357,7 +357,7 @@ class CurriculumCfg:
         params={
             "command_name": "motion",
             "start_steps": 0,
-            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
+            "ramp_steps": 120000,  # Ramp up over 10k iters (× 24 steps_per_env)
         },
     )
     spring_force_factor = CurrTerm(
@@ -475,7 +475,7 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                     "stiffness": 600.0,
                     "ang_stiffness": 300.0,
                     "damping": 15.0,
-                    "axis_weights": (0.0, 0.0, 1.0),
+                    "axis_weights": (1.0, 1.0, 1.0),
                     "gravity_comp": 0.5,
                     "curriculum_factor": 1.0,
                 },
@@ -510,3 +510,5 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                 self.events.assistive_spring_force.params["damping"] = 0.0
                 self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
                 self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+                self.curriculum.spring_force_linear = None
+                self.curriculum.spring_force_factor = None

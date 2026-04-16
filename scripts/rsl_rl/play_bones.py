@@ -33,6 +33,20 @@ parser.add_argument("--activation", type=str, default="elu", choices=["elu", "sw
 parser.add_argument("--start_from_beginning", action="store_true", default=False,
                     help="Start each episode from the beginning of the clip instead of adaptive sampling.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
+parser.add_argument("--bones_popart", action="store_true", default=False, help="Load the checkpoint with the local bones multi-head PopArt policy.")
+parser.add_argument(
+    "--bones_popart_balanced",
+    action="store_true",
+    default=False,
+    help="Load the checkpoint with the grouped bones PopArt reward heads that emphasize original reward terms.",
+)
+parser.add_argument("--bones_popart_individual", action="store_true", default=False, help="Load the checkpoint with the local bones multi-head PopArt policy with individual limbs.")
+parser.add_argument(
+    "--bones_no_popart_stats",
+    action="store_true",
+    default=False,
+    help="Load the checkpoint with the local bones vector-reward policy but without PopArt statistic updates.",
+)
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -76,14 +90,29 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
+from whole_body_tracking.utils.bones_popart import (
+    BALANCED_REWARD_HEADS,
+    BonesOnPolicyRunner,
+    BonesRewardVectorWrapper,
+    DEFAULT_REWARD_HEADS,
+    INDIVIDUAL_REWARD_HEADS,
+    should_use_bones_popart_runner,
+)
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
-
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     """Play with RSL-RL agent."""
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     agent_cfg.policy.activation = args_cli.activation
+    if args_cli.bones_popart_balanced and args_cli.bones_popart_individual:
+        raise ValueError("--bones_popart_balanced and --bones_popart_individual are mutually exclusive.")
+    if hasattr(agent_cfg, "bones_popart"):
+        agent_cfg.bones_popart = dict(agent_cfg.bones_popart)
+        if args_cli.bones_popart or args_cli.bones_popart_balanced or args_cli.bones_popart_individual or args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["enabled"] = True
+        if args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["use_popart"] = False
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     if args_cli.decimation is not None:
         env_cfg.decimation = args_cli.decimation
@@ -145,6 +174,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.max_clips is not None and hasattr(env_cfg.commands.motion, 'max_clips'):
         env_cfg.commands.motion.max_clips = args_cli.max_clips
 
+    # Disable contradictory reward terms depending on the populated head setting
+    if hasattr(env_cfg, "rewards"):
+        if getattr(args_cli, "bones_popart_balanced", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"):
+                env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"):
+                env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(BALANCED_REWARD_HEADS)
+        elif getattr(args_cli, "bones_popart_individual", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"): env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"): env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(INDIVIDUAL_REWARD_HEADS)
+        else:
+            for limb in ["left_arm", "right_arm", "torso", "left_leg", "right_leg", "pelvis"]:
+                term_name = f"vr_position_{limb}"
+                if hasattr(env_cfg.rewards, term_name):
+                    getattr(env_cfg.rewards, term_name).weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(DEFAULT_REWARD_HEADS)
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
 
@@ -166,11 +214,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    use_bones_popart = should_use_bones_popart_runner(agent_cfg)
+    if use_bones_popart:
+        env = BonesRewardVectorWrapper(env, reward_heads=agent_cfg.bones_popart.get("reward_heads"))
+
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
     # load previously trained model
-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    runner_cls = BonesOnPolicyRunner if use_bones_popart else OnPolicyRunner
+    ppo_runner = runner_cls(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference

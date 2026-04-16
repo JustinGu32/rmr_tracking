@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --partition=move  --account=move
-#SBATCH --time=18:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
@@ -186,12 +186,11 @@ python scripts/rsl_rl/train_bones.py \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-   --run_name crane_a5000_both_all \
+   --run_name crane_a5000_pei_popart_balanced \
    --ppo_output target \
    --push none \
    --crane \
-   --curriculum \
-   --assist_mode both_all \
+   --bones_popart_balanced \
    --video --video_interval 10000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)

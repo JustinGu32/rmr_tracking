@@ -177,6 +177,13 @@ class G1Bones3ptComplianceEnvCfg(Bones3ptEnvCfg):
                                                         "std": 0.1,
                                                         "body_indices": [3, 4, 5],  # ankles + pelvis
                                                  })
+        # Individual limb tracking for PopArt Individual mode
+        self.rewards.vr_position_left_arm = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [0]})
+        self.rewards.vr_position_right_arm = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [1]})
+        self.rewards.vr_position_torso = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [2]})
+        self.rewards.vr_position_left_leg = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [3]})
+        self.rewards.vr_position_right_leg = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [4]})
+        self.rewards.vr_position_pelvis = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [5]})
 
 @configclass
 class G1Bones3ptCompliancePlayCfg(G1Bones3ptComplianceEnvCfg):
@@ -387,3 +394,10 @@ class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
                                                         "std": 0.1,
                                                         "body_indices": [3, 4, 5],  # ankles + pelvis
                                                  })
+        # Individual limb tracking for PopArt Individual mode
+        self.rewards.vr_position_left_arm = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [0]})
+        self.rewards.vr_position_right_arm = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [1]})
+        self.rewards.vr_position_torso = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [2]})
+        self.rewards.vr_position_left_leg = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [3]})
+        self.rewards.vr_position_right_leg = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [4]})
+        self.rewards.vr_position_pelvis = RewTerm(func=mdp.vr_position_relative_error_exp, weight=2.0, params={"command_name": "motion", "std": 0.1, "body_indices": [5]})
