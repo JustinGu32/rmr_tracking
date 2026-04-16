@@ -33,9 +33,12 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # Deprecated but kept for backward compat with IsaacLab internals
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=1.0,
-        actor_hidden_dims=[1024, 1024, 512],
-        critic_hidden_dims=[1024, 1024, 512],
-        activation="swish",
+        # actor_hidden_dims=[1024, 1024, 512],
+        # critic_hidden_dims=[1024, 1024, 512],
+        actor_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
+        critic_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
+        activation="elu",
+        # activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,
