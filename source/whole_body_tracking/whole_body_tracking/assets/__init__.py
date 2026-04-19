@@ -1,5 +1,5 @@
 import os
 
 # Conveniences to other module directories via relative paths
-ASSET_DIR = os.path.abspath(os.path.dirname(__file__))
-# ASSET_DIR = '/move/u/chrzhang/'
+# ASSET_DIR = os.path.abspath(os.path.dirname(__file__))
+ASSET_DIR = '/move/u/chrzhang/'

@@ -58,6 +58,10 @@ parser.add_argument("--video", action="store_true", help="Record simulation to v
 parser.add_argument("--video_folder", type=str, default="videos/kinematic_sim",
                     help="Folder to save video")
 parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record")
+parser.add_argument("--data-hz", type=float, default=33.0,
+                    help="Frame rate of the training data (Hz). The model is called once per "
+                         "round(sim_hz / data_hz) sim steps so motion plays at the correct speed. "
+                         "Use 33 for locomotion_33hz.zarr, 50 for 50hz data.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if getattr(args_cli, "video", False):
@@ -90,7 +94,7 @@ from diffusion_policy.utils.traj_utils import (  # noqa: E402
     quat_from_euler_xyz,
     get_euler_xyz,
     quat_rotate,
-    box_plus,
+    quat_mul,
 )
 
 seed = 42
@@ -174,10 +178,25 @@ def decode_next_state(
         return quat_rotate(yaw_quat.unsqueeze(0), v_local.unsqueeze(0)).squeeze(0)
 
     def _decode_root_rot(root_rot_local, root_rot_form):
-        """Reconstruct world-frame root quaternion from local-frame rotation encoding."""
+        """Reconstruct world-frame root quaternion from local-frame rotation encoding.
+
+        Training stores: v = box_minus(root_rot, yaw) = log(conj(yaw) ⊗ root_rot)
+        Inverse:         root_rot = yaw ⊗ exp(v)   →   quat_mul(yaw, exp_quat(v))
+
+        Note: box_plus(yaw, v) = conj(yaw) ⊗ exp(v) which is the WRONG inverse
+        (applies the inverse yaw), causing the heading to flip.
+        """
         if root_rot_form == "original":
-            # state stored box_minus(root_rot, yaw_quat); inverse is box_plus
-            return box_plus(yaw_quat.unsqueeze(0), root_rot_local.unsqueeze(0)).squeeze(0)
+            v = root_rot_local.unsqueeze(0)          # (1, 3)
+            eps = 1e-9
+            v_norm = torch.norm(v, dim=1)
+            v_quat_w = torch.cos(v_norm * 0.5).unsqueeze(-1)
+            v_quat_vec = (
+                torch.sin(v_norm * 0.5).unsqueeze(-1)
+                * (v / v_norm.clamp(min=eps).unsqueeze(-1))
+            )
+            exp_v = torch.cat([v_quat_w, v_quat_vec], dim=1)  # (1, 4)
+            return quat_mul(yaw_quat.unsqueeze(0), exp_v).squeeze(0)
         else:
             # "gravity" or "rot6d": cannot uniquely recover full orientation here.
             # Keep current orientation (yaw is correct; pitch/roll approximated).
@@ -351,122 +370,153 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print("[INFO] Root pose will be set kinematically; "
               "joints will be held at the observed pose (no joint prediction).")
 
-    # Create environment
+    # Create environment. We bypass gym's RecordVideo wrapper because option-2
+    # kinematic replay doesn't call env.step(), so the wrapper would never trigger.
+    # Frames are captured manually with imageio below.
     render_mode = "rgb_array" if record_video else None
     print(f"[INFO] Creating environment (render_mode={render_mode!r})...", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+
+    video_writer = None
+    video_path = None
     if record_video:
+        import imageio
         video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/kinematic_sim")))
         os.makedirs(video_folder, exist_ok=True)
-        env = gym.wrappers.RecordVideo(
-            env,
-            video_folder=video_folder,
-            step_trigger=lambda step: step == 0,
-            video_length=video_length,
-            name_prefix=model_name,
-            disable_logger=True,
-        )
-        print(f"[INFO] Video recording: first {video_length} steps -> {video_folder}")
+        video_path = os.path.join(video_folder, f"{model_name}.mp4")
+        video_writer = imageio.get_writer(video_path, fps=int(args_cli.data_hz))
+        print(f"[INFO] Video recording: first {video_length} frames -> {video_path} @ {args_cli.data_hz:.1f}fps")
 
     policy.reset()
     print("[INFO] Resetting environment...", flush=True)
     obs, _ = env.reset()
     print("[INFO] Environment reset; starting kinematic control loop.", flush=True)
 
+    # --- Initialization before the loop ---
     step_count = 0
     max_steps = args_cli.steps
     env_id = 0
-    nom_frame_idx = policy.n_past_steps - 1  # last observed frame = nominal frame
+    nom_frame_idx = policy.n_past_steps - 1
 
-    # Pre-allocate zero actions (used only to drive the env.step call for rendering)
-    zero_action = torch.zeros(1, policy.actor.action_dim, device=device)
+    # Handles onto the simulator pieces we need for option-2 kinematic replay.
+    robot = env.unwrapped.scene["robot"]
+    sim = env.unwrapped.sim
+    scene = env.unwrapped.scene
+    obs_mgr = env.unwrapped.observation_manager
 
+    # Joint-pos defaults: the model predicts joint_pos_rel (= joint_pos - default_joint_pos),
+    # so we must add default_joint_pos back before writing absolute joint positions to PhysX.
+    default_joint_pos = robot.data.default_joint_pos[env_id].clone()
+    default_joint_vel = robot.data.default_joint_vel[env_id].clone()
+
+    n_envs = env.unwrapped.num_envs
+    pred_buffer: list[dict] = []
+    buf_idx = 0
+    last_obs_joint_pos = None
+    frames_captured = 0
+
+    print(f"[INFO] Starting kinematic replay at {args_cli.data_hz:.1f}Hz (no physics)...", flush=True)
+
+    # ---- Option-2 kinematic replay loop ----
+    # One loop iteration == one predicted frame (at data_hz). env.step() is never called:
+    # state is written directly, kinematics are propagated by sim.forward(), obs are
+    # recomputed by observation_manager.compute(). No physics integration happens, so
+    # there is no drift between writes and no PD-controller fight.
     while step_count < max_steps and simulation_app.is_running():
-        # ---- 1. Extract current robot state from observation ----
+
+        # 1. Pull the current robot state out of the last obs (sliding-window history for the policy)
         dc = obs["diffusion_collect"]
         _idx = env_id if dc["body_pos"].ndim > 1 else slice(None)
-
-        body_pos   = dc["body_pos"][_idx].float().cpu().numpy().reshape(30, 3)
-        body_quat  = dc["body_ori"][_idx].float().cpu().numpy().reshape(30, 4)
+        body_pos     = dc["body_pos"][_idx].float().cpu().numpy().reshape(30, 3)
+        body_quat    = dc["body_ori"][_idx].float().cpu().numpy().reshape(30, 4)
         body_lin_vel = dc["body_lin_vel"][_idx].float().cpu().numpy().reshape(30, 3)
         body_ang_vel = dc["body_ang_vel"][_idx].float().cpu().numpy().reshape(30, 3)
-        joint_pos  = dc["dof_pos"][_idx].float().cpu().numpy()
-        joint_vel  = dc["dof_vel"][_idx].float().cpu().numpy()
+        joint_pos    = dc["dof_pos"][_idx].float().cpu().numpy()
+        joint_vel    = dc["dof_vel"][_idx].float().cpu().numpy()
+        last_obs_joint_pos = joint_pos
 
-        # ---- 2. Build obs_dict with history buffer (same as sim2sim) ----
+        # Push to the agent's past-obs buffer every frame so the n_past_steps window is
+        # always consecutive (matches training). The returned obs_dict is only used when
+        # we actually run inference below.
         obs_dict = policy.prepare_obs_dict(
             body_pos, body_quat, body_lin_vel, body_ang_vel, joint_pos, joint_vel
         )
 
-        # ---- 3. Run model: get state_traj (and action_traj — ignored for bones model) ----
-        past_actions = torch.zeros(
-            1, policy.n_past_steps, policy.actor.action_dim,
-            device=policy.device, dtype=torch.float32,
-        )
-        with torch.no_grad():
-            action_traj, state_traj = policy.actor.act(
-                obs_dict=obs_dict,
-                nom_frame_idx=nom_frame_idx,
-                past_actions=past_actions,
-                use_action_inpainting=False,
+        # 2. Refill prediction buffer when exhausted
+        if buf_idx >= len(pred_buffer):
+            # Anchor to the current (actual) sim root — this matches the nominal frame
+            # in the obs we just collected, so the model's local-frame deltas land in the
+            # right world-frame location.
+            nominal_pos_w  = robot.data.root_pos_w[env_id].clone()
+            nominal_quat_w = robot.data.root_quat_w[env_id].clone()
+
+            past_actions = torch.zeros(
+                1, policy.n_past_steps, policy.actor.action_dim,
+                device=policy.device, dtype=torch.float32,
             )
-        # state_traj: (1, horizon, obs_dim) — normalized
+            with torch.no_grad():
+                _, state_traj = policy.actor.act(
+                    obs_dict=obs_dict,
+                    nom_frame_idx=nom_frame_idx,
+                    past_actions=past_actions,
+                    use_action_inpainting=False,
+                )
 
-        # ---- 4. Decode predicted next state from state_traj ----
-        # The first FUTURE frame is at index n_past_steps.
-        next_frame_idx = policy.n_past_steps
-        if next_frame_idx >= state_traj.shape[1]:
-            next_frame_idx = state_traj.shape[1] - 1
+            pred_buffer = [
+                decode_next_state(
+                    state_traj=state_traj,
+                    next_frame_idx=fi,
+                    current_root_pos_w=nominal_pos_w,
+                    current_root_quat_w=nominal_quat_w,
+                    actor=policy.actor,
+                )
+                for fi in range(policy.n_past_steps, state_traj.shape[1])
+            ]
+            buf_idx = 0
 
-        robot = env.unwrapped.scene["robot"]
-        current_root_pos_w  = robot.data.root_pos_w[env_id].clone()   # (3,)
-        current_root_quat_w = robot.data.root_quat_w[env_id].clone()  # (4,) [w,x,y,z]
+        # 3. Apply one predicted frame
+        decoded = pred_buffer[buf_idx]
+        buf_idx += 1
 
-        decoded = decode_next_state(
-            state_traj=state_traj,
-            next_frame_idx=next_frame_idx,
-            current_root_pos_w=current_root_pos_w,
-            current_root_quat_w=current_root_quat_w,
-            actor=policy.actor,
-        )
-
-        # ---- 5. Write kinematic state to Isaac Lab (bypass physics) ----
-        #
-        # root_state: (n_envs, 13) = [pos(3), quat(4), lin_vel(3), ang_vel(3)]
-        # We set position + orientation + estimated velocity; angular velocity = 0.
-        n_envs = env.unwrapped.num_envs
         root_state = torch.zeros(n_envs, 13, device=device)
-        root_state[:, 0:3] = decoded["root_pos_w"].unsqueeze(0).expand(n_envs, -1)
-        root_state[:, 3:7] = decoded["root_quat_w"].unsqueeze(0).expand(n_envs, -1)
+        root_state[:, 0:3]  = decoded["root_pos_w"].unsqueeze(0).expand(n_envs, -1)
+        root_state[:, 3:7]  = decoded["root_quat_w"].unsqueeze(0).expand(n_envs, -1)
         root_state[:, 7:10] = decoded["root_vel_w"].unsqueeze(0).expand(n_envs, -1)
+        # root_state[:, 10:13] = 0  (angular velocity not decoded from this layout)
         robot.write_root_state_to_sim(root_state)
 
         if decoded["joint_pos"] is not None:
-            # Predicted joint positions available (reduced body_set) — write them
-            jp = decoded["joint_pos"].unsqueeze(0).expand(n_envs, -1)  # (n_envs, 29)
-            jv = decoded["joint_vel"].unsqueeze(0).expand(n_envs, -1)  # (n_envs, 29)
-            robot.write_joint_state_to_sim(jp, jv)
-            # Also pass predicted joint positions as action so the PD controller
-            # holds the joints at the desired angles during the physics substep.
-            action_for_step = jp
-        else:
-            # No joint prediction — hold joints at their current observed positions
-            # so the PD controller keeps them there during the physics substep.
-            current_joint_pos = torch.from_numpy(joint_pos).float().to(device).unsqueeze(0)
-            current_joint_pos = current_joint_pos.expand(n_envs, -1)
-            robot.write_joint_state_to_sim(current_joint_pos,
-                                            torch.zeros_like(current_joint_pos))
-            action_for_step = current_joint_pos
+            # Model predicts joint_pos_rel; write_joint_state_to_sim expects absolute.
+            jp_abs = (decoded["joint_pos"] + default_joint_pos).unsqueeze(0).expand(n_envs, -1)
+            if decoded["joint_vel"] is not None:
+                jv_abs = (decoded["joint_vel"] + default_joint_vel).unsqueeze(0).expand(n_envs, -1)
+            else:
+                jv_abs = torch.zeros_like(jp_abs)
+            robot.write_joint_state_to_sim(jp_abs, jv_abs)
+        elif last_obs_joint_pos is not None:
+            # Model didn't predict joints (e.g. root-only) — hold last observed pose.
+            fallback_rel = torch.from_numpy(last_obs_joint_pos).float().to(device)
+            fallback_abs = (fallback_rel + default_joint_pos).unsqueeze(0).expand(n_envs, -1)
+            robot.write_joint_state_to_sim(fallback_abs, torch.zeros_like(fallback_abs))
 
-        # ---- 6. Step environment (advances sim for rendering + gives next obs) ----
-        # The physics runs one decimation cycle from the kinematic state we just wrote.
-        # We override the state again at the next iteration, so any physics drift is
-        # corrected every step.
-        if action_for_step.shape[0] < n_envs:
-            action_for_step = action_for_step.repeat(n_envs, 1)
-        obs, _, _, _, _ = env.step(action_for_step)
+        # 4. Propagate kinematics, render, refresh buffers, recompute obs — no physics.
+        sim.forward()
+        if video_writer is not None and frames_captured < video_length:
+            frame = env.unwrapped.render()
+            if frame is not None:
+                video_writer.append_data(frame)
+                frames_captured += 1
+                if frames_captured >= video_length:
+                    video_writer.close()
+                    video_writer = None
+                    print(f"[INFO] Video written: {video_path} ({frames_captured} frames)")
+        else:
+            sim.render()
+
+        scene.update(dt=0.0)
+        obs = obs_mgr.compute()
         step_count += 1
 
         if step_count % 100 == 0:
@@ -474,8 +524,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m")
 
     # Summary
+    if video_writer is not None:
+        video_writer.close()
+        print(f"[INFO] Video written: {video_path} ({frames_captured} frames)")
+
     print(f"[INFO] Completed {step_count} kinematic steps")
-    robot = env.unwrapped.scene["robot"]
     pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
     print(f"[INFO] Final pelvis height = {pelvis_z:.3f}m")
     if pelvis_z < 0.3:

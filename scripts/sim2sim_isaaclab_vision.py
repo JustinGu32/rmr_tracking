@@ -4,15 +4,15 @@ Same logic as sim2sim.py: load policy, run control loop with optional guidance,
 but simulation is Isaac Lab as in rmr_tracking/scripts/collect_dataset.py and play.py.
 
 Usage (from rmr_tracking or with PYTHONPATH including rmr_tracking):
-  python scripts/sim2sim_mine_isaaclab.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/diffusion_policy_latest.pt
-  python scripts/sim2sim_mine_isaaclab.py --task=Tracking-Flat-G1-v0 --wandb_path user/project/run_id
+  python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/diffusion_policy_latest.pt
+  python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --wandb_path user/project/run_id
 
 Headless + save video (for servers without display):
   --headless          Disable interactive viewer (required on servers).
   --video             Record simulation to a video file (uses offscreen rendering).
   --video_folder DIR  Where to save the video (default: videos/vision).
   --video_length N    Steps to record (default: 500).
-  Example: python scripts/sim2sim_mine_isaaclab.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/foo.pt --headless --video --video_folder ./out
+  Example: python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/foo.pt --headless --video --video_folder ./out
 """
 
 import argparse
@@ -60,6 +60,9 @@ parser.add_argument("--video", action="store_true", help="Record simulation to a
 parser.add_argument("--video_folder", type=str, default="videos/vision", help="Folder to save video (default: videos/vision)")
 parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record (default: 500)")
 parser.add_argument("--debug_vision", action="store_true", help="Print and save robot vision (RGB/depth) for debugging")
+parser.add_argument("--forward_speed", type=float, default=0.0, help="Forward speed")
+parser.add_argument("--lateral_speed", type=float, default=0.0, help="Lateral speed")
+parser.add_argument("--spin_speed", type=float, default=0.0, help="Spin speed")
 # Adds --headless, --device_id, etc. (use --headless on servers without a display)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -332,6 +335,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
     if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
         env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
+    if hasattr(env_cfg.terminations, "bad_anchor_pos_xy") and hasattr(env_cfg.terminations.bad_anchor_pos_xy, "params"):                                                                                                                                                  
+        env_cfg.terminations.bad_anchor_pos_xy.params["threshold"] = 100.0 
     print(f"[INFO] Relaxed termination thresholds for sim2sim (episode_length_s={env_cfg.episode_length_s:.1f})", flush=True)
     
     render_mode = "rgb_array" if record_video else None
@@ -382,7 +387,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if record_video:
         video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab")))
         video_length = getattr(args_cli, "video_length", 500)
-        video_name = model_name
+        if args_cli.guidance_type:
+            video_name = f"{model_name}_forward{args_cli.forward_speed}_lateral{args_cli.lateral_speed}_spin{args_cli.spin_speed}_scale{args_cli.guidance_scale}"
+        else:
+            video_name = f"{model_name}_noguidance"
         os.makedirs(video_folder, exist_ok=True)
         # Match video FPS to sim control rate (1 step = decimation*dt sec) so playback is smooth.
         # With obstacles, heavier physics can make wall-clock step time variable; explicit fps
@@ -405,7 +413,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
         guidance_config = {
             "dataset_class": "root_only",
-            "target_velocity": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "target_velocity": [args_cli.forward_speed, args_cli.lateral_speed, 0.0, 0.0, 0.0, args_cli.spin_speed],
             # FOR REDUCED:
             # "dataset_class": "G1Dataset",
             # "root_pos_indices": (58, 61),
@@ -455,9 +463,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         rgb_emb = encode_rgb(rgb, siglip_model, siglip_processor, device)
         depth_emb = encode_depth(depth, defm_model, device)
         vision_embeds = np.concatenate([rgb_emb, depth_emb], axis=0).astype(np.float32)
-        assert vision_embeds.shape[0] == VISION_EMBED_DIM, (
-            f"Expected vision_embeds dim {VISION_EMBED_DIM}, got {vision_embeds.shape[0]}"
-        )
+        # assert vision_embeds.shape[0] == VISION_EMBED_DIM, (
+        #     f"Expected vision_embeds dim {VISION_EMBED_DIM}, got {vision_embeds.shape[0]}"
+        # )
 
         # Query policy every env step (each env.step() advances decimation physics steps;
         # we need a fresh action per step, matching play.py and collect_dataset)
@@ -471,7 +479,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
-                vision_embeds=vision_embeds,
+                vision_embeds=rgb_emb, # vision_embeds
                 guidance_fn=guidance_fn,
                 guidance_kwargs=None,
                 guidance_scale=args_cli.guidance_scale,
@@ -480,7 +488,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
-                vision_embeds=vision_embeds,
+                vision_embeds=rgb_emb, # vision_embeds
                 # vision_embeds=None, # for debugging
             )
         if action is None:
