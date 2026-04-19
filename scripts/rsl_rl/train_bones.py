@@ -29,22 +29,11 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
-parser.add_argument(
-    "--clip_start",
-    type=int,
-    default=None,
-    help="Inclusive start clip index for Zarr multi-clip training, applied after object filtering.",
-)
-parser.add_argument(
-    "--clip_end",
-    type=int,
-    default=None,
-    help="Inclusive end clip index for Zarr multi-clip training, applied after object filtering.",
-)
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
 parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
@@ -67,6 +56,25 @@ parser.add_argument(
     action="store_true",
     default=False,
     help="Use the local bones vector-reward PPO path without PopArt statistic updates.",
+)
+parser.add_argument(
+    "--bones_popart_beta",
+    type=float,
+    default=None,
+    help="Override the PopArt EMA update rate (CompositeMotion uses 0.1).",
+)
+parser.add_argument(
+    "--bones_popart_debiased_ema",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Use debiased EMA PopArt statistics like CompositeMotion.",
+)
+parser.add_argument(
+    "--bones_popart_stats_dtype",
+    type=str,
+    default=None,
+    choices=["float32", "float64"],
+    help="Precision for PopArt running statistics.",
 )
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
@@ -92,6 +100,8 @@ if args_cli.double_step:
     os.environ["BONES_DOUBLE_STEP"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
+if args_cli.crane:
+    os.environ["BONES_CRANE"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 # if args_cli.assist_mode is not None:
 #     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
@@ -333,6 +343,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             agent_cfg.bones_popart["enabled"] = True
         if args_cli.bones_no_popart_stats:
             agent_cfg.bones_popart["use_popart"] = False
+        if args_cli.bones_popart_beta is not None:
+            agent_cfg.bones_popart["beta"] = args_cli.bones_popart_beta
+        if args_cli.bones_popart_debiased_ema is not None:
+            agent_cfg.bones_popart["debiased"] = args_cli.bones_popart_debiased_ema
+        if args_cli.bones_popart_stats_dtype is not None:
+            agent_cfg.bones_popart["stats_dtype"] = args_cli.bones_popart_stats_dtype
 
     # Auto-generate run name suffix from CLI flags
     flag_suffix = f"{args_cli.ppo_output}_act-{args_cli.activation}"
@@ -340,8 +356,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         flag_suffix += "_popart-balanced"
     if args_cli.bones_popart_individual:
         flag_suffix += "_popart-individual"
+    if args_cli.bones_popart_debiased_ema:
+        flag_suffix += "_popart-debiased"
+    if args_cli.bones_popart_stats_dtype == "float64":
+        flag_suffix += "_popart-f64"
     if args_cli.double_step:
         flag_suffix += "_dstep"
+    if args_cli.crane:
+        flag_suffix += "_crane"
     if args_cli.curriculum:
         flag_suffix += "_curriculum"
     if agent_cfg.run_name:
@@ -391,10 +413,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
         env_cfg.commands.motion.exclude_objects = not args_cli.include_objects
-        if args_cli.clip_start is not None:
-            env_cfg.commands.motion.clip_start = args_cli.clip_start
-        if args_cli.clip_end is not None:
-            env_cfg.commands.motion.clip_end = args_cli.clip_end
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)

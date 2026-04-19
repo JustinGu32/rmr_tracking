@@ -186,14 +186,17 @@ python scripts/rsl_rl/old_train_bones.py \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-   --run_name crane_a5000_baseline \
+   --run_name crane_titanrtx_popart_balanced_pei_gravity \
    --ppo_output target \
    --push none \
    --crane \
    --video \
-   --video_interval 10000 
-   # --bones_popart_balanced
-   # --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 5000
+   --video_interval 10000 \
+   --bones_popart_balanced \
+   --bones_popart_beta 0.1 \
+   --bones_popart_debiased_ema \
+   --bones_popart_stats_dtype float64 \
+   --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 5000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)
 # python scripts/rsl_rl/train_bones.py \

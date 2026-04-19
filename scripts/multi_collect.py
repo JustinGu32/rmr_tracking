@@ -57,7 +57,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Colle
         env["ENABLE_CAMERAS"] = "1"
 
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/justingu/rmr_tracking",check=True, capture_output=False, text=True, env=env)
+        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True, env=env)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True
@@ -89,18 +89,17 @@ def main():
     # Define your experiment configurations here
     #=========== 25 HZ Teleport Policy Ablation Test ===================================    
     
-    # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'robot-mcrobotface/chair_step/q4yp8tny',
+            wandb_path= 'robot-mcrobotface/staircase/xozov1y9',
             # wandb_path = 'justingu-stanfo`rd-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
-            episode_collect_length_s=5,
+            episode_collect_length_s=3.4,
             num_steps_collect=80,  # 60 -> 1.8 sec, 80 -> 2.4 sec
             num_eps_collect= 2000, #10000, #8000
             min_sample_idx = 0,
-            max_sample_idx = 16000, #16000,
-            save_folder='CHAIR_STEP_DATA_COLLECTED', #_OU
+            max_sample_idx = 230, #300, #16000,
+            save_folder='STAIRCASE_DATA_COLLECTED', #_OU
             delays=[0],  
             # num_obstacles=0,
     ),
@@ -122,7 +121,7 @@ def main():
         print(f"Running Experiment {i+1}/{total_experiments} (delay={config.min_delay})")
         print(f"{'='*50}")
         
-        success = run_experiment(config, task="Chair-Step-G1-Collect-v0", num_envs=750, seed=args.seed) # 750
+        success = run_experiment(config, task="Staircase-G1-Collect-v0", num_envs=750, seed=args.seed) # 750
         if success:
             successful_experiments += 1
         

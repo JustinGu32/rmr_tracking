@@ -197,37 +197,58 @@ class MultiHeadPopArt(nn.Module):
         self,
         num_heads: int,
         beta: float = 5.0e-4,
+        debiased: bool = False,
         epsilon: float = 1.0e-5,
         min_sigma: float = 1.0e-4,
         max_sigma: float | None = None,
+        stats_dtype: str = "float32",
     ):
         super().__init__()
         self.num_heads = num_heads
         self.beta = beta
+        self.debiased = debiased
         self.epsilon = epsilon
         self.min_sigma = min_sigma
         self.max_sigma = max_sigma
+        if stats_dtype not in {"float32", "float64"}:
+            raise ValueError(f"Unsupported PopArt stats dtype: {stats_dtype}")
+        self.stats_dtype = getattr(torch, stats_dtype)
 
-        self.register_buffer("mu", torch.zeros(num_heads))
-        self.register_buffer("nu", torch.ones(num_heads))
-        self.register_buffer("sigma", torch.ones(num_heads))
+        self.register_buffer("mu", torch.zeros(num_heads, dtype=self.stats_dtype))
+        self.register_buffer("nu", torch.ones(num_heads, dtype=self.stats_dtype))
+        self.register_buffer("sigma", torch.ones(num_heads, dtype=self.stats_dtype))
+        if self.debiased:
+            self.register_buffer("raw_mu", torch.zeros(num_heads, dtype=self.stats_dtype))
+            self.register_buffer("raw_nu", torch.full((num_heads,), self.epsilon, dtype=self.stats_dtype))
+            self.register_buffer("debias", torch.zeros(1, dtype=self.stats_dtype))
 
     def normalize(self, values: torch.Tensor) -> torch.Tensor:
-        return (values - self.mu) / self.sigma
+        return ((values.to(self.mu.dtype) - self.mu) / self.sigma).to(values.dtype)
 
     def denormalize(self, values: torch.Tensor) -> torch.Tensor:
-        return values * self.sigma + self.mu
+        return (values.to(self.mu.dtype) * self.sigma + self.mu).to(values.dtype)
 
     @torch.no_grad()
     def update_stats(self, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         old_mu = self.mu.clone()
         old_sigma = self.sigma.clone()
 
+        targets = targets.to(self.mu.dtype)
         batch_mean = targets.mean(dim=0)
         batch_second_moment = targets.square().mean(dim=0)
 
-        self.mu.mul_(1.0 - self.beta).add_(self.beta * batch_mean)
-        self.nu.mul_(1.0 - self.beta).add_(self.beta * batch_second_moment)
+        if self.debiased:
+            self.raw_mu.mul_(1.0 - self.beta).add_(self.beta * batch_mean)
+            self.raw_nu.mul_(1.0 - self.beta).add_(self.beta * batch_second_moment)
+            self.debias.mul_(1.0 - self.beta).add_(self.beta)
+
+            debias = self.debias.clamp(min=self.epsilon)
+            self.mu.copy_(self.raw_mu / debias)
+            self.nu.copy_(self.raw_nu / debias)
+        else:
+            self.mu.mul_(1.0 - self.beta).add_(self.beta * batch_mean)
+            self.nu.mul_(1.0 - self.beta).add_(self.beta * batch_second_moment)
+
         variance = torch.clamp(self.nu - self.mu.square(), min=self.epsilon)
         self.sigma.copy_(variance.sqrt().clamp(min=self.min_sigma))
         if self.max_sigma is not None:
@@ -237,8 +258,10 @@ class MultiHeadPopArt(nn.Module):
 
     @torch.no_grad()
     def preserve_output(self, layer: nn.Linear, old_mu: torch.Tensor, old_sigma: torch.Tensor):
-        new_mu = self.mu
-        new_sigma = self.sigma
+        new_mu = self.mu.to(layer.weight.dtype)
+        new_sigma = self.sigma.to(layer.weight.dtype)
+        old_mu = old_mu.to(layer.weight.dtype)
+        old_sigma = old_sigma.to(layer.weight.dtype)
         scale = (old_sigma / new_sigma).view(-1, 1)
         layer.weight.data.mul_(scale)
         layer.bias.data.copy_((old_sigma * layer.bias.data + old_mu - new_mu) / new_sigma)
@@ -261,9 +284,11 @@ class BonesPopArtActorCritic(nn.Module):
         noise_std_type: str = "scalar",
         value_head_names: list[str] | None = None,
         popart_beta: float = 5.0e-4,
+        popart_debiased: bool = False,
         popart_epsilon: float = 1.0e-5,
         popart_min_sigma: float = 1.0e-4,
         popart_max_sigma: float | None = None,
+        popart_stats_dtype: str = "float32",
         use_popart: bool = True,
         **kwargs,
     ):
@@ -307,9 +332,11 @@ class BonesPopArtActorCritic(nn.Module):
             self.popart = MultiHeadPopArt(
                 self.num_value_heads,
                 beta=popart_beta,
+                debiased=popart_debiased,
                 epsilon=popart_epsilon,
                 min_sigma=popart_min_sigma,
                 max_sigma=popart_max_sigma,
+                stats_dtype=popart_stats_dtype,
             )
         else:
             self.popart = None
@@ -541,6 +568,8 @@ class BonesPopArtPPO(PPO):
         if self.actor_advantage_reduction != "sum":
             raise ValueError(f"Only sum reduction is supported in v1, got: {self.actor_advantage_reduction}")
         self.latest_popart_stats = {}
+        self.latest_advantage_stats = {}
+        self.latest_value_stats = {}
 
     def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
         if training_type != "rl":
@@ -604,6 +633,25 @@ class BonesPopArtPPO(PPO):
             self.latest_popart_stats = {}
 
         self.storage.finalize_advantages(normalize_advantage=not self.normalize_advantage_per_mini_batch)
+        flat_actor_head_advantages = self.storage.actor_head_advantages.flatten(0, 1)
+        head_abs_mean = flat_actor_head_advantages.abs().mean(dim=0)
+        total_abs_mean = head_abs_mean.sum().clamp(min=1.0e-8)
+        self.latest_advantage_stats = {}
+        for idx, name in enumerate(self.reward_head_names):
+            self.latest_advantage_stats[f"adv_mean_{name}"] = flat_actor_head_advantages[:, idx].mean().item()
+            self.latest_advantage_stats[f"adv_std_{name}"] = flat_actor_head_advantages[:, idx].std(unbiased=True).item()
+            self.latest_advantage_stats[f"adv_abs_mean_{name}"] = head_abs_mean[idx].item()
+            self.latest_advantage_stats[f"adv_share_{name}"] = (head_abs_mean[idx] / total_abs_mean).item()
+
+        flat_values = self.storage.values.flatten(0, 1)
+        flat_returns = self.storage.returns.flatten(0, 1)
+        value_residual = flat_returns - flat_values
+        self.latest_value_stats = {
+            "value_target_mean_abs": flat_returns.abs().mean().item(),
+            "value_pred_mean_abs": flat_values.abs().mean().item(),
+            "value_residual_mean_abs": value_residual.abs().mean().item(),
+            "value_residual_max_abs": value_residual.abs().max().item(),
+        }
 
     def update(self):  # noqa: C901
         mean_value_loss = 0.0
@@ -712,6 +760,10 @@ class BonesPopArtPPO(PPO):
             loss_dict[f"value_function_{name}"] = per_head_value_loss[idx].item()
         for key, value in self.latest_popart_stats.items():
             loss_dict[f"popart_{key}"] = value
+        for key, value in self.latest_advantage_stats.items():
+            loss_dict[f"advantage_{key}"] = value
+        for key, value in self.latest_value_stats.items():
+            loss_dict[f"critic_{key}"] = value
         return loss_dict
 
 
@@ -750,9 +802,11 @@ class BonesOnPolicyRunner(OnPolicyRunner):
         policy_cfg["value_head_names"] = reward_heads
         policy_cfg["use_popart"] = bones_cfg.get("use_popart", True)
         policy_cfg["popart_beta"] = bones_cfg.get("beta", 5.0e-4)
+        policy_cfg["popart_debiased"] = bones_cfg.get("debiased", False)
         policy_cfg["popart_epsilon"] = bones_cfg.get("epsilon", 1.0e-5)
         policy_cfg["popart_min_sigma"] = bones_cfg.get("min_sigma", 1.0e-4)
         policy_cfg["popart_max_sigma"] = bones_cfg.get("max_sigma")
+        policy_cfg["popart_stats_dtype"] = bones_cfg.get("stats_dtype", "float32")
 
         actor_critic = BonesPopArtActorCritic(
             obs,
@@ -905,6 +959,31 @@ class BonesOnPolicyRunner(OnPolicyRunner):
             for idx, head_name in enumerate(reward_head_names):
                 self.writer.add_scalar(f"PopArt/mu/{head_name}", popart.mu[idx].item(), locs["it"])
                 self.writer.add_scalar(f"PopArt/sigma/{head_name}", popart.sigma[idx].item(), locs["it"])
+
+        loss_dict = locs.get("loss_dict", {})
+        for idx, head_name in enumerate(reward_head_names):
+            adv_mean = loss_dict.get(f"advantage_adv_mean_{head_name}")
+            adv_std = loss_dict.get(f"advantage_adv_std_{head_name}")
+            adv_share = loss_dict.get(f"advantage_adv_share_{head_name}")
+            value_loss = loss_dict.get(f"value_function_{head_name}")
+            if adv_mean is not None:
+                self.writer.add_scalar(f"Advantage/mean/{head_name}", adv_mean, locs["it"])
+            if adv_std is not None:
+                self.writer.add_scalar(f"Advantage/std/{head_name}", adv_std, locs["it"])
+            if adv_share is not None:
+                self.writer.add_scalar(f"Advantage/share/{head_name}", adv_share, locs["it"])
+            if value_loss is not None:
+                self.writer.add_scalar(f"Loss/value_per_head/{head_name}", value_loss, locs["it"])
+
+        critic_value_loss = loss_dict.get("value_function")
+        if critic_value_loss is not None:
+            self.writer.add_scalar("Loss/value", critic_value_loss, locs["it"])
+        critic_residual = loss_dict.get("critic_value_residual_mean_abs")
+        if critic_residual is not None:
+            self.writer.add_scalar("Critic/value_residual_mean_abs", critic_residual, locs["it"])
+        critic_residual_max = loss_dict.get("critic_value_residual_max_abs")
+        if critic_residual_max is not None:
+            self.writer.add_scalar("Critic/value_residual_max_abs", critic_residual_max, locs["it"])
 
     def save(self, path: str, infos=None):
         super().save(path, infos)

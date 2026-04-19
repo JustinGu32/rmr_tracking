@@ -1,7 +1,14 @@
 import gymnasium as gym
 
 from . import agents
-from .staircase_env_cfg import G1StaircaseEnvCfg, G1StaircaseComplianceCfg, G1StaircaseCompliancePlayCfg, G1StaircasePlayCfg, G1StaircasePlayEnvCfg
+from .staircase_env_cfg import (
+    G1StaircaseCollectEnvCfg,
+    G1StaircaseComplianceCfg,
+    G1StaircaseCompliancePlayCfg,
+    G1StaircaseEnvCfg,
+    G1StaircasePlayCfg,
+    G1StaircasePlayEnvCfg,
+)
 from ...staircase_env import StaircaseEnv
 
 ##
@@ -14,6 +21,16 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": G1StaircaseEnvCfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1StaircasePPORunnerCfg",
+    },
+)
+
+gym.register(
+    id="Staircase-G1-Collect-v0",
+    entry_point="whole_body_tracking.tasks.staircase.staircase_env:StaircaseEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": G1StaircaseCollectEnvCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:G1StaircasePPORunnerCfg",
     },
 )

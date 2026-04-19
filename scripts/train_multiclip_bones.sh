@@ -32,8 +32,6 @@ python scripts/rsl_rl/train_bones.py \
     --ppo_output target \
     --activation elu \
     --double_step \
-    --clip_start 68 \
-    --clip_end 89 \
     --video \
     --video_interval 10000 \
     --sampling uniform
@@ -132,7 +130,5 @@ python scripts/rsl_rl/train_bones.py \
 #     --ppo_output target \
 #     --activation elu \
 #     --double_step \
-#     --clip_start 68 \
-#     --clip_end 89 \
 #     --video \
 #     --video_interval 10000

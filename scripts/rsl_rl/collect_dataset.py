@@ -326,12 +326,19 @@ def main():
     
     # Use AutoImageProcessor to avoid tokenizer issues
     processor = AutoImageProcessor.from_pretrained(model_id)
-    # Use SiglipModel (explicit) with Flash Attention 2 and Float16
-    siglip_model = SiglipModel.from_pretrained(
-        model_id,
-        attn_implementation="flash_attention_2",
-        torch_dtype=torch.float16,
-    )
+    # Try Flash Attention 2 first, then fall back if the package is unavailable.
+    try:
+        siglip_model = SiglipModel.from_pretrained(
+            model_id,
+            attn_implementation="flash_attention_2",
+            dtype=torch.float16,
+        )
+    except (ImportError, ValueError):
+        print("[WARN] flash_attention_2 not available, using default attention")
+        siglip_model = SiglipModel.from_pretrained(
+            model_id,
+            dtype=torch.float16,
+        )
     siglip_model.to(device=args_cli.device).eval()
     
     # Siglip2 Embeddings Storage

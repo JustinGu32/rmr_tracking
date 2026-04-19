@@ -58,6 +58,25 @@ parser.add_argument(
     default=False,
     help="Use the local bones vector-reward PPO path without PopArt statistic updates.",
 )
+parser.add_argument(
+    "--bones_popart_beta",
+    type=float,
+    default=None,
+    help="Override the PopArt EMA update rate (CompositeMotion uses 0.1).",
+)
+parser.add_argument(
+    "--bones_popart_debiased_ema",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Use debiased EMA PopArt statistics like CompositeMotion.",
+)
+parser.add_argument(
+    "--bones_popart_stats_dtype",
+    type=str,
+    default=None,
+    choices=["float32", "float64"],
+    help="Precision for PopArt running statistics.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -316,6 +335,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             agent_cfg.bones_popart["enabled"] = True
         if args_cli.bones_no_popart_stats:
             agent_cfg.bones_popart["use_popart"] = False
+        if args_cli.bones_popart_beta is not None:
+            agent_cfg.bones_popart["beta"] = args_cli.bones_popart_beta
+        if args_cli.bones_popart_debiased_ema is not None:
+            agent_cfg.bones_popart["debiased"] = args_cli.bones_popart_debiased_ema
+        if args_cli.bones_popart_stats_dtype is not None:
+            agent_cfg.bones_popart["stats_dtype"] = args_cli.bones_popart_stats_dtype
 
     # Auto-generate run name suffix from CLI flags
     flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}_act-{args_cli.activation}"
@@ -323,6 +348,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         flag_suffix += "_popart-balanced"
     if args_cli.bones_popart_individual:
         flag_suffix += "_popart-individual"
+    if args_cli.bones_popart_debiased_ema:
+        flag_suffix += "_popart-debiased"
+    if args_cli.bones_popart_stats_dtype == "float64":
+        flag_suffix += "_popart-f64"
     if args_cli.no_command_obs:
         flag_suffix += "_no-cmd-obs"
     if args_cli.double_step:

@@ -36,9 +36,11 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         "reward_heads": ["upper", "lower", "global"],
         "actor_advantage_reduction": "sum",
         "beta": 5.0e-4,
+        "debiased": False,
         "epsilon": 1.0e-5,
         "min_sigma": 1.0e-4,
         "max_sigma": None,
+        "stats_dtype": "float32",
         "log_diagnostics": True,
     }
 
