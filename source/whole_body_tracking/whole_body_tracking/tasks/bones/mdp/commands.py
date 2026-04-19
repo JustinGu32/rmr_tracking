@@ -297,7 +297,6 @@ class MotionCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -735,7 +734,6 @@ class MultiMotionCommand(CommandTerm):
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
 
         root_pos = self.body_pos_w[:, 0].clone()
         root_ori = self.body_quat_w[:, 0].clone()
@@ -1100,8 +1098,13 @@ class ZarrMotionLoader:
     training time by ZarrMultiMotionCommand.
     """
 
-    def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
-                 exclude_props: list[str] | None = None):
+    def __init__(
+        self,
+        zarr_path: str,
+        body_indexes: Sequence[int],
+        device: str = "cpu",
+        exclude_props: list[str] | None = None,
+    ):
         import zarr as _zarr
 
         assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
@@ -1198,8 +1201,12 @@ class ZarrMultiMotionCommand(MultiMotionCommand):
 
         # Load from Zarr instead of NPZ files
         exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
-        self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
-                                       exclude_props=exclude_props)
+        self.motion = ZarrMotionLoader(
+            self.cfg.zarr_path,
+            self.body_indexes,
+            device=self.device,
+            exclude_props=exclude_props,
+        )
 
         self.min_sample_idx = cfg.min_sample_idx
         self.max_sample_idx = cfg.max_sample_idx
@@ -1353,7 +1360,6 @@ class ZarrMultiMotionCommand(MultiMotionCommand):
             return
 
         env_ids_t = torch.as_tensor(env_ids, device=self.device)
-        self._adaptive_sampling(env_ids)
 
         # Assign new random clips
         self._assign_random_clips(env_ids_t)
@@ -1512,6 +1518,7 @@ class CHIPMultiClipMotionCommand(MultiClipMotionCommand):
     @property
     def joint_vel_lower_body(self) -> torch.Tensor:
         return self.joint_vel[:, self.lower_joint_isaaclab_indices]
+
 
 
 @configclass

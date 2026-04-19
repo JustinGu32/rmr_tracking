@@ -8,7 +8,9 @@
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import inspect
 import os
+import re
 import sys
 
 from isaaclab.app import AppLauncher
@@ -28,19 +30,57 @@ parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy 
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
+parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
+parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
+parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
+parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
+parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
+parser.add_argument("--num_steps_per_env", type=int, default=None, help="Override num rollout steps per env per iteration.")
+parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
-parser.add_argument("--push", type=str, default="normal", choices=["normal", "none", "soft"],
-                    help="Push perturbation: 'normal' (default), 'soft' (reduced range), 'none' (disabled).")
-parser.add_argument("--no_command_obs", action="store_true", default=False, help="Remove generated_commands observation from policy.")
-parser.add_argument("--crane", action="store_true", default=False, help="Add foot contact state penalty and tight foot tracking for single-leg stance motions.")
-parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--bones_popart", action="store_true", default=False, help="Enable local bones multi-head PopArt PPO.")
+parser.add_argument(
+    "--bones_popart_balanced",
+    action="store_true",
+    default=False,
+    help="Enable the grouped bones PopArt reward heads that emphasize original reward terms.",
+)
+parser.add_argument("--bones_popart_individual", action="store_true", default=False, help="Enable local bones multi-head PopArt PPO with individual limbs.")
+parser.add_argument(
+    "--bones_no_popart_stats",
+    action="store_true",
+    default=False,
+    help="Use the local bones vector-reward PPO path without PopArt statistic updates.",
+)
+parser.add_argument(
+    "--bones_popart_beta",
+    type=float,
+    default=None,
+    help="Override the PopArt EMA update rate (CompositeMotion uses 0.1).",
+)
+parser.add_argument(
+    "--bones_popart_debiased_ema",
+    action=argparse.BooleanOptionalAction,
+    default=None,
+    help="Use debiased EMA PopArt statistics like CompositeMotion.",
+)
+parser.add_argument(
+    "--bones_popart_stats_dtype",
+    type=str,
+    default=None,
+    choices=["float32", "float64"],
+    help="Precision for PopArt running statistics.",
+)
+# parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -53,18 +93,23 @@ if args_cli.video:
     args_cli.enable_cameras = True
 
 # Export CLI flags as env vars so __post_init__ in env configs can read them
+if args_cli.curriculum:
+    os.environ["WBT_CURRICULUM"] = "1"
 if args_cli.double_step:
+    os.environ["WBT_DOUBLE_STEP"] = "1"
     os.environ["BONES_DOUBLE_STEP"] = "1"
-os.environ["BONES_PPO_OUTPUT"] = args_cli.ppo_output
-os.environ["BONES_PUSH"] = args_cli.push
-if args_cli.no_command_obs:
-    os.environ["BONES_NO_COMMAND_OBS"] = "1"
+if args_cli.motion_joint_pos:
+    os.environ["WBT_MOTION_JOINT_POS"] = "1"
 if args_cli.crane:
     os.environ["BONES_CRANE"] = "1"
+os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
+# if args_cli.assist_mode is not None:
+#     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
 if args_cli.gravity_curriculum:
     os.environ["BONES_GRAVITY_CURRICULUM"] = "1"
     os.environ["BONES_START_GRAVITY"] = str(args_cli.start_gravity)
     os.environ["BONES_GRAVITY_RAMP_STEPS"] = str(args_cli.gravity_ramp_steps)
+os.environ["BONES_SAMPLING"] = args_cli.sampling
 
 # Auto-detect distributed training (torchrun sets LOCAL_RANK)
 if "LOCAL_RANK" in os.environ:
@@ -101,6 +146,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 import pickle
 import yaml
+from pathlib import Path
 
 
 from collections.abc import Iterable, Mapping
@@ -244,6 +290,39 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
 
+try:
+    from whole_body_tracking.utils.bones_popart import (
+        BALANCED_REWARD_HEADS,
+        BonesOnPolicyRunner,
+        BonesRewardVectorWrapper,
+        DEFAULT_REWARD_HEADS,
+        INDIVIDUAL_REWARD_HEADS,
+        should_use_bones_popart_runner,
+    )
+except ModuleNotFoundError:
+    import importlib.util
+
+    _bones_popart_path = (
+        Path(__file__).resolve().parents[2]
+        / 'source'
+        / 'whole_body_tracking'
+        / 'whole_body_tracking'
+        / 'utils'
+        / 'bones_popart.py'
+    )
+    _bones_popart_spec = importlib.util.spec_from_file_location('bones_popart_local', _bones_popart_path)
+    if _bones_popart_spec is None or _bones_popart_spec.loader is None:
+        raise
+    _bones_popart = importlib.util.module_from_spec(_bones_popart_spec)
+    _bones_popart_spec.loader.exec_module(_bones_popart)
+
+    BALANCED_REWARD_HEADS = _bones_popart.BALANCED_REWARD_HEADS
+    BonesOnPolicyRunner = _bones_popart.BonesOnPolicyRunner
+    BonesRewardVectorWrapper = _bones_popart.BonesRewardVectorWrapper
+    DEFAULT_REWARD_HEADS = _bones_popart.DEFAULT_REWARD_HEADS
+    INDIVIDUAL_REWARD_HEADS = _bones_popart.INDIVIDUAL_REWARD_HEADS
+    should_use_bones_popart_runner = _bones_popart.should_use_bones_popart_runner
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
@@ -255,27 +334,47 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-
-    # Override activation function
     agent_cfg.policy.activation = args_cli.activation
+    if args_cli.bones_popart_balanced and args_cli.bones_popart_individual:
+        raise ValueError("--bones_popart_balanced and --bones_popart_individual are mutually exclusive.")
+    if hasattr(agent_cfg, "bones_popart"):
+        agent_cfg.bones_popart = dict(agent_cfg.bones_popart)
+        if args_cli.bones_popart or args_cli.bones_popart_balanced or args_cli.bones_popart_individual or args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["enabled"] = True
+        if args_cli.bones_no_popart_stats:
+            agent_cfg.bones_popart["use_popart"] = False
+        if args_cli.bones_popart_beta is not None:
+            agent_cfg.bones_popart["beta"] = args_cli.bones_popart_beta
+        if args_cli.bones_popart_debiased_ema is not None:
+            agent_cfg.bones_popart["debiased"] = args_cli.bones_popart_debiased_ema
+        if args_cli.bones_popart_stats_dtype is not None:
+            agent_cfg.bones_popart["stats_dtype"] = args_cli.bones_popart_stats_dtype
 
     # Auto-generate run name suffix from CLI flags
-    flag_suffix = f"{args_cli.ppo_output}_push-{args_cli.push}_act-{args_cli.activation}"
-    if args_cli.no_command_obs:
-        flag_suffix += "_no-cmd-obs"
+    flag_suffix = f"{args_cli.ppo_output}_act-{args_cli.activation}"
+    if args_cli.bones_popart_balanced:
+        flag_suffix += "_popart-balanced"
+    if args_cli.bones_popart_individual:
+        flag_suffix += "_popart-individual"
+    if args_cli.bones_popart_debiased_ema:
+        flag_suffix += "_popart-debiased"
+    if args_cli.bones_popart_stats_dtype == "float64":
+        flag_suffix += "_popart-f64"
     if args_cli.double_step:
         flag_suffix += "_dstep"
     if args_cli.crane:
         flag_suffix += "_crane"
-    if args_cli.gravity_curriculum:
-        flag_suffix += f"_gravcurr{args_cli.start_gravity}"
+    if args_cli.curriculum:
+        flag_suffix += "_curriculum"
     if agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
     else:
         agent_cfg.run_name = flag_suffix
+    # Append sampling suffix to run name
+    if args_cli.sampling == "uniform" and agent_cfg.run_name:
+        agent_cfg.run_name = f"{agent_cfg.run_name}_uniform"
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
-    if args_cli.decimation is not None:
-        env_cfg.decimation = args_cli.decimation
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
     )
@@ -291,6 +390,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.device = correct_device
     else:
         env_cfg.sim.device = args_cli.device if args_cli.device is not None else env_cfg.sim.device
+
+    # Override decimation if provided
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+
+    # Override num_steps_per_env if provided
+    if args_cli.num_steps_per_env is not None:
+        agent_cfg.num_steps_per_env = args_cli.num_steps_per_env
+
+    # Configure future reference motion observations
+    if args_cli.future_steps is not None:
+        steps = [int(s.strip()) for s in args_cli.future_steps.split(",")]
+        if hasattr(env_cfg.commands.motion, 'future_steps'):
+            env_cfg.commands.motion.future_steps = steps
+            print(f"[INFO] Future ref steps: {steps}")
 
     # load the motion file from zarr path or wandb registry
     import pathlib
@@ -309,11 +423,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         import wandb
         api = wandb.Api()
         artifact = api.artifact(registry_name)
-        motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
-        if hasattr(env_cfg.commands.motion, 'motion_files'):
-            env_cfg.commands.motion.motion_files = [motion_path]
-        else:
-            env_cfg.commands.motion.motion_file = motion_path
+        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
     else:
         raise ValueError("Either --zarr_path or --registry_name must be provided.")
 
@@ -326,6 +436,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if agent_cfg.run_name:
         log_dir += f"_{agent_cfg.run_name}"
     log_dir = os.path.join(log_root_path, log_dir)
+
+    # Disable contradictory reward terms depending on the populated head setting
+    if hasattr(env_cfg, "rewards") and hasattr(agent_cfg, "bones_popart"):
+        if getattr(args_cli, "bones_popart_balanced", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"):
+                env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"):
+                env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(BALANCED_REWARD_HEADS)
+        elif getattr(args_cli, "bones_popart_individual", False):
+            if hasattr(env_cfg.rewards, "vr_position_upper"): env_cfg.rewards.vr_position_upper.weight = 0.0
+            if hasattr(env_cfg.rewards, "vr_position_lower"): env_cfg.rewards.vr_position_lower.weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(INDIVIDUAL_REWARD_HEADS)
+        else:
+            for limb in ["left_arm", "right_arm", "torso", "left_leg", "right_leg", "pelvis"]:
+                term_name = f"vr_position_{limb}"
+                if hasattr(env_cfg.rewards, term_name):
+                    getattr(env_cfg.rewards, term_name).weight = 0.0
+            agent_cfg.bones_popart["reward_heads"] = list(DEFAULT_REWARD_HEADS)
 
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
@@ -345,11 +474,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    use_bones_popart = should_use_bones_popart_runner(agent_cfg)
+    if use_bones_popart:
+        env = BonesRewardVectorWrapper(env, reward_heads=agent_cfg.bones_popart.get("reward_heads"))
+
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
+    # ── Wandb resume: download checkpoint from a previous run ──
+    _wandb_resume_path = None
+    if args_cli.wandb_resume is not None:
+        import wandb as _wandb
+        api = _wandb.Api()
+        run_path = args_cli.wandb_resume
+        wandb_run = api.run(run_path)
+        model_files = [f for f in wandb_run.files() if "model" in f.name and f.name.endswith(".pt")]
+        if not model_files:
+            raise RuntimeError(f"No model checkpoints found in wandb run: {run_path}")
+        latest_file = max(model_files, key=lambda x: int(x.name.split("_")[1].split(".")[0]))
+        dl_dir = os.path.join("logs", "rsl_rl", "wandb_resume")
+        latest_file.download(dl_dir, replace=True)
+        _wandb_resume_path = os.path.join(dl_dir, latest_file.name)
+        print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
+
     # create runner from rsl-rl
-    runner = OnPolicyRunner(
+    runner_cls = BonesOnPolicyRunner if use_bones_popart else OnPolicyRunner
+    runner = runner_cls(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )
     # write git state to logs
@@ -362,15 +512,39 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # load previously trained model
         runner.load(resume_path)
 
-    # log observation dimensions to wandb config
-    import wandb
-    if wandb.run is not None:
-        obs_mgr = env.unwrapped.observation_manager
-        for group_name in obs_mgr.active_terms:
-            term_names = obs_mgr.active_terms[group_name]
-            term_dims = obs_mgr.group_obs_term_dim[group_name]
-            for name, dim in zip(term_names, term_dims):
-                wandb.config[f"obs_dim/{group_name}/{name}"] = dim
+    # Load wandb checkpoint into runner (after runner is created)
+    if _wandb_resume_path is not None:
+        print(f"[INFO]: Loading wandb checkpoint: {_wandb_resume_path}")
+        runner.load(_wandb_resume_path)
+
+    # Insert LayerNorm into actor/critic MLPs if requested
+    if args_cli.layer_norm:
+        import torch.nn as _nn
+        def _insert_layer_norm(mlp: _nn.Sequential):
+            """Insert LayerNorm after each activation in an MLP Sequential."""
+            new_layers = []
+            for layer in mlp:
+                new_layers.append(layer)
+                if isinstance(layer, (_nn.SiLU, _nn.ELU, _nn.ReLU, _nn.LeakyReLU, _nn.GELU, _nn.Mish)):
+                    # Get the output dim from the preceding Linear layer
+                    for prev in reversed(new_layers[:-1]):
+                        if isinstance(prev, _nn.Linear):
+                            new_layers.append(_nn.LayerNorm(prev.out_features))
+                            break
+            # Rebuild the Sequential
+            mlp._modules.clear()
+            for idx, layer in enumerate(new_layers):
+                mlp.add_module(str(idx), layer)
+
+        policy = runner.alg.get_policy() if hasattr(runner.alg, 'get_policy') else runner.alg.policy
+        if hasattr(policy, 'mlp'):
+            _insert_layer_norm(policy.mlp)
+            print(f"[INFO] LayerNorm inserted into actor MLP: {policy.mlp}")
+        # Also apply to critic if it has a separate mlp
+        critic = getattr(runner.alg, 'critic', None) or getattr(runner.alg, 'value_function', None)
+        if critic is not None and hasattr(critic, 'mlp'):
+            _insert_layer_norm(critic.mlp)
+            print(f"[INFO] LayerNorm inserted into critic MLP")
 
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
@@ -381,7 +555,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
-    wandb.finish()
+    try:
+        wandb.finish()
+    except (NameError, Exception):
+        pass
 
     # close the simulator
     env.close()

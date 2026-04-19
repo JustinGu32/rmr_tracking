@@ -130,12 +130,16 @@ def apply_spring_force(
     cur_vel_w = asset.data.body_lin_vel_w[:, anchor_idx, :]   # (num_envs, 3)
     cur_quat_w = asset.data.body_quat_w[:, anchor_idx, :]    # (num_envs, 4)
 
+    tensor_dtype = cur_pos_w.dtype
+    if torch.is_tensor(curriculum_factor):
+        curriculum_factor = curriculum_factor.to(device=env.device, dtype=tensor_dtype)
+
     # Position and velocity errors
     pos_error = ref_pos_w - cur_pos_w   # (num_envs, 3)
     vel_error = ref_vel_w - cur_vel_w   # (num_envs, 3)
 
     # Per-axis weighted spring force
-    weights = torch.tensor(axis_weights, device=env.device)  # (3,)
+    weights = torch.as_tensor(axis_weights, device=env.device, dtype=tensor_dtype)  # (3,)
     spring_force = weights * stiffness * pos_error + damping * vel_error  # (num_envs, 3)
 
     # Unilateral Z-axis: only push up, never pull down
@@ -169,7 +173,7 @@ def apply_spring_force(
     grav_force_scaled = torch.zeros_like(forces)
     if gravity_comp > 0.0:
         if gravity_comp_mode == "pelvis":
-            total_mass = asset.root_physx_view.get_masses().sum(dim=1)  # (num_envs,)
+            total_mass = asset.root_physx_view.get_masses().to(device=env.device, dtype=tensor_dtype).sum(dim=1)  # (num_envs,)
             added_grav = total_mass * 9.81 * gravity_comp * curriculum_factor
             added_grav = added_grav.to(env.device)
             forces[:, anchor_idx, 2] += added_grav

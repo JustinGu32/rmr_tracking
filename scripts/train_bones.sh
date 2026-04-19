@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --partition=move  --account=move
-#SBATCH --time=18:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:a5000:1
+#SBATCH --gres=gpu:titanrtx:1
 #SBATCH --job-name=bones_crane
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
@@ -180,19 +180,23 @@ conda activate env_isaaclab
 
 # --- curriculum ablations (13-16) ---
 # # 13. delta + push-none + curriculum
-python scripts/rsl_rl/train_bones.py \
+python scripts/rsl_rl/old_train_bones.py \
    --task=Bones-Flat-chip-G1-v0 \
    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
    --headless \
    --logger wandb \
    --log_project_name bones_crane_ablation \
-   --run_name crane_a5000_both_all \
+   --run_name crane_titanrtx_popart_balanced_pei_gravity \
    --ppo_output target \
    --push none \
    --crane \
-   --curriculum \
-   --assist_mode both_all \
-   --video --video_interval 10000
+   --video \
+   --video_interval 10000 \
+   --bones_popart_balanced \
+   --bones_popart_beta 0.1 \
+   --bones_popart_debiased_ema \
+   --bones_popart_stats_dtype float64 \
+   --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 5000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)
 # python scripts/rsl_rl/train_bones.py \

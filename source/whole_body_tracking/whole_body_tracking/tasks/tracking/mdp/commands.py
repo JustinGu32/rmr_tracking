@@ -723,6 +723,9 @@ class MultiClipMotionCommand(MotionCommand):
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["force_applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
+        # Sampling mode: "adaptive" (default) or "uniform", set via BONES_SAMPLING env var in train script
+        self._use_adaptive = os.environ.get("BONES_SAMPLING", "adaptive") == "adaptive"
+
         # Initial clip assignment (also initializes the per-step frame cache)
         self._assign_random_clips(torch.arange(self.num_envs, device=self.device))
 
@@ -863,17 +866,17 @@ class MultiClipMotionCommand(MotionCommand):
         return result
 
     def _assign_random_clips(self, env_ids: torch.Tensor):
-        """Assign random clips and random start frames to the given envs."""
+        """Assign clips and start frames to the given envs by uniform sampling
+        over the global timeline. Clips are effectively weighted by length, so
+        each frame across the full dataset is equally likely to be picked."""
         n = len(env_ids)
-        clip_ids = torch.randint(0, self.motion.num_clips, (n,), device=self.device)
+        global_idx = torch.randint(0, self.total_frames, (n,), device=self.device)
+        clip_ids = torch.searchsorted(self.motion.clip_end_idx, global_idx, right=True)
+        clip_ids = torch.clamp(clip_ids, max=self.motion.num_clips - 1)
         self.clip_ids[env_ids] = clip_ids
         self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
         self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
-
-        # Random start within each clip
-        clip_lens = self.clip_end[env_ids] - self.clip_start[env_ids]
-        offsets = (torch.rand(n, device=self.device) * (clip_lens - 1).float()).long()
-        self.time_steps[env_ids] = self.clip_start[env_ids] + offsets
+        self.time_steps[env_ids] = global_idx
 
         # Refresh cache for newly assigned envs
         self._cache_current_frames()
@@ -893,8 +896,11 @@ class MultiClipMotionCommand(MotionCommand):
             )
             self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count).float()
 
-        # Adaptive sampling over global timeline
-        self._adaptive_sampling(env_ids_t)
+        # Sampling over global timeline (adaptive vs uniform random clip assignment)
+        if self._use_adaptive:
+            self._adaptive_sampling(env_ids_t)
+        else:
+            self._assign_random_clips(env_ids_t)
 
         # Reset robot state (same as parent)
         root_pos = self.body_pos_w[:, 0].clone()

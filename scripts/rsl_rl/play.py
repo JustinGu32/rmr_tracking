@@ -27,7 +27,10 @@ parser.add_argument("--motion_file", type=str, default=None, help="Path to the m
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
-parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+# parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+parser.add_argument("--print_motion_index", action="store_true", default=False, help="Print the current motion sample index during playback.")
+parser.add_argument("--motion_index_env", type=int, default=0, help="Environment index to inspect when printing the current motion sample index.")
+parser.add_argument("--motion_index_every", type=int, default=1, help="Print the motion sample index every N policy steps.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -154,6 +157,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
+    raw_env = env.unwrapped
 
     # load previously trained model
     ppo_runner = MotionOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
@@ -176,6 +180,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # reset environment
     obs, _ = env.reset()
     timestep = 0
+    if args_cli.print_motion_index:
+        if not hasattr(raw_env, "command_manager"):
+            print("[WARN] This task does not expose a command_manager; cannot print motion indices.")
+        elif args_cli.motion_index_env < 0 or args_cli.motion_index_env >= raw_env.num_envs:
+            raise ValueError(
+                f"--motion_index_env={args_cli.motion_index_env} is out of range for num_envs={raw_env.num_envs}"
+            )
+        else:
+            motion_cmd = raw_env.command_manager.get_term("motion")
+            print(
+                f"[INFO] Printing motion index for env {args_cli.motion_index_env} every "
+                f"{args_cli.motion_index_every} policy step(s)."
+            )
+            print(
+                f"[INFO] motion sample range: min_sample_idx={getattr(motion_cmd, 'min_sample_idx', 'n/a')}, "
+                f"max_sample_idx={getattr(motion_cmd, 'max_sample_idx', 'n/a')}"
+            )
     # simulate environment
     while simulation_app.is_running():
         # run everything in inference mode
@@ -183,12 +204,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             # agent stepping
             actions = policy(obs)
             # env stepping
-            obs, _, _, _ = env.step(actions)
+            obs, _, dones, _ = env.step(actions)
+        if args_cli.print_motion_index and hasattr(raw_env, "command_manager"):
+            if timestep % max(args_cli.motion_index_every, 1) == 0:
+                motion_cmd = raw_env.command_manager.get_term("motion")
+                env_id = args_cli.motion_index_env
+                current_idx = int(motion_cmd.time_steps[env_id].item())
+                msg = f"[motion-index] step={timestep} env={env_id} sample_idx={current_idx}"
+                if hasattr(raw_env, "scene"):
+                    try:
+                        root_pos = raw_env.scene["robot"].data.root_pos_w[env_id]
+                        msg += f" root=({root_pos[0].item():.3f}, {root_pos[1].item():.3f}, {root_pos[2].item():.3f})"
+                    except KeyError:
+                        pass
+                print(msg)
+            if bool(dones[args_cli.motion_index_env].item()):
+                motion_cmd = raw_env.command_manager.get_term("motion")
+                env_id = args_cli.motion_index_env
+                done_idx = int(motion_cmd.time_steps[env_id].item())
+                print(f"[motion-index] env={env_id} done at policy step={timestep}, current sample_idx={done_idx}")
         if args_cli.video:
             timestep += 1
             # Exit the play loop after recording one video
             if timestep == args_cli.video_length:
                 break
+        else:
+            timestep += 1
 
     # close the simulator
     env.close()
