@@ -15,7 +15,7 @@ example:
       --include_motion_types walk,jog \
       --wandb_path=robot-mcrobotface/multiclip_bones/c15qko8c \
       --activation swish \
-      --num_envs 1 --num_steps_collect 60 --num_eps_collect 500 \
+      --num_envs 750 --num_steps_collect 60 --num_eps_collect 500 \
       --episode_collect_length 4 --headless
 """
 
@@ -85,6 +85,8 @@ parser.add_argument("--include_motion_types", type=str, default=None,
                     help="Comma-separated keywords restricting clips by clip_name (case-insensitive OR).")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Actor/critic activation (must match training).")
+parser.add_argument("--decimation", type=int, default=None,
+                    help="Override env decimation (physics steps per policy step).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -207,8 +209,10 @@ def main():
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
-    # Set parameters from cli 
-    env_cfg.episode_length_s = float(args_cli.episode_collect_length) if args_cli.episode_collect_length is not None else float(env_cfg.episode_length_s) 
+    # Set parameters from cli
+    env_cfg.episode_length_s = float(args_cli.episode_collect_length) if args_cli.episode_collect_length is not None else float(env_cfg.episode_length_s)
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
     # import ipdb; ipdb.set_trace()
 
     for actuator_name in ['legs', 'feet', 'waist', 'waist_yaw', 'arms']:

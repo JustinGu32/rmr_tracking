@@ -292,6 +292,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     _tracking_cmds.ZarrMotionLoader = _SingleClipLoader
 
+    # Apply decimation override before computing fps so episode_length_s is sized correctly
+    if args_cli.decimation is not None:
+        env_cfg.decimation = args_cli.decimation
+
     # Set episode length long enough for the full clip (with margin)
     fps = 50.0  # default; overridden below if available
     if hasattr(env_cfg, 'decimation') and hasattr(env_cfg, 'sim') and hasattr(env_cfg.sim, 'dt'):
@@ -313,10 +317,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if func_name == "bad_anchor_pos_x_y_only":
                 print(f"[CLIP] Disabling xy termination: {term_name}")
                 setattr(env_cfg.terminations, term_name, None)
-
-    # Override decimation if provided
-    if args_cli.decimation is not None:
-        env_cfg.decimation = args_cli.decimation
 
     # --- Create environment ---
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)

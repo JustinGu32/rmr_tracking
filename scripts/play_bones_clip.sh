@@ -157,10 +157,11 @@ for motion in "${WALK_JOG_MOTIONS[@]}"; do
     python scripts/rsl_rl/play_bones_clip.py \
         --task=Bones-MultiClip-Compliance-G1-v0 \
         --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
-        --wandb_path=robot-mcrobotface/multiclip_bones/3j0fwfyc \
+        --wandb_path=robot-mcrobotface/multiclip_bones/33g75yli \
         --clip_name="${motion}" \
-        --video_dir=${VIDEO_DIR}/walk_jog_33hz_3j0fwfyc \
+        --video_dir=${VIDEO_DIR}/walk_jog_33hz_33g75yli \
         --activation=swish \
+        --decimation 6 \
         --num_envs=1 \
         --headless \
         --video
