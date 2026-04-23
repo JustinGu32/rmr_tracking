@@ -1,32 +1,22 @@
-"""Script to play a checkpoint if an RL agent from RSL-RL."""
+"""Multiclip variant of collect_dataset.py.
 
-"""example command: 
-python scripts/rsl_rl/collect_dataset.py \
-    --task Tracking-Flat-G1-Collect-v0   \
-    --num_envs 2 \
-    --wandb_path robot-mcrobotface/takara_walk_isaac/nxotitq9 \
-    --num_steps_collect 60 \
-    --num_eps_collect 10000 \
-    --episode_collect_length 4 \
-    --min_delay 0 \
-    --max_delay 0 \
-    --min_sample_idx 0 \
-    --max_sample_idx 1000 \
-    --num_obstacles 4 \
-    --video
+Collects rollouts from a multiclip policy checkpoint using a Zarr motion store
+(no wandb motion artifact). Expects a Collect-capable multiclip task that
+exposes the `diffusion_collect` obs group and a `depth_camera` scene sensor.
 
-python scripts/rsl_rl/collect_dataset.py \
-    --task Chair-Step-G1-Collect-v0   \
-    --num_envs 2 \
-    --wandb_path robot-mcrobotface/chair_step/q4yp8tny \
-    --num_steps_collect 60 \
-    --num_eps_collect 10000 \
-    --episode_collect_length 4 \
-    --min_delay 0 \
-    --max_delay 0 \
-    --min_sample_idx 0 \
-    --max_sample_idx 1000 \
-    --enable_cameras
+TODO: register e.g. `Bones-MultiClip-Compliance-G1-Collect-v0` (extends
+G1BonesMultiClipComplianceEnvCfg, re-enables diffusion_collect, adds depth_camera).
+Otherwise obs['diffusion_collect'] and scene.sensors['depth_camera'] below will fail.
+
+example:
+  python scripts/rsl_rl/collect_dataset_multiclip.py \
+      --task=Bones-MultiClip-Compliance-G1-Collect-v0 \
+      --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+      --include_motion_types walk,jog \
+      --wandb_path=robot-mcrobotface/multiclip_bones/c15qko8c \
+      --activation swish \
+      --num_envs 1 --num_steps_collect 60 --num_eps_collect 500 \
+      --episode_collect_length 4 --headless
 """
 
 """Launch Isaac Sim Simulator first."""
@@ -87,6 +77,14 @@ def none_or_int(value):
 
 parser.add_argument("--min_sample_idx", type=none_or_int, default=None, help="actuator delay.")
 parser.add_argument("--max_sample_idx", type=none_or_int, default=None, help="actuator delay.")
+
+# --- Multiclip-specific ---
+parser.add_argument("--zarr_path", type=str, default=None,
+                    help="Path to Zarr motion store (required for multiclip tasks).")
+parser.add_argument("--include_motion_types", type=str, default=None,
+                    help="Comma-separated keywords restricting clips by clip_name (case-insensitive OR).")
+parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+                    help="Actor/critic activation (must match training).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -162,7 +160,8 @@ def main():
     )
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(
         args_cli.task, args_cli
-    )    
+    )
+    agent_cfg.policy.activation = args_cli.activation
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -191,31 +190,16 @@ def main():
         print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
         resume_path = f"./logs/rsl_rl/temp/{file}"
 
-        if args_cli.motion_file is not None:
-            print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
-            env_cfg.commands.motion.motion_file = args_cli.motion_file
-        
-        art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
-        art_combined = next((a for a in wandb_run.used_artifacts() if a.type == "combined_motions"), None)
-        
-        # import ipdb; ipdb.set_trace() 
-        # motion_file_name = 'motion'
-        # import ipdb; ipdb.set_trace()
-        if art is not None:
-            print(f"[INFO]: Downloading motion file")
-            # motion_file_name = art.name.split(':')[0] +'.npz'
-            # motion_file_name = 'motion.npz'
-            motion_file_name = art.file().split('/')[-1]
-            # import ipdb; ipdb.set_trace()
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art.download()) / motion_file_name)
+        # --- Multiclip: plumb zarr_path + include_motion_types (no wandb motion artifact) ---
+        assert args_cli.zarr_path is not None, "--zarr_path is required for multiclip collect"
+        assert os.path.isdir(args_cli.zarr_path), f"zarr_path does not exist: {args_cli.zarr_path}"
+        env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+        print(f"[INFO] Zarr motion store: {args_cli.zarr_path}")
 
-        if art_combined is not None:
-            motion_file_name = art_combined.file().split('/')[-1]
-            # motion_file_name = 'motion.npz'
-
-            env_cfg.commands.motion.motion_file = str(pathlib.Path(art_combined.download()) / motion_file_name)
-        if art is None and art_combined is None:
-            print('[INFO] No motion file found')
+        if args_cli.include_motion_types is not None:
+            kws = [s.strip() for s in args_cli.include_motion_types.split(",") if s.strip()]
+            env_cfg.commands.motion.include_motion_types = kws
+            print(f"[INFO] Restricting clips by motion-type keywords: {kws}")
 
             
     else:

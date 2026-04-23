@@ -522,7 +522,8 @@ class ZarrMotionLoader:
     """
 
     def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
-                 exclude_props: list[str] | None = None, max_clips: int | None = None):
+                 exclude_props: list[str] | None = None, max_clips: int | None = None,
+                 include_keywords: list[str] | None = None):
         import zarr as _zarr
 
         assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
@@ -547,6 +548,19 @@ class ZarrMotionLoader:
                   f"matching props: {exclude_props}")
         else:
             valid_indices = list(range(total_clips_raw))
+
+        # Filter clips by clip_name keywords if requested (case-insensitive substring,
+        # OR semantics: keep a clip if any keyword matches). Applied after exclude_props.
+        if include_keywords and "clip_names" in store:
+            kws = [kw.lower() for kw in include_keywords]
+            all_names = store["clip_names"][:]
+            before = len(valid_indices)
+            valid_indices = [
+                i for i in valid_indices
+                if any(kw in str(all_names[i]).lower() for kw in kws)
+            ]
+            print(f"[ZarrMotionLoader] Kept {len(valid_indices)}/{before} clips "
+                  f"matching keywords: {include_keywords}")
 
         # Limit number of clips if requested
         if max_clips is not None and max_clips < len(valid_indices):
@@ -627,10 +641,14 @@ class MultiClipMotionCommand(MotionCommand):
         self.steps_collect = cfg.steps_collect
 
         # --- Multi-clip specific: load from Zarr directly to GPU ---
-        exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
+        exclude_props = [
+            "object manipulation", "wall", "chair", "obstacle",
+            "edge", "safety pad", "railing", "box",
+        ] if self.cfg.exclude_objects else None
         self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
                                        exclude_props=exclude_props,
-                                       max_clips=self.cfg.max_clips)
+                                       max_clips=self.cfg.max_clips,
+                                       include_keywords=self.cfg.include_motion_types)
 
         # Per-env state: which clip each env is tracking and the absolute time step
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -785,6 +803,12 @@ class MultiClipMotionCommand(MotionCommand):
         """Normalized progress through current clip: 0.0 = start, 1.0 = end. Shape (num_envs, 1)."""
         progress = (self.time_steps - self.clip_start).float() / (self.clip_end - self.clip_start).float().clamp(min=1)
         return progress.unsqueeze(-1)
+
+    @property
+    def time_to_live(self) -> torch.Tensor:
+        """Time remaining in current clip in seconds. Shape (num_envs, 1)."""
+        remaining_steps = (self.clip_end - self.time_steps).clamp(min=0).float()
+        return (remaining_steps / self.motion.fps).unsqueeze(-1)
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -1020,10 +1044,19 @@ class MultiClipMotionCommandCfg(MotionCommandCfg):
     """Path to the Zarr motion store."""
 
     exclude_objects: bool = True
-    """Whether to exclude motions with object manipulation (content_props). Default: True."""
+    """Whether to exclude motions whose content_props_desc contains any scene
+    prop (object manipulation / wall / chair / obstacle / edge / safety pad /
+    railing / box). Default: True."""
 
     max_clips: int | None = None
     """Maximum number of clips to load. None = load all. Useful for play/eval on smaller GPUs."""
+
+    include_motion_types: list[str] | None = None
+    """Optional list of keywords; keep only clips whose `clip_names` contains any
+    keyword (case-insensitive substring, OR semantics). Applied after
+    `exclude_objects`. None = no name-based filtering. Examples: ["walk", "jog"],
+    ["jump"]. Multi-label by construction — a clip named "Turn_Start_Walk" matches
+    both "turn" and "walk"."""
 
     future_steps: list[int] = []
     """Future timestep offsets to include in observations (e.g., [5, 10, 15]).

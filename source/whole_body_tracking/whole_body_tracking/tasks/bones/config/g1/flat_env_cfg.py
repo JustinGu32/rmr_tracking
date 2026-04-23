@@ -11,8 +11,10 @@ from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_terrain import Bones3ptTe
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_multi_terrain import Bones3ptMultiTerrainEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_binded_multi_terrain import Bones3ptBindedMultiTerrainEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
+from isaaclab.sensors import TiledCameraCfg
 from isaaclab.terrains import TerrainImporterCfg
 import isaaclab.sim as sim_utils
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
@@ -387,3 +389,59 @@ class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
                                                         "std": 0.1,
                                                         "body_indices": [3, 4, 5],  # ankles + pelvis
                                                  })
+
+
+@configclass
+class G1BonesMultiClipCollectEnvCfg(G1BonesMultiClipComplianceEnvCfg):
+    """Collect-mode multiclip compliance: re-enables diffusion_collect obs and adds depth_camera."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        @configclass
+        class DiffusionCollect(ObsGroup):
+            body_pos = ObsTerm(func=mdp.robot_body_pos_w, noise=Unoise(n_min=-0.05, n_max=0.05))
+            body_ori = ObsTerm(func=mdp.robot_body_ori_w_quat, noise=Unoise(n_min=-0.02, n_max=0.02))
+            body_lin_vel = ObsTerm(func=mdp.robot_body_lin_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+            body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
+            dof_pos = ObsTerm(func=mdp.joint_pos_rel)
+            dof_vel = ObsTerm(func=mdp.joint_vel_rel)
+
+            def __post_init__(self):
+                self.enable_corruption = False
+                self.concatenate_terms = True
+
+        self.observations.diffusion_collect = DiffusionCollect()
+
+        if os.environ.get("ENABLE_CAMERAS", "0") == "1":
+            self.scene.depth_camera = TiledCameraCfg(
+                prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+                update_period=0.1,
+                debug_vis=False,
+                height=480,
+                width=640,
+                data_types=["rgb", "depth"],
+                spawn=sim_utils.PinholeCameraCfg(
+                    focal_length=1.93,
+                    horizontal_aperture=3.6,
+                    clipping_range=(0.1, 5.0),
+                ),
+                offset=TiledCameraCfg.OffsetCfg(
+                    pos=(0.0, 0.0, 0.0),
+                    rot=(0.5, -0.5, 0.5, -0.5),
+                    convention="ros",
+                ),
+            )
+
+        if hasattr(self.terminations, "bad_anchor_pos_xy"):
+            self.terminations.bad_anchor_pos_xy = None
+        if hasattr(self.events, "push_robot"):
+            self.events.push_robot = None
+        if hasattr(self.events, "force_push_robot"):
+            self.events.force_push_robot = None
+        if hasattr(self.curriculum, "adr"):
+            self.curriculum.adr = None
+        if hasattr(self.curriculum, "spring_force_adr"):
+            self.curriculum.spring_force_adr = None
+        if hasattr(self, "spring_force_cfg"):
+            self.spring_force_cfg = None

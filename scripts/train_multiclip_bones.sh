@@ -154,12 +154,13 @@ conda activate env_isaaclab
 #     --headless \
 #     --logger wandb \
 #     --log_project_name multiclip_bones \
-#     --run_name bones_target_50hz_swish_gravcurr12.7_uniform \
+#     --run_name bones_target_50hz_swish_uniform_xyterm_timetolive_gravcurr3.81 \
 #     --ppo_output target \
 #     --activation swish \
 #     --double_step \
-#     --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 120000 \
+#     --gravity_curriculum --start_gravity -3.81 --gravity_ramp_steps 240000 \
 #     --sampling uniform
+
 
 # # 3. BASELINE BeyondMimic: standard tracking task (no BONES/compliance), target, elu, 50hz, 4096 envs
 # python scripts/rsl_rl/train_bones.py \
@@ -187,3 +188,63 @@ conda activate env_isaaclab
 #     --ppo_output target \
 #     --activation swish \
 #     --double_step
+
+# # 5. BeyondMimic tracking + grav12.7 curriculum: target, swish, 50hz, 4096 envs
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_swish_gravcurr12.7_uniform \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 120000 \
+#     --sampling uniform
+
+# # 6. BeyondMimic tracking + grav12.7 curriculum: target, elu, 50hz, 4096 envs
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_swish_uniform_xyterm_timetolive \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform
+#         # --gravity_curriculum --start_gravity -12.7 --gravity_ramp_steps 120000 \
+
+# # 2. Swish CHIP: target, swish, 50hz, 4096 envs
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_50hz_swish_uniform_timetolive_splitEEterm \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform
+
+# # 3. Walk+jog only: target, swish, 33hz (decimation 6), 4096 envs, uniform, no gravity curriculum
+python scripts/rsl_rl/train_bones.py \
+    --task=Bones-MultiClip-Compliance-G1-v0 \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+    --num_envs=4096 \
+    --headless \
+    --logger wandb \
+    --log_project_name multiclip_bones \
+    --run_name bones_target_33hz_swish_uniform_timetolive_walk-jog_noXYterm_G1_29dof \
+    --ppo_output target \
+    --activation swish \
+    --decimation 6 \
+    --double_step \
+    --sampling uniform \
+    --include_motion_types walk,jog

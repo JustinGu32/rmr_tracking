@@ -45,6 +45,9 @@ parser.add_argument("--gravity_curriculum", action="store_true", default=False, 
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
+parser.add_argument("--include_motion_types", type=str, default=None,
+                    help="Comma-separated keywords to restrict training clips by clip_name (case-insensitive substring, OR semantics). "
+                         "E.g., 'walk,jog' keeps any clip whose name contains 'walk' or 'jog'. Applied after object-scene exclusion.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -264,10 +267,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg.policy.activation = args_cli.activation
 
-    # Append sampling suffix to run name
-    if args_cli.sampling == "uniform" and agent_cfg.run_name:
-        agent_cfg.run_name = f"{agent_cfg.run_name}_uniform"
-
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -307,6 +306,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
         env_cfg.commands.motion.exclude_objects = not args_cli.include_objects
+        if args_cli.include_motion_types is not None:
+            kws = [s.strip() for s in args_cli.include_motion_types.split(",") if s.strip()]
+            env_cfg.commands.motion.include_motion_types = kws
+            print(f"[INFO] Restricting clips by motion-type keywords: {kws}")
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)
@@ -421,6 +424,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
     dump_pickle(os.path.join(log_dir, "params", "env.pkl"), env_cfg)
     dump_pickle(os.path.join(log_dir, "params", "agent.pkl"), agent_cfg)
+
+    # Record CLI-driven training options in the wandb run config so ablations
+    # are searchable from the UI. Purely metadata — does not affect training.
+    try:
+        import wandb as _wandb
+        if _wandb.run is not None:
+            _wandb.config.update(
+                {
+                    "cli_args": {
+                        "sampling": args_cli.sampling,
+                        "gravity_curriculum": args_cli.gravity_curriculum,
+                        "start_gravity": args_cli.start_gravity,
+                        "gravity_ramp_steps": args_cli.gravity_ramp_steps,
+                        "ppo_output": args_cli.ppo_output,
+                        "activation": args_cli.activation,
+                        "double_step": args_cli.double_step,
+                        "include_objects": args_cli.include_objects,
+                        "layer_norm": args_cli.layer_norm,
+                        "decimation": args_cli.decimation,
+                        "future_steps": args_cli.future_steps,
+                        "wandb_resume": args_cli.wandb_resume,
+                        "include_motion_types": args_cli.include_motion_types,
+                    }
+                },
+                allow_val_change=True,
+            )
+    except Exception as _e:
+        print(f"[WARN] Failed to log cli_args to wandb config: {_e}")
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)

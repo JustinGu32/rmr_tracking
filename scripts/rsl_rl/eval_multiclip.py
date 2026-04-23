@@ -41,6 +41,9 @@ parser.add_argument("--disable_terminations", action="store_true", default=False
                     help="Disable failure terminations (only stop at clip end). Useful to see full tracking error curves.")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--include_motion_types", type=str, default=None,
+                    help="Comma-separated keywords to restrict eval clips by clip_name (case-insensitive substring, OR semantics). "
+                         "Mirror the value used at train time to eval on the same motions.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -73,7 +76,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import whole_body_tracking.tasks  # noqa: F401
 
 
-def load_zarr_metadata(zarr_path: str, exclude_objects: bool = True, max_clips: int | None = None):
+def load_zarr_metadata(zarr_path: str, exclude_objects: bool = True, max_clips: int | None = None,
+                       include_keywords: list[str] | None = None):
     """Load clip names, descriptions, and frame counts from Zarr store.
 
     Applies the SAME filtering as ZarrMotionLoader so that internal clip IDs
@@ -98,7 +102,10 @@ def load_zarr_metadata(zarr_path: str, exclude_objects: bool = True, max_clips: 
             all_descs[i] = str(raw[i])
 
     # Apply the same exclude_props filter as ZarrMotionLoader
-    exclude_props = ["object manipulation"] if exclude_objects else None
+    exclude_props = [
+        "object manipulation", "wall", "chair", "obstacle",
+        "edge", "safety pad", "railing", "box",
+    ] if exclude_objects else None
     if exclude_props and "content_props_desc" in store:
         valid_indices = []
         for i in range(total_clips_raw):
@@ -111,6 +118,15 @@ def load_zarr_metadata(zarr_path: str, exclude_objects: bool = True, max_clips: 
               f"matching props: {exclude_props}")
     else:
         valid_indices = list(range(total_clips_raw))
+
+    # Apply the same include_keywords filter as ZarrMotionLoader (after exclude, before max)
+    if include_keywords:
+        kws = [kw.lower() for kw in include_keywords]
+        before = len(valid_indices)
+        valid_indices = [i for i in valid_indices
+                         if any(kw in all_names[i].lower() for kw in kws)]
+        print(f"[load_zarr_metadata] Kept {len(valid_indices)}/{before} clips "
+              f"matching keywords: {include_keywords}")
 
     # Apply max_clips limit (same as ZarrMotionLoader)
     if max_clips is not None and max_clips < len(valid_indices):
@@ -168,10 +184,19 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.max_clips is not None and hasattr(env_cfg.commands.motion, "max_clips"):
         env_cfg.commands.motion.max_clips = args_cli.max_clips
 
+    # Plumb keyword filter into env_cfg so the loader applies it identically
+    include_keywords = None
+    if args_cli.include_motion_types is not None:
+        include_keywords = [s.strip() for s in args_cli.include_motion_types.split(",") if s.strip()]
+        if hasattr(env_cfg.commands.motion, "include_motion_types"):
+            env_cfg.commands.motion.include_motion_types = include_keywords
+            print(f"[EVAL] Restricting clips by motion-type keywords: {include_keywords}")
+
     # --- Load metadata (with same filtering as ZarrMotionLoader) ---
     exclude_objects = getattr(env_cfg.commands.motion, "exclude_objects", True)
     clip_names, clip_descs, clip_lengths, num_clips = load_zarr_metadata(
-        zarr_path, exclude_objects=exclude_objects, max_clips=args_cli.max_clips
+        zarr_path, exclude_objects=exclude_objects, max_clips=args_cli.max_clips,
+        include_keywords=include_keywords,
     )
     print(f"\n[EVAL] {num_clips} clips in zarr store, {sum(clip_lengths)} total frames")
 
@@ -183,6 +208,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             env_cfg.events.push_robot = None
         if hasattr(env_cfg.events, "force_push_robot"):
             env_cfg.events.force_push_robot = None
+
+    # Always disable xy-position failure termination during eval
+    if hasattr(env_cfg, "terminations") and hasattr(env_cfg.terminations, "bad_anchor_pos_xy"):
+        env_cfg.terminations.bad_anchor_pos_xy = None
+        print("[EVAL] Disabled bad_anchor_pos_xy termination")
 
     # Optionally disable failure terminations (keep only time_out)
     if args_cli.disable_terminations and hasattr(env_cfg, "terminations"):

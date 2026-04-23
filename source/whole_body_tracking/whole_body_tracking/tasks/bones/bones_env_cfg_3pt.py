@@ -176,6 +176,7 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
+        time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
@@ -304,7 +305,6 @@ class TerminationsCfg:
     anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
         params={"command_name": "motion", "threshold": 0.25},
-
     )
     anchor_ori = DoneTerm(
         func=mdp.bad_anchor_ori,
@@ -314,8 +314,7 @@ class TerminationsCfg:
         func=mdp.bad_motion_body_pos_z_only,
         params={
             "command_name": "motion",
-            # "threshold": 0.25,
-            "threshold": 0.3,
+            "threshold": 0.25,
             "body_names": [
                 "left_ankle_roll_link",
                 "right_ankle_roll_link",
@@ -328,6 +327,30 @@ class TerminationsCfg:
     #     func=mdp.bad_anchor_pos_x_y_only,
     #     params={"command_name": "motion", "threshold": 1.3},
     # )
+    # feet_body_pos_z = DoneTerm(
+    #     func=mdp.bad_motion_body_pos_z_only,
+    #     params={
+    #         "command_name": "motion",
+    #         "threshold": 0.1,
+    #         "body_names": [
+    #             "left_ankle_roll_link",
+    #             "right_ankle_roll_link",
+    #         ],
+    #     },
+    # )
+
+    # hands_body_pos_z = DoneTerm(
+    #     func=mdp.bad_motion_body_pos_z_only,
+    #     params={
+    #         "command_name": "motion",
+    #         "threshold": 0.2,
+    #         "body_names": [
+    #             "left_wrist_yaw_link",
+    #             "right_wrist_yaw_link",
+    #         ],
+    #     },
+    # )
+
 
 
 @configclass

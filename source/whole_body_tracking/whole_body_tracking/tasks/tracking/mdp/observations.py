@@ -210,6 +210,12 @@ def clip_phase(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     return command.clip_phase
 
 
+def time_to_live(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Seconds remaining in current motion clip. Shape (num_envs, 1)."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    return command.time_to_live
+
+
 # ── Future reference motion observations ──────────────────────────────────────
 
 def future_ref_joint_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:

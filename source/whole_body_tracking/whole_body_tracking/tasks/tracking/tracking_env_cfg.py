@@ -119,7 +119,7 @@ class MySceneCfg(InteractiveSceneCfg):
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
             update_period=0.1,  # 10Hz
             height=480,
-            width=848,
+            width=640,
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.93,  # D435i: ~87° HFOV
@@ -235,6 +235,8 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
+        # time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
+
     
     @configclass
     class DiffusionCollect(ObsGroup):
@@ -411,7 +413,7 @@ class TerminationsCfg:
         func=mdp.bad_motion_body_pos_z_only,
         params={
             "command_name": "motion",
-            "threshold": 0.4,
+            "threshold": 0.3,
             "body_names": [
                 "left_ankle_roll_link",
                 "right_ankle_roll_link",
@@ -421,10 +423,10 @@ class TerminationsCfg:
         },
     )
     
-    bad_anchor_pos_xy = DoneTerm(
-        func=mdp.bad_anchor_pos_x_y_only,
-        params={"command_name": "motion", "threshold": 1.3},
-    )
+    # bad_anchor_pos_xy = DoneTerm(
+    #     func=mdp.bad_anchor_pos_x_y_only,
+    #     params={"command_name": "motion", "threshold": 1.3},
+    # )
 
 
 @configclass

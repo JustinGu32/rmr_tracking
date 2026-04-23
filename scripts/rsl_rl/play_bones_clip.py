@@ -90,6 +90,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
+import whole_body_tracking.tasks.tracking.mdp.commands as _tracking_cmds
 
 
 def resolve_clip_id(zarr_path: str, clip_id: int | None, clip_name: str | None, exclude_objects: bool = True) -> tuple[int, str]:
@@ -115,7 +116,10 @@ def resolve_clip_id(zarr_path: str, clip_id: int | None, clip_name: str | None, 
             all_descs[i] = str(raw[i])
 
     # Apply same filtering as ZarrMotionLoader
-    exclude_props = ["object manipulation"] if exclude_objects else None
+    exclude_props = [
+        "object manipulation", "wall", "chair", "obstacle",
+        "edge", "safety pad", "railing", "box",
+    ] if exclude_objects else None
     if exclude_props and "content_props_desc" in store:
         valid_indices = []
         for i in range(total_clips_raw):
@@ -183,7 +187,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         raw_descs = store["content_props_desc"][:]
         for i in range(min(len(raw_descs), total_raw)):
             all_descs[i] = str(raw_descs[i])
-    exclude_props = ["object manipulation"] if exclude_objects else None
+    exclude_props = [
+        "object manipulation", "wall", "chair", "obstacle",
+        "edge", "safety pad", "railing", "box",
+    ] if exclude_objects else None
     if exclude_props and "content_props_desc" in store:
         valid_indices = [i for i in range(total_raw)
                          if not any(ep.lower() in all_descs[i].strip().lower() for ep in exclude_props)]
@@ -206,7 +213,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         import wandb
 
         run_path = args_cli.wandb_path
-        api = wandb.Api()
+        api = wandb.Api(timeout=60)
         if "model" in args_cli.wandb_path:
             run_path = "/".join(args_cli.wandb_path.split("/")[:-1])
         wandb_run = api.run(run_path)
@@ -225,12 +232,65 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO] Loaded checkpoint: {resume_path}")
 
-    # --- Configure env for single-clip playback ---
-    # Only load clips up to our target clip to save GPU memory
-    # (full zarr is ~26GB; this loads only what's needed)
-    if hasattr(env_cfg.commands.motion, 'max_clips'):
-        env_cfg.commands.motion.max_clips = clip_id + 1
-        print(f"[CLIP] Set max_clips={clip_id + 1} to limit GPU memory usage")
+    # --- Patch ZarrMotionLoader to load ONLY the target clip ---
+    # Avoids loading the full zarr (~26 GB) when we only need one clip.
+    # `MultiClipMotionCommand.__init__` looks up `ZarrMotionLoader` by name in
+    # tracking.mdp.commands, so replacing the module attribute before
+    # gym.make(...) causes the patched class to be instantiated instead.
+    #
+    # WARNING: this mirrors the state set by
+    #   whole_body_tracking/tasks/tracking/mdp/commands.py :: ZarrMotionLoader.__init__
+    # If that class adds attributes (or more tensors) that MultiClipMotionCommand
+    # relies on, they must also be set here. Inheritance only saves us for the
+    # @property accessors — the tensor state is rebuilt from scratch.
+    _target_clip_id = clip_id
+
+    class _SingleClipLoader(_tracking_cmds.ZarrMotionLoader):
+        """Loads a single clip at local frames [0, L), rebasing clip_start/end_idx."""
+
+        def __init__(self, zarr_path, body_indexes, device="cpu",
+                     exclude_props=None, max_clips=None, include_keywords=None):
+            # Skip super().__init__() deliberately — it eagerly loads the full zarr.
+            store = _zarr.open(zarr_path, mode="r")
+            self.fps = int(store["fps"][0])
+
+            all_start = store["clip_start_idx"][:]
+            all_end = store["clip_end_idx"][:]
+
+            # Re-apply the same exclude_props filter used by the original loader,
+            # so _target_clip_id indexes the same filtered list that resolve_clip_id used.
+            if exclude_props and "content_props_desc" in store:
+                descs = store["content_props_desc"][:]
+                valid = [i for i in range(len(all_start))
+                         if not any(ep.lower() in str(descs[i]).strip().lower() for ep in exclude_props)]
+            else:
+                valid = list(range(len(all_start)))
+
+            raw = valid[_target_clip_id]
+            s, e = int(all_start[raw]), int(all_end[raw])
+            L = e - s
+
+            # Load only this clip's frames; frame 0 = clip start.
+            self.joint_pos = torch.tensor(store["joint_pos"][s:e], dtype=torch.float32, device=device)
+            self.joint_vel = torch.tensor(store["joint_vel"][s:e], dtype=torch.float32, device=device)
+            self._body_pos_w = torch.tensor(store["body_pos_w"][s:e], dtype=torch.float32, device=device)
+            self._body_quat_w = torch.tensor(store["body_quat_w"][s:e], dtype=torch.float32, device=device)
+            self._body_lin_vel_w = torch.tensor(store["body_lin_vel_w"][s:e], dtype=torch.float32, device=device)
+            self._body_ang_vel_w = torch.tensor(store["body_ang_vel_w"][s:e], dtype=torch.float32, device=device)
+            self._body_indexes = (body_indexes.to(device) if isinstance(body_indexes, torch.Tensor)
+                                  else torch.tensor(body_indexes, dtype=torch.long, device=device))
+
+            # Rebased metadata: loaded clip lives at local index 0, frames [0, L).
+            self.clip_start_idx = torch.tensor([0], dtype=torch.long)
+            self.clip_end_idx = torch.tensor([L], dtype=torch.long)
+            self.num_clips = 1
+            self.clip_lengths = self.clip_end_idx - self.clip_start_idx
+            self.time_step_total = L
+
+            print(f"[SingleClipLoader] Loaded clip_id={_target_clip_id} (raw zarr idx={raw}), "
+                  f"{L} frames @ {self.fps} fps, {self._body_pos_w.shape[1]} bodies, device={device}")
+
+    _tracking_cmds.ZarrMotionLoader = _SingleClipLoader
 
     # Set episode length long enough for the full clip (with margin)
     fps = 50.0  # default; overridden below if available
@@ -243,6 +303,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             env_cfg.events.push_robot = None
         if hasattr(env_cfg.events, "force_push_robot"):
             env_cfg.events.force_push_robot = None
+
+    # Disable strict xy-only anchor position termination if present. Don't
+    # touch `bad_anchor_pos` — that's treated as anchor-z in this project.
+    if hasattr(env_cfg, "terminations"):
+        for term_name in list(vars(env_cfg.terminations).keys()):
+            term = getattr(env_cfg.terminations, term_name)
+            func_name = getattr(getattr(term, "func", None), "__name__", "")
+            if func_name == "bad_anchor_pos_x_y_only":
+                print(f"[CLIP] Disabling xy termination: {term_name}")
+                setattr(env_cfg.terminations, term_name, None)
 
     # Override decimation if provided
     if args_cli.decimation is not None:
@@ -290,10 +360,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             return
         env_ids_t = torch.as_tensor(env_ids, device=self.device) if not isinstance(env_ids, torch.Tensor) else env_ids
 
-        self.clip_ids[env_ids_t] = clip_id
-        self.clip_start[env_ids_t] = self.motion.clip_start_idx[clip_id]
-        self.clip_end[env_ids_t] = self.motion.clip_end_idx[clip_id]
-        self.time_steps[env_ids_t] = self.motion.clip_start_idx[clip_id]
+        # Loader has been patched to expose only the target clip at local
+        # index 0 (see _SingleClipLoader above), so pin to index 0.
+        self.clip_ids[env_ids_t] = 0
+        self.clip_start[env_ids_t] = self.motion.clip_start_idx[0]
+        self.clip_end[env_ids_t] = self.motion.clip_end_idx[0]
+        self.time_steps[env_ids_t] = self.motion.clip_start_idx[0]
 
         self._cache_current_frames()
 

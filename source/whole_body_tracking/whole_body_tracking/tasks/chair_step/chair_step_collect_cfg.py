@@ -143,7 +143,7 @@ class MySceneCfg(InteractiveSceneCfg):
             update_period=0.1,  # 10Hz
             debug_vis=False,
             height=480,
-            width=848,
+            width=640,
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.93,  # D435i: ~87° HFOV

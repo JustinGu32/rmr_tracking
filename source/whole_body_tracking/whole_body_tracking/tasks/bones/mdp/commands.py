@@ -614,8 +614,14 @@ class MultiMotionCommand(CommandTerm):
 
     @property
     def future_time_steps(self) -> torch.Tensor:
-        return torch.clip(self.look_ahead_steps_init + self.time_steps[:,None], 
+        return torch.clip(self.look_ahead_steps_init + self.time_steps[:,None],
                           max=self.motion.motion_end_idx[self.motion_ids][:,None]-1).flatten().long()
+
+    @property
+    def time_to_live(self) -> torch.Tensor:
+        """Seconds remaining in current motion clip. Shape (num_envs, 1)."""
+        remaining_steps = (self.motion.motion_end_idx[self.motion_ids] - self.time_steps).clamp(min=0).float()
+        return (remaining_steps / self.motion.fps).unsqueeze(-1)
 
     # VR 3 point related utils
     @property
@@ -1197,7 +1203,10 @@ class ZarrMultiMotionCommand(MultiMotionCommand):
         )
 
         # Load from Zarr instead of NPZ files
-        exclude_props = ["object manipulation"] if self.cfg.exclude_objects else None
+        exclude_props = [
+            "object manipulation", "wall", "chair", "obstacle",
+            "edge", "safety pad", "railing", "box",
+        ] if self.cfg.exclude_objects else None
         self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
                                        exclude_props=exclude_props)
 
@@ -1424,7 +1433,10 @@ class ZarrMultiMotionCommandCfg(MultiMotionCommandCfg):
     """Path to the Zarr motion store."""
 
     exclude_objects: bool = True
-    """Whether to exclude motions with object manipulation (content_props). Default: True."""
+    """Whether to exclude motions whose content_props_desc contains any scene
+    prop (object manipulation / wall / chair / obstacle / edge / safety pad /
+    railing / box). Default: True. See the hardcoded list where the filter
+    is applied."""
 
     # Override motion_files — not used in zarr mode
     motion_files: list[str] = []

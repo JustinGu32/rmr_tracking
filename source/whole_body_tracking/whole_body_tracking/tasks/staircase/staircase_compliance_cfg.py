@@ -120,7 +120,7 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
             update_period=0.1,  # 10Hz
             height=480,
-            width=848,
+            width=640,
             data_types=["rgb", "depth"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.93,  # D435i: ~87° HFOV
