@@ -11,9 +11,9 @@
 # Create log directory
 mkdir -p logs/slurm
 
-cd /move/u/justingu/rmr_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
-source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 # ============================================================
@@ -187,3 +187,18 @@ conda activate env_isaaclab
 #     --ppo_output target \
 #     --activation swish \
 #     --double_step
+
+# Popart Ablations
+python scripts/rsl_rl/train_bones.py \
+    --task=Tracking-MultiClip-Flat-G1-v0 \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+    --num_envs=4096 \
+    --headless \
+    --logger wandb \
+    --log_project_name multiclip_bones_popart \
+    --run_name tracking_baseline_33hz_uniform \
+    --ppo_output target \
+    --sampling uniform
+
+#     --popart_multihead \
+#     --popart_head_mode per_term

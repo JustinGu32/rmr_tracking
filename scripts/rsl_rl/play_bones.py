@@ -33,6 +33,9 @@ parser.add_argument("--activation", type=str, default="elu", choices=["elu", "sw
 parser.add_argument("--start_from_beginning", action="store_true", default=False,
                     help="Start each episode from the beginning of the clip instead of adaptive sampling.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
+parser.add_argument("--bones_popart", action="store_true", default=False, help="Use PopArt multi-head critic (must match training).")
+parser.add_argument("--popart_head_mode", type=str, default="per_term", choices=["per_term"],
+                    help="PopArt critic head layout for inference (default: per_term).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -44,6 +47,9 @@ if args_cli.video:
 
 if args_cli.start_from_beginning:
     os.environ["BONES_START_FROM_BEGINNING"] = "1"
+if args_cli.bones_popart:
+    os.environ["BONES_POPART"] = "1"
+    os.environ["BONES_POPART_HEADS"] = args_cli.popart_head_mode
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -76,6 +82,8 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
+from whole_body_tracking.tasks.bones.popart_reward_manager import install_bones_per_term_reward_manager
+from whole_body_tracking.utils.bones_popart import BonesPopArtOnPolicyRunner
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
 
 
@@ -121,13 +129,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         else:
             art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
             if art is None:
-                print("[WARN] No motion artifact found in the run.")
+                print(f"[WARN] No motion artifact found in the run.")
                 motion_path = None
             else:
                 motion_path = str(pathlib.Path(art.download()) / "motion.npz")
 
         if motion_path is not None:
-            if hasattr(env_cfg.commands.motion, 'motion_files'):
+            if hasattr(env_cfg.commands.motion, "motion_files"):
                 env_cfg.commands.motion.motion_files = [motion_path]
             else:
                 env_cfg.commands.motion.motion_file = motion_path
@@ -136,6 +144,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+
+    checkpoint = torch.load(resume_path, map_location="cpu")
+    model_state_dict = checkpoint["model_state_dict"]
+    checkpoint_uses_popart = any(key.startswith("critic_trunk.") for key in model_state_dict)
+    use_popart_runner = args_cli.bones_popart or checkpoint_uses_popart
+    if checkpoint_uses_popart:
+        print("[INFO] Detected PopArt checkpoint architecture from saved model state.")
+    if use_popart_runner:
+        agent_cfg.algorithm.use_popart_multihead = True
+        agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
 
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
@@ -166,11 +184,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    if use_popart_runner:
+        install_bones_per_term_reward_manager(env)
+
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
 
     # load previously trained model
-    ppo_runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    runner_cls = BonesPopArtOnPolicyRunner if use_popart_runner else OnPolicyRunner
+    train_cfg = agent_cfg.to_dict()
+    if not use_popart_runner:
+        # Strip PopArt-specific keys that the stock PPO doesn't accept
+        for key in [
+            "use_popart_multihead", "popart_head_mode", "popart_groups",
+            "popart_momentum", "popart_epsilon", "popart_normalize_actor_weights",
+        ]:
+            train_cfg.get("algorithm", {}).pop(key, None)
+    ppo_runner = runner_cls(env, train_cfg, log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference

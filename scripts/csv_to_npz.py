@@ -373,11 +373,12 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
             os.makedirs(tmp_dir, exist_ok=True)
             tmp_motion_path = os.path.join(tmp_dir, "motion.npz")
             np.savez(tmp_motion_path, **log)
+            print(f"[INFO]: Motion saved to {tmp_motion_path}")
 
             import wandb
             
             # added to debug
-            exit() 
+            # exit() 
 
             # # added to debug
             # exit()
