@@ -241,10 +241,10 @@ python scripts/rsl_rl/train_bones.py \
     --headless \
     --logger wandb \
     --log_project_name multiclip_bones \
-    --run_name bones_target_33hz_swish_uniform_timetolive_walk-jog_noXYterm_G1_29dof \
+    --run_name bones_target_33hz_swish_uniform_timetolive_walk-jog_noXYterm_G1_29dof_gravity3.81 \
     --ppo_output target \
     --activation swish \
-    --decimation 6 \
+    --gravity_curriculum --start_gravity -3.81 --gravity_ramp_steps 240000 \
     --double_step \
     --sampling uniform \
     --include_motion_types walk,jog

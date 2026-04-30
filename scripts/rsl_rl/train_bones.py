@@ -27,6 +27,7 @@ parser.add_argument("--seed", type=int, default=None, help="Seed used for the en
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
+parser.add_argument("--motion_file", type=str, default=None, help="Path to a local NPZ motion file (single-clip, no wandb).")
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
@@ -320,9 +321,22 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         import wandb
         api = wandb.Api()
         artifact = api.artifact(registry_name)
-        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+        motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
+        if hasattr(env_cfg.commands.motion, 'motion_files'):
+            env_cfg.commands.motion.motion_files = [motion_path]
+        else:
+            env_cfg.commands.motion.motion_file = motion_path
+    elif args_cli.motion_file is not None:
+        # Single-clip training from local NPZ (no wandb)
+        print(f"[INFO] Loading motion from local NPZ: {args_cli.motion_file}")
+        assert os.path.isfile(args_cli.motion_file), f"Motion file not found: {args_cli.motion_file}"
+        if hasattr(env_cfg.commands.motion, 'motion_files'):
+            env_cfg.commands.motion.motion_files = [args_cli.motion_file]
+        else:
+            env_cfg.commands.motion.motion_file = args_cli.motion_file
+        registry_name = f"local:{pathlib.Path(args_cli.motion_file).stem}"
     else:
-        raise ValueError("Either --zarr_path or --registry_name must be provided.")
+        raise ValueError("Either --zarr_path, --registry_name, or --motion_file must be provided.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)

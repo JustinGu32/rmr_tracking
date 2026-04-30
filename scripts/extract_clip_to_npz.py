@@ -12,7 +12,7 @@ Usage:
     # By name (substring match; first hit wins, like play_bones_clip.py)
     python scripts/extract_clip_to_npz.py \
         --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
-        --clip_name=Turn_Start_Jog_0360_001__A019_M
+        --clip_name=Jump_002__A017_M
 
     # By clip_id (index into the filtered set — same ids shown in eval jsonl)
     python scripts/extract_clip_to_npz.py \

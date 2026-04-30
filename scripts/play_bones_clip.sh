@@ -99,13 +99,13 @@ TRACKING_TIMETOLIVE="robot-mcrobotface/multiclip_bones/3oftz6dh"
 
 MOTIONS=(
     walk_arc_cw_loop_R_very_slow_001__A444_M
-    # Jump_002__A017_M
-    # jump_and_land_light_003__A001
+    Jump_002__A017_M
+    jump_and_land_light_003__A001
     walk_forward_normal_001__A006
     Turn_Start_Jog_0360_001__A019
-    # stand_up_lying_R_002__A475_M
-    # stand_up_lying_stomach_R_002__A472
-    # stand_up_lying_side_R_002__A475
+    stand_up_lying_R_002__A475_M
+    stand_up_lying_stomach_R_002__A472
+    stand_up_lying_side_R_002__A475
 )
 
 # for motion in "${MOTIONS[@]}"; do
@@ -138,14 +138,28 @@ MOTIONS=(
 #     python scripts/rsl_rl/play_bones_clip.py \
 #         --task=Bones-MultiClip-Compliance-G1-v0 \
 #         --zarr_path=${ZARR_PATH} \
-#         --wandb_path=robot-mcrobotface/multiclip_bones/mch9kxtr \
+#         --wandb_path=robot-mcrobotface/multiclip_bones/p2m0jbp3 \
 #         --clip_name="${motion}" \
-#         --video_dir=${VIDEO_DIR}/gravity_12_pt3 \
+#         --video_dir=${VIDEO_DIR}/gravity_4 \
 #         --activation=swish \
 #         --num_envs=1 \
 #         --headless \
 #         --video
 # done
+
+# for motion in "${MOTIONS[@]}"; do
+#     python scripts/rsl_rl/play_bones_clip.py \
+#         --task=Bones-MultiClip-Compliance-G1-v0 \
+#         --zarr_path=${ZARR_PATH} \
+#         --wandb_path=robot-mcrobotface/multiclip_bones/6q0ka6qq \
+#         --clip_name="${motion}" \
+#         --video_dir=${VIDEO_DIR}/gravity_16 \
+#         --activation=swish \
+#         --num_envs=1 \
+#         --headless \
+#         --video
+# done
+
 
 # --- Walk+jog 33hz swish uniform (eval run c15qko8c) ---
 WALK_JOG_MOTIONS=(
@@ -157,9 +171,9 @@ for motion in "${WALK_JOG_MOTIONS[@]}"; do
     python scripts/rsl_rl/play_bones_clip.py \
         --task=Bones-MultiClip-Compliance-G1-v0 \
         --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
-        --wandb_path=robot-mcrobotface/multiclip_bones/33g75yli \
+        --wandb_path=robot-mcrobotface/multiclip_bones/dpm67awe \
         --clip_name="${motion}" \
-        --video_dir=${VIDEO_DIR}/walk_jog_33hz_33g75yli \
+        --video_dir=${VIDEO_DIR}/walk_jog_FINETUNED_33hz_dpm67awe \
         --activation=swish \
         --decimation 6 \
         --num_envs=1 \

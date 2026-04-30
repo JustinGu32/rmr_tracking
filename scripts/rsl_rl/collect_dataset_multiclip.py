@@ -126,14 +126,16 @@ from torch.distributions import Normal
 
 # Import extensions to set up environment tasks
 # Set ENABLE_CAMERAS before importing tasks so config files pick it up
-os.environ["ENABLE_CAMERAS"] = "1"
+# os.environ["ENABLE_CAMERAS"] = "1"
+if args_cli.enable_cameras:
+    os.environ["ENABLE_CAMERAS"] = "1"
 import whole_body_tracking.tasks  # noqa: F401
-from transformers import AutoImageProcessor, SiglipModel
-from transformers import AutoImageProcessor, SiglipModel
-import torch.nn.functional as F
+if args_cli.enable_cameras:
+    from transformers import AutoImageProcessor, SiglipModel
+    import torch.nn.functional as F
 
-from whole_body_tracking.utils.defm_utils import preprocess_depth_batch
-from PIL import Image
+    from whole_body_tracking.utils.defm_utils import preprocess_depth_batch
+    from PIL import Image
 
 
 def main():
@@ -307,39 +309,40 @@ def main():
     # recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
     # recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
 
-    # Initialize Siglip2 Model
-    print("[INFO] Initializing Siglip2 Vision Model...")
-    # model_id = "google/siglip2-so400m-patch14-384" 
-    model_id = "google/siglip2-base-patch16-384" 
-    
-    # Use AutoImageProcessor to avoid tokenizer issues
-    processor = AutoImageProcessor.from_pretrained(model_id)
-    # Use SiglipModel (explicit) with Flash Attention 2 and Float16
-    siglip_model = SiglipModel.from_pretrained(
-        model_id,
-        attn_implementation="flash_attention_2",
-        torch_dtype=torch.float16,
-    )
-    siglip_model.to(device=args_cli.device).eval()
-    
-    # Siglip2 Embeddings Storage
-    # Get hidden size from the vision component properly
-    rgb_embed_dim = siglip_model.vision_model.config.hidden_size
-    recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+    if args_cli.enable_cameras:
+        # Initialize Siglip2 Model
+        print("[INFO] Initializing Siglip2 Vision Model...")
+        # model_id = "google/siglip2-so400m-patch14-384"
+        model_id = "google/siglip2-base-patch16-384"
 
-    # DeFM Embeddings Storage
-    # Initialize DeFM Model
-    print("[INFO] Initializing DeFM Depth Model...")
-    torch.hub.set_dir(os.path.expanduser("~/.cache/torch/hub"))
-    defm_model = torch.hub.load(
-        "leggedrobotics/defm:main",
-        "defm_vit_l14",
-        pretrained=True,
-        trust_repo=True,
-    )
-    defm_model = defm_model.eval().to(device=args_cli.device)
-    depth_embed_dim = 1024 # DeFM ViT-L14 class token size
-    recorded_depth_embed_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
+        # Use AutoImageProcessor to avoid tokenizer issues
+        processor = AutoImageProcessor.from_pretrained(model_id)
+        # Use SiglipModel (explicit) with Flash Attention 2 and Float16
+        siglip_model = SiglipModel.from_pretrained(
+            model_id,
+            attn_implementation="flash_attention_2",
+            torch_dtype=torch.float16,
+        )
+        siglip_model.to(device=args_cli.device).eval()
+
+        # Siglip2 Embeddings Storage
+        # Get hidden size from the vision component properly
+        rgb_embed_dim = siglip_model.vision_model.config.hidden_size
+        recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+
+        # DeFM Embeddings Storage
+        # Initialize DeFM Model
+        print("[INFO] Initializing DeFM Depth Model...")
+        torch.hub.set_dir(os.path.expanduser("~/.cache/torch/hub"))
+        defm_model = torch.hub.load(
+            "leggedrobotics/defm:main",
+            "defm_vit_l14",
+            pretrained=True,
+            trust_repo=True,
+        )
+        defm_model = defm_model.eval().to(device=args_cli.device)
+        depth_embed_dim = 1024 # DeFM ViT-L14 class token size
+        recorded_depth_embed_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
 
     # OU parameters
     theta = .8 # 0 #0.4  # mean reversion rate
@@ -450,96 +453,97 @@ def main():
             # TODO: JUSTIN HELP
 
 
-            camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
-            rgb_image = camera_sensor.data.output["rgb"] 
-            depth_image = camera_sensor.data.output["depth"] 
+            if args_cli.enable_cameras:
+                camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
+                rgb_image = camera_sensor.data.output["rgb"]
+                depth_image = camera_sensor.data.output["depth"]
 
-            # Save images to buffer
-            # Check for alpha channel in RGB
-            if rgb_image.shape[-1] == 4:
-                rgb_to_save = rgb_image[..., :3]
-            else:
-                rgb_to_save = rgb_image
+                # Save images to buffer
+                # Check for alpha channel in RGB
+                if rgb_image.shape[-1] == 4:
+                    rgb_to_save = rgb_image[..., :3]
+                else:
+                    rgb_to_save = rgb_image
 
-            # recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
-            # recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
+                # recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
+                # recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
 
-            # --- Process and Embed Images with Siglip2 ---
-            
-            # Convert tensors to list of PIL images for the processor
-            # rgb_to_save: (B, H, W, 3) 
-            rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
-            rgb_images = [Image.fromarray(img) for img in rgb_np]
+                # --- Process and Embed Images with Siglip2 ---
 
-            # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
-            depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
-            # Normalize depth for visualization-like input if needed, or just replicate channels
-            # Here we replicate channels to make it (H, W, 3) grayscale-like
-            # depth_images = []
+                # Convert tensors to list of PIL images for the processor
+                # rgb_to_save: (B, H, W, 3)
+                rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
+                rgb_images = [Image.fromarray(img) for img in rgb_np]
+
+                # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
+                depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
+                # Normalize depth for visualization-like input if needed, or just replicate channels
+                # Here we replicate channels to make it (H, W, 3) grayscale-like
+                # depth_images = []
 
 
-            try:
-                # Batch processing
-                with torch.no_grad():
-                    VISION_BATCH_SIZE = 10 # Process in batches to avoid OOM
-                    
-                    # --- Process RGB in batches ---
-                    rgb_embeds_list = []
-                    for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
-                        batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
-                        inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
-                        inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
-                        
-                        outputs_rgb = siglip_model.vision_model(**inputs_rgb)
-                        rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
-                        
-                        # Cleanup
-                        del inputs_rgb, outputs_rgb
-                        # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
-                    
-                    rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
-                    
-                    # For saving, we want numpy anyway, so keeping on CPU is perfect.
-                    # But the code below expects `rgb_embeds` to have a .cpu() method or be a tensor.
-                    # rgb_embeds_list contains cpu tensors now.
-                    # rgb_embeds will be a CPU tensor.
+                try:
+                    # Batch processing
+                    with torch.no_grad():
+                        VISION_BATCH_SIZE = 10 # Process in batches to avoid OOM
 
-                    # --- Process Depth in batches ---
-                    # depth_image shape is (B, H, W, 1) -> squeeze to (B, H, W)
-                    batch_depth = depth_image.squeeze(-1).float() 
-                    batch_depth_np = batch_depth.cpu().numpy()
-                    
-                    depth_embeds_list = []
-                    for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
-                        # 1. Get chunk of raw depth (numpy, CPU)
-                        batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]
-                        
-                        # 2. Preprocess just this chunk (moves to GPU inside function)
-                        normalized_depth_chunk = preprocess_depth_batch(
-                            batch_depth_chunk_np,
-                            target_size=518, 
-                            patch_size=14,
-                            device=device
-                        )
-                        normalized_depth_chunk = normalized_depth_chunk.float()
+                        # --- Process RGB in batches ---
+                        rgb_embeds_list = []
+                        for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
+                            batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
+                            inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
+                            inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
 
-                        # 3. Run Inference
-                        output = defm_model.get_intermediate_layers(
-                            normalized_depth_chunk, n=1, reshape=True, return_class_token=True
-                        )
-                        depth_embeds_list.append(output[0][1].cpu()) # Move result to CPU immediately
-                        
-                        # 4. Cleanup GPU tensors for this chunk
-                        del normalized_depth_chunk, output
-                        
-                    depth_embeds = torch.cat(depth_embeds_list, dim=0)
-                
-                # Arrays are already on CPU if we used .cpu() above, but .cpu() is safe to call on CPU tensors too.
-                recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
-                recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
-            except Exception as e:
-                print(f"Error in Siglip2 embedding: {e}")
-                traceback.print_exc()
+                            outputs_rgb = siglip_model.vision_model(**inputs_rgb)
+                            rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
+
+                            # Cleanup
+                            del inputs_rgb, outputs_rgb
+                            # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
+
+                        rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
+
+                        # For saving, we want numpy anyway, so keeping on CPU is perfect.
+                        # But the code below expects `rgb_embeds` to have a .cpu() method or be a tensor.
+                        # rgb_embeds_list contains cpu tensors now.
+                        # rgb_embeds will be a CPU tensor.
+
+                        # --- Process Depth in batches ---
+                        # depth_image shape is (B, H, W, 1) -> squeeze to (B, H, W)
+                        batch_depth = depth_image.squeeze(-1).float()
+                        batch_depth_np = batch_depth.cpu().numpy()
+
+                        depth_embeds_list = []
+                        for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
+                            # 1. Get chunk of raw depth (numpy, CPU)
+                            batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]
+
+                            # 2. Preprocess just this chunk (moves to GPU inside function)
+                            normalized_depth_chunk = preprocess_depth_batch(
+                                batch_depth_chunk_np,
+                                target_size=518,
+                                patch_size=14,
+                                device=device
+                            )
+                            normalized_depth_chunk = normalized_depth_chunk.float()
+
+                            # 3. Run Inference
+                            output = defm_model.get_intermediate_layers(
+                                normalized_depth_chunk, n=1, reshape=True, return_class_token=True
+                            )
+                            depth_embeds_list.append(output[0][1].cpu()) # Move result to CPU immediately
+
+                            # 4. Cleanup GPU tensors for this chunk
+                            del normalized_depth_chunk, output
+
+                        depth_embeds = torch.cat(depth_embeds_list, dim=0)
+
+                    # Arrays are already on CPU if we used .cpu() above, but .cpu() is safe to call on CPU tensors too.
+                    recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
+                    recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
+                except Exception as e:
+                    print(f"Error in Siglip2 embedding: {e}")
+                    traceback.print_exc()
 
             # ---------------------------------------------
 
@@ -615,12 +619,12 @@ def main():
                             # Extract data for this episode
                             ep_obs = np.copy(recorded_obs_episode[env_ids[i], :epi_len])
                             ep_acs = np.copy(recorded_acs_episode[env_ids[i], :epi_len])
-                            ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
-                            ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
+                            # ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
+                            # ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
 
                             # Save to Zarr immediately
                             print(f"[INFO] Saving episode for env {env_ids[i]} to ReplayBuffer...")
-                            buff.add_episode({
+                            episode_data = {
                                 "body_pos": ep_obs[:,: num_bodies * 3],
                                 "body_rot": ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
                                 "body_lin_vel": ep_obs[:, num_bodies * 7 : num_bodies * 10],
@@ -630,9 +634,11 @@ def main():
                                 "root_pos": (ep_obs[:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
                                 "root_rot": (ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
                                 "act": ep_acs[:],
-                                "rgb_embed": ep_rgb_embed,
-                                "depth_embed": ep_depth_embed,
-                            })
+                            }
+                            if args_cli.enable_cameras:
+                                episode_data["rgb_embed"] = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
+                                episode_data["depth_embed"] = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
+                            buff.add_episode(episode_data)
 
                             saved_idx += epi_len
                             saved_epi += 1
@@ -647,8 +653,9 @@ def main():
                     
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
-                    recorded_rgb_embed_episode[env_ids[i]] = 0
-                    recorded_depth_embed_episode[env_ids[i]] = 0
+                    if args_cli.enable_cameras:
+                        recorded_rgb_embed_episode[env_ids[i]] = 0
+                        recorded_depth_embed_episode[env_ids[i]] = 0
 
                     if saved_epi >= NUM_EPISODE:
                         print(f"Collected {saved_epi} episodes. Usage limit reached.")

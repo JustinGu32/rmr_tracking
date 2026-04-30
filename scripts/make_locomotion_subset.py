@@ -7,8 +7,8 @@ variants of the same one.
 Example:
     python scripts/make_locomotion_subset.py \
         --src /move/data/bones/g1/zarr/locomotion_33hz.zarr \
-        --dst /move/u/justingu/rmr_tracking/datasets/locomotion_33hz_subset.zarr \
-        --categories walk,jog --per_category 100 --seed 42
+        --dst /move/u/justingu/rmr_tracking/motions/locomotion_33hz_walk_jog_2000.zarr \
+        --categories walk,jog --per_category 2000 --seed 42
 """
 import argparse
 import re

@@ -31,7 +31,7 @@ class MotionLoader:
     def __init__(self, motion_file: str, body_indexes: Sequence[int], device: str = "cpu"):
         assert os.path.isfile(motion_file), f"Invalid file path: {motion_file}"
         data = np.load(motion_file)
-        self.fps = data["fps"]
+        self.fps = int(data["fps"])
         self.joint_pos = torch.tensor(data["joint_pos"], dtype=torch.float32, device=device)
         self.joint_vel = torch.tensor(data["joint_vel"], dtype=torch.float32, device=device)
         self._body_pos_w = torch.tensor(data["body_pos_w"], dtype=torch.float32, device=device)
@@ -69,7 +69,7 @@ class MultiMotionLoader:
         self.motion_end_idx = torch.tensor([data["joint_pos"].shape[0] for data in datas], dtype=torch.long, device=device).cumsum(dim=0)
         
         self.num_motions = len(datas)
-        self.fps = datas[0]["fps"] # Assume all motion have same fps
+        self.fps = int(datas[0]["fps"]) # Assume all motion have same fps
         self.joint_pos = torch.tensor(np.concatenate([data["joint_pos"] for data in datas], axis=0), dtype=torch.float32, device=device)
         self.joint_vel = torch.tensor(np.concatenate([data["joint_vel"] for data in datas], axis=0), dtype=torch.float32, device=device)
         self._body_pos_w = torch.tensor(np.concatenate([data["body_pos_w"] for data in datas], axis=0), dtype=torch.float32, device=device)

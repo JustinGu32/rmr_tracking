@@ -3,8 +3,8 @@
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=24G
-#SBATCH --gres=gpu:titanrtx:1
+#SBATCH --mem=48G
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --job-name=collect_multiclip
 #SBATCH --output=logs/slurm/collect_multiclip_%j.out
 #SBATCH --error=logs/slurm/collect_multiclip_%j.err
@@ -24,7 +24,7 @@ conda activate env_isaaclab
 # export OPENBLAS_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Run: c15qko8c = bones_target_33hz_swish_uniform_timetolive_walk-jog
-# ENABLE_CAMERAS=1 python scripts/rsl_rl/collect_dataset_multiclip.py \
+# python scripts/rsl_rl/collect_dataset_multiclip.py \
 #     --task=Bones-MultiClip-Compliance-G1-Collect-v0 \
 #     --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
 #     --include_motion_types walk,jog \
@@ -38,18 +38,21 @@ conda activate env_isaaclab
 #     --min_delay 0 \
 #     --max_delay 0 \
 #     --save_folder=./datasets \
+#     --enable_cameras \
 #     --headless
 
-ENABLE_CAMERAS=1 python scripts/rsl_rl/collect_dataset_multiclip.py \
+# ENABLE_CAMERAS=1 python scripts/rsl_rl/collect_dataset_multiclip.py \
+python scripts/rsl_rl/collect_dataset_multiclip.py \
     --task=Bones-MultiClip-Compliance-G1-Collect-v0 \
-    --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_walk100_jog100.zarr \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
     --include_motion_types walk,jog \
-    --wandb_path=robot-mcrobotface/multiclip_bones/3j0fwfyc \
+    --wandb_path=robot-mcrobotface/multiclip_bones/dpm67awe \
     --activation swish \
     --decimation 6 \
-    --num_envs 3 \
-    --num_steps_collect 20 \
-    --num_eps_collect 5 \
-    --episode_collect_length 4 \
+    --num_envs 100 \
+    --num_steps_collect 18 \
+    --num_eps_collect 10000 \
+    --episode_collect_length 8 \
     --save_folder=./datasets/walk_jog_33hz_dataset \
-    --headless
+    --headless \
+    --enable_cameras

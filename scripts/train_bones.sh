@@ -11,9 +11,9 @@
 
 set -uo pipefail
 
-cd /move/u/karenvo/Projects/rmr_tracking/
+cd /move/u/justingu/rmr_tracking/
 
-source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
+source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 # --- Crane ablations (12 variants) ---
@@ -180,19 +180,18 @@ conda activate env_isaaclab
 
 # --- curriculum ablations (13-16) ---
 # # 13. delta + push-none + curriculum
-python scripts/rsl_rl/train_bones.py \
-   --task=Bones-Flat-chip-G1-v0 \
-   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
-   --headless \
-   --logger wandb \
-   --log_project_name bones_crane_ablation \
-   --run_name crane_a5000_both_all \
-   --ppo_output target \
-   --push none \
-   --crane \
-   --curriculum \
-   --assist_mode both_all \
-   --video --video_interval 10000
+# python scripts/rsl_rl/train_bones.py \
+#    --task=Bones-Flat-chip-G1-v0 \
+#    --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane:v0 \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name bones_singleclip \
+#    --run_name crane_a5000_both_all \
+#    --ppo_output target \
+#    --push none \
+#    --crane \
+#    --assist_mode both_all \
+#    --video --video_interval 10000
 
 # 14. delta + push-none + no curriculum (baseline, same as #9)
 # python scripts/rsl_rl/train_bones.py \
@@ -229,3 +228,105 @@ python scripts/rsl_rl/train_bones.py \
 #    --ppo_output target \
 #    --push none
 
+# --- single-clip training from local NPZ (no wandb) ---
+# Mirrors the multiclip Bones config (target, swish, gravity curriculum, uniform sampling)
+# but uses MultiMotionCommand with a single-element motion_files list via --motion_file.
+
+python scripts/rsl_rl/train_bones.py \
+    --task=Tracking-Flat-G1-v0 \
+    --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
+    --num_envs=4096 \
+    --headless \
+    --logger wandb \
+    --log_project_name bones_singleclip \
+    --run_name tracking_jump_and_land_light_003_50hz \
+    --ppo_output target \
+    --activation swish \
+    --double_step
+    # --sampling uniform
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-Flat-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name tracking_stand_up_lying_R_002__A475_M_50hz \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step
+#     # --sampling uniform
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-Flat-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name tracking_125_Jump_002__A017_M_50hz \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step
+#     # --sampling uniform
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-Flat-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_33hz/5_jump_and_land_light_003__A001_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name tracking_jump_and_land_light_005_M_33hz \
+#     --ppo_output target \
+#     --decimation 6 \
+#     --activation swish \
+#     --double_step
+#     # --sampling uniform
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-Flat-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name tracking_jump_002_131_M_33hz \
+#     --ppo_output target \
+#     --decimation 6 \
+#     --activation swish \
+#     --double_step
+#     # --sampling uniform
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-Flat-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name tracking_stand_up_lying_R_002_37815_M_33hz \
+#     --ppo_output target \
+#     --decimation 6 \
+#     --activation swish \
+#     --double_step
+# #     --sampling uniform
+
+
+
+
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-Flat-chip-G1-v0 \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name bones_singleclip \
+#     --run_name bones_stand_up_lying_R_002_37815_M_33hz \
+#     --ppo_output target \
+#     --decimation 6 \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform

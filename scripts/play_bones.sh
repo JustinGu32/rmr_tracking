@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
-#SBATCH --gres=gpu:a5000:1 
+#SBATCH --gres=gpu:titanrtx:1 
 #SBATCH --job-name=bones_crane
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
@@ -16,39 +16,39 @@ source /move/u/justingu/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 
-WANDB_PROJECT="robot-mcrobotface/bones_crane_ablation"
-TASK="Bones-Flat-chip-G1-Play-v0"
-VIDEO_LENGTH=3000
-NUM_ENVS=1
+# WANDB_PROJECT="robot-mcrobotface/bones_crane_ablation"
+# TASK="Bones-Flat-chip-G1-Play-v0"
+# VIDEO_LENGTH=3000
+# NUM_ENVS=1
 
-play_run() {
-    local run_id="$1"
-    local run_name="$2"
-    local ppo_output="$3"
-    local no_cmd_obs="$4"
+# play_run() {
+#     local run_id="$1"
+#     local run_name="$2"
+#     local ppo_output="$3"
+#     local no_cmd_obs="$4"
 
-    echo "=========================================="
-    echo "Playing: $run_name ($run_id)"
-    echo "  ppo_output=$ppo_output, no_cmd_obs=$no_cmd_obs"
-    echo "=========================================="
+#     echo "=========================================="
+#     echo "Playing: $run_name ($run_id)"
+#     echo "  ppo_output=$ppo_output, no_cmd_obs=$no_cmd_obs"
+#     echo "=========================================="
 
-    export BONES_PPO_OUTPUT="$ppo_output"
-    export BONES_PUSH="none"
-    if [ "$no_cmd_obs" = "1" ]; then
-        export BONES_NO_COMMAND_OBS="1"
-    else
-        unset BONES_NO_COMMAND_OBS
-    fi
+#     export BONES_PPO_OUTPUT="$ppo_output"
+#     export BONES_PUSH="none"
+#     if [ "$no_cmd_obs" = "1" ]; then
+#         export BONES_NO_COMMAND_OBS="1"
+#     else
+#         unset BONES_NO_COMMAND_OBS
+#     fi
 
-    python scripts/rsl_rl/play_bones.py \
-        --task="$TASK" \
-        --num_envs="$NUM_ENVS" \
-        --wandb_path="${WANDB_PROJECT}/${run_id}" \
-        --video \
-        --video_length="$VIDEO_LENGTH" \
-        --video_folder="videos/${run_name}" \
-        --headless
-}
+#     python scripts/rsl_rl/play_bones.py \
+#         --task="$TASK" \
+#         --num_envs="$NUM_ENVS" \
+#         --wandb_path="${WANDB_PROJECT}/${run_id}" \
+#         --video \
+#         --video_length="$VIDEO_LENGTH" \
+#         --video_folder="videos/${run_name}" \
+#         --headless
+# }
 
 # # 1. delta + push-normal
 # play_run "g0i84946" "2026-03-25_03-53-35_crane_rtx_delta_push-normal" "delta" "0"
@@ -98,45 +98,45 @@ play_run() {
 # MultiClip BONES play commands
 # ============================================================
 
-WANDB_PROJECT_MC="robot-mcrobotface/multiclip_bones"
-TASK_MC="Bones-MultiClip-Compliance-G1-v0"
-ZARR_PATH="/move/data/bones/g1/zarr/locomotion_50hz.zarr"
+# WANDB_PROJECT_MC="robot-mcrobotface/multiclip_bones"
+# TASK_MC="Bones-MultiClip-Compliance-G1-v0"
+# ZARR_PATH="/move/data/bones/g1/zarr/locomotion_50hz.zarr"
 
-play_multiclip_run() {
-    local run_id="$1"
-    local run_name="$2"
-    local ppo_output="$3"
-    local activation="${4:-elu}"
-    local zarr_path="${5:-$ZARR_PATH}"
-    local decimation="${6:-}"
+# play_multiclip_run() {
+#     local run_id="$1"
+#     local run_name="$2"
+#     local ppo_output="$3"
+#     local activation="${4:-elu}"
+#     local zarr_path="${5:-$ZARR_PATH}"
+#     local decimation="${6:-}"
 
-    echo "=========================================="
-    echo "Playing MultiClip: $run_name ($run_id)"
-    echo "  ppo_output=$ppo_output, activation=$activation, zarr_path=$zarr_path, decimation=${decimation:-default}"
-    echo "=========================================="
+#     echo "=========================================="
+#     echo "Playing MultiClip: $run_name ($run_id)"
+#     echo "  ppo_output=$ppo_output, activation=$activation, zarr_path=$zarr_path, decimation=${decimation:-default}"
+#     echo "=========================================="
 
-    export BONES_PPO_OUTPUT="$ppo_output"
-    export BONES_PUSH="none"
+#     export BONES_PPO_OUTPUT="$ppo_output"
+#     export BONES_PUSH="none"
 
-    local decimation_flag=""
-    if [ -n "$decimation" ]; then
-        decimation_flag="--decimation=$decimation"
-    fi
+#     local decimation_flag=""
+#     if [ -n "$decimation" ]; then
+#         decimation_flag="--decimation=$decimation"
+#     fi
 
-    python scripts/rsl_rl/play_bones.py \
-        --task="$TASK_MC" \
-        --num_envs="$NUM_ENVS" \
-        --zarr_path="$zarr_path" \
-        --max_clips=10 \
-        --wandb_path="${WANDB_PROJECT_MC}/${run_id}" \
-        --activation="$activation" \
-        --start_from_beginning \
-        $decimation_flag \
-        --video \
-        --video_length="$VIDEO_LENGTH" \
-        --video_folder="videos/multiclip/wider_terms/${run_name}" \
-        --headless
-}
+#     python scripts/rsl_rl/play_bones.py \
+#         --task="$TASK_MC" \
+#         --num_envs="$NUM_ENVS" \
+#         --zarr_path="$zarr_path" \
+#         --max_clips=10 \
+#         --wandb_path="${WANDB_PROJECT_MC}/${run_id}" \
+#         --activation="$activation" \
+#         --start_from_beginning \
+#         $decimation_flag \
+#         --video \
+#         --video_length="$VIDEO_LENGTH" \
+#         --video_folder="videos/multiclip/wider_terms/${run_name}" \
+#         --headless
+# }
 
 # # 1. bones_delta-all_50hz_swish_8k
 # play_multiclip_run "6sferz1a" "2026-04-06_09-15-11_bones_delta-all_50hz_swish_8k" "delta-all" "swish"
@@ -150,23 +150,139 @@ play_multiclip_run() {
 # # 4. bones_delta-all_50hz
 # play_multiclip_run "gait2u9c" "2026-04-06_08-54-14_bones_delta-all_50hz" "delta-all"
 
-# 5. bones_target_33hz_loose-terms
-play_multiclip_run "sqznpjgk" "2026-04-07_02-44-12_bones_target_33hz_loose-terms" "target" "elu" "/move/data/bones/g1/zarr/locomotion_33hz.zarr" "6"
+# # 5. bones_target_33hz_loose-terms
+# play_multiclip_run "sqznpjgk" "2026-04-07_02-44-12_bones_target_33hz_loose-terms" "target" "elu" "/move/data/bones/g1/zarr/locomotion_33hz.zarr" "6"
 
-# 6. bones_target_50hz_swish_16k_loose-terms
-play_multiclip_run "xf2vwse4" "2026-04-07_02-44-14_bones_target_50hz_swish_16k_loose-terms" "target" "swish"
+# # 6. bones_target_50hz_swish_16k_loose-terms
+# play_multiclip_run "xf2vwse4" "2026-04-07_02-44-14_bones_target_50hz_swish_16k_loose-terms" "target" "swish"
 
-# 7. bones_delta-all_50hz_swish_16k_loose-terms
-play_multiclip_run "4v04yhka" "2026-04-07_02-44-10_bones_delta-all_50hz_swish_16k_loose-terms" "delta-all" "swish"
+# # 7. bones_delta-all_50hz_swish_16k_loose-terms
+# play_multiclip_run "4v04yhka" "2026-04-07_02-44-10_bones_delta-all_50hz_swish_16k_loose-terms" "delta-all" "swish"
 
-# 8. bones_target_50hz_16k_loose-terms
-play_multiclip_run "1wd1fh8b" "2026-04-07_02-42-14_bones_target_50hz_16k_loose-terms" "target"
+# # 8. bones_target_50hz_16k_loose-terms
+# play_multiclip_run "1wd1fh8b" "2026-04-07_02-42-14_bones_target_50hz_16k_loose-terms" "target"
 
-# 9. bones_delta-all_50hz_loose-terms
-play_multiclip_run "pkpsylra" "2026-04-07_02-41-13_bones_delta-all_50hz_loose-terms" "delta-all"
+# # 9. bones_delta-all_50hz_loose-terms
+# play_multiclip_run "pkpsylra" "2026-04-07_02-41-13_bones_delta-all_50hz_loose-terms" "delta-all"
 
-# 10. bones_target_50hz_swish_loose-terms
-play_multiclip_run "fudnqofd" "2026-04-07_02-42-14_bones_target_50hz_swish_loose-terms" "target" "swish"
+# # 10. bones_target_50hz_swish_loose-terms
+# play_multiclip_run "fudnqofd" "2026-04-07_02-42-14_bones_target_50hz_swish_loose-terms" "target" "swish"
 
-# 11. bones_target_50hz_loose-terms
-play_multiclip_run "3tultbot" "2026-04-07_02-40-14_bones_target_50hz_loose-terms" "target"
+# # 11. bones_target_50hz_loose-terms
+# play_multiclip_run "3tultbot" "2026-04-07_02-40-14_bones_target_50hz_loose-terms" "target"
+
+
+# ============================================================
+# Single-clip BONES play: stand_up_lying_R_002 (run eozs32pw)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/eozs32pw \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+    --activation=swish \
+    --decimation=6 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/bones_stand_up_lying_R_002_37815_M_33hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip BONES play: jump_002_131_M_33hz (run hvgzk08y)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/hvgzk08y \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
+    --activation=swish \
+    --decimation=6 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/jump_002_131_M_33hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip BONES play: jump_and_land_light_005_M_33hz (run 27v9xoyy)
+# NOTE: only candidate in bones_33hz/ is 5_jump_and_land_light_003__A001_M.npz
+#       (run name's "_005" likely came from the file's "5_" prefix).
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/27v9xoyy \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/5_jump_and_land_light_003__A001_M.npz \
+    --activation=swish \
+    --decimation=6 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_005_M_33hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip BONES play: 125_Jump_002__A017_M_50hz (run el7o911j)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/el7o911j \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+    --activation=swish \
+    --decimation=4 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/125_Jump_002__A017_M_50hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip BONES play: stand_up_lying_R_002__A475_M_50hz (run pbwpcori)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/pbwpcori \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+    --activation=swish \
+    --decimation=4 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/stand_up_lying_R_002__A475_M_50hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip BONES play: jump_and_land_light_003_50hz (run c1mcnvoc)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Bones-Flat-chip-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/c1mcnvoc \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
+    --activation=swish \
+    --decimation=4 \
+    --video \
+    --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_003_50hz" \
+    --headless

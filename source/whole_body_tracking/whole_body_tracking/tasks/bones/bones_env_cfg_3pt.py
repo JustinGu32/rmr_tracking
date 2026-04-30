@@ -176,7 +176,7 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
-        time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
+        # time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
@@ -244,8 +244,8 @@ class RewardsCfg:
 
     motion_global_anchor_pos = RewTerm(
         func=mdp.motion_global_anchor_position_error_exp,
-        weight=0.5,
-        params={"command_name": "motion", "std": 0.3},
+        weight=1,
+        params={"command_name": "motion", "std": 0.25},
     )
     motion_global_anchor_ori = RewTerm(
         func=mdp.motion_global_anchor_orientation_error_exp,
