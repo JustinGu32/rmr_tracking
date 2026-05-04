@@ -227,6 +227,19 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             if section in train_cfg:
                 for key in _deprecated_model_keys:
                     train_cfg[section].pop(key, None)
+        # The standard PPO runner should not receive Bones PopArt-only algorithm flags.
+        for key in [
+            "use_popart_multihead",
+            "popart_head_mode",
+            "popart_groups",
+            "popart_group_preset",
+            "popart_grouped_actor_weight_mode",
+            "popart_momentum",
+            "popart_epsilon",
+            "popart_normalize_actor_weights",
+            "popart_actor_advantage_scaling",
+        ]:
+            train_cfg.get("algorithm", {}).pop(key, None)
         super().__init__(env, train_cfg, log_dir, device)
         self.registry_name = registry_name
 

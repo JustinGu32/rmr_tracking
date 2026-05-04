@@ -34,8 +34,10 @@ parser.add_argument("--start_from_beginning", action="store_true", default=False
                     help="Start each episode from the beginning of the clip instead of adaptive sampling.")
 parser.add_argument("--decimation", type=int, default=None, help="Override decimation (e.g., 6 for 33hz, 4 for 50hz).")
 parser.add_argument("--bones_popart", action="store_true", default=False, help="Use PopArt multi-head critic (must match training).")
-parser.add_argument("--popart_head_mode", type=str, default="per_term", choices=["per_term"],
+parser.add_argument("--popart_head_mode", type=str, default="grouped", choices=["per_term", "grouped"],
                     help="PopArt critic head layout for inference (default: per_term).")
+parser.add_argument("--popart_group_preset", type=str, default="upper_lower", choices=["upper_lower", "actual_individual"],
+                    help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -154,6 +156,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if use_popart_runner:
         agent_cfg.algorithm.use_popart_multihead = True
         agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
+        agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
 
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
@@ -197,7 +200,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         # Strip PopArt-specific keys that the stock PPO doesn't accept
         for key in [
             "use_popart_multihead", "popart_head_mode", "popart_groups",
+            "popart_group_preset",
+            "popart_grouped_actor_weight_mode",
             "popart_momentum", "popart_epsilon", "popart_normalize_actor_weights",
+            "popart_actor_advantage_scaling",
         ]:
             train_cfg.get("algorithm", {}).pop(key, None)
     ppo_runner = runner_cls(env, train_cfg, log_dir=None, device=agent_cfg.device)

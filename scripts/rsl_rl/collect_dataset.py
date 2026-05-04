@@ -629,10 +629,12 @@ def main():
                             ep_acs = np.copy(recorded_acs_episode[env_ids[i], :epi_len])
                             ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
                             ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
+                            height_scan_start = num_bodies * 13 + num_joints * 2
+                            ep_height_scan = ep_obs[:, height_scan_start:] if ep_obs.shape[1] > height_scan_start else None
 
                             # Save to Zarr immediately
                             print(f"[INFO] Saving episode for env {env_ids[i]} to ReplayBuffer...")
-                            buff.add_episode({
+                            episode_data = {
                                 "body_pos": ep_obs[:,: num_bodies * 3],
                                 "body_rot": ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
                                 "body_lin_vel": ep_obs[:, num_bodies * 7 : num_bodies * 10],
@@ -644,7 +646,10 @@ def main():
                                 "act": ep_acs[:],
                                 "rgb_embed": ep_rgb_embed,
                                 "depth_embed": ep_depth_embed,
-                            })
+                            }
+                            if ep_height_scan is not None:
+                                episode_data["height_scan"] = ep_height_scan
+                            buff.add_episode(episode_data)
 
                             saved_idx += epi_len
                             saved_epi += 1

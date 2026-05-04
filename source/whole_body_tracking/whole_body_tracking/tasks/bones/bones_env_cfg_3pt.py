@@ -415,8 +415,10 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                 },
             )
 
-        # Crane mode: penalize foot on ground when reference says it should be in the air
-        if os.environ.get("BONES_CRANE") == "1":
+        contact_feasibility_enabled = os.environ.get("BONES_CONTACT_FEASIBILITY") == "1"
+
+        # Contact feasibility: discourage support/contact patterns that disagree with the reference motion.
+        if os.environ.get("BONES_CRANE") == "1" or contact_feasibility_enabled:
             self.rewards.foot_contact_state = RewTerm(
                 func=mdp.foot_contact_state_penalty,
                 weight=2.0,
@@ -424,10 +426,22 @@ class Bones3ptEnvCfg(ManagerBasedRLEnvCfg):
                     "command_name": "motion",
                     "sensor_cfg": SceneEntityCfg(
                         "contact_forces",
-                        body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+                        body_names=mdp.FOOT_BODY_NAMES,
                     ),
                     "height_threshold": 0.08,
                 },
+            )
+
+        # Feet z-position reward: dense reward + hard termination for ankle z tracking
+        if os.environ.get("BONES_FEET_Z_POS_REWARD") == "1" or contact_feasibility_enabled:
+            self.rewards.feet_z_position = RewTerm(
+                func=mdp.motion_feet_z_pos_reward,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.05},
+            )
+            self.terminations.feet_body_pos_z = DoneTerm(
+                func=mdp.bad_motion_feet_z_pos,
+                params={"command_name": "motion", "threshold": 0.20},
             )
 
         # Remove command observation

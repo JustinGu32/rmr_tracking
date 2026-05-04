@@ -39,24 +39,6 @@ class MotionLoader:
         self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
         self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
 
-        # Load object data if available, otherwise default to origin
-        if "object_pos_w" in data:
-            self._object_pos_w = torch.tensor(data["object_pos_w"], dtype=torch.float32, device=device)
-            self._object_quat_w = torch.tensor(data["object_quat_w"], dtype=torch.float32, device=device)
-            # Load velocities if available (optional for backward compatibility)
-            if "object_lin_vel_w" in data:
-                self._object_lin_vel_w = torch.tensor(data["object_lin_vel_w"], dtype=torch.float32, device=device)
-                self._object_ang_vel_w = torch.tensor(data["object_ang_vel_w"], dtype=torch.float32, device=device)
-            else:
-                self._object_lin_vel_w = torch.zeros_like(self._object_pos_w)
-                self._object_ang_vel_w = torch.zeros_like(self._object_pos_w)
-        else:
-            self._object_pos_w = torch.zeros_like(self._body_pos_w[:, 0, :])
-            self._object_quat_w = torch.zeros_like(self._body_quat_w[:, 0, :])
-            self._object_quat_w[:, 0] = 1.0
-            self._object_lin_vel_w = torch.zeros_like(self._object_pos_w)
-            self._object_ang_vel_w = torch.zeros_like(self._object_pos_w)
-
         self._body_indexes = body_indexes
         self.time_step_total = self.joint_pos.shape[0]
 
@@ -76,22 +58,6 @@ class MotionLoader:
     def body_ang_vel_w(self) -> torch.Tensor:
         return self._body_ang_vel_w[:, self._body_indexes]
 
-    @property
-    def object_pos_w(self) -> torch.Tensor:
-        return self._object_pos_w
-
-    @property
-    def object_quat_w(self) -> torch.Tensor:
-        return self._object_quat_w
-    
-    @property
-    def object_lin_vel_w(self) -> torch.Tensor:
-        return self._object_lin_vel_w
-
-    @property
-    def object_ang_vel_w(self) -> torch.Tensor:
-        return self._object_ang_vel_w
-        
 class MotionCommand(CommandTerm):
     cfg: MotionCommandCfg
 
@@ -127,6 +93,9 @@ class MotionCommand(CommandTerm):
         
         # Store box position
         self.box_position = torch.tensor(self.cfg.box_position, device=self.device)
+        self.box_rotation = torch.tensor(self.cfg.box_rotation, dtype=torch.float32, device=self.device).repeat(
+            self.num_envs, 1
+        )
 
         # VR 3-point related (ankle + pelvis tracking points)
         self.vr_3point_body_indices = [self.robot.body_names.index(name) for name in self.cfg.vr_3point_body]
@@ -274,22 +243,22 @@ class MotionCommand(CommandTerm):
     @property
     def object_pos_w(self) -> torch.Tensor:
         """Position of the object in world frame."""
-        return self.motion.object_pos_w[self.time_steps] + self._env.scene.env_origins + self.box_position
+        return self._env.scene.env_origins + self.box_position
 
     @property
     def object_quat_w(self) -> torch.Tensor:
         """Orientation of the object in world frame."""
-        return self.motion.object_quat_w[self.time_steps]
+        return self.box_rotation
 
     @property
     def object_lin_vel_w(self) -> torch.Tensor:
         """Linear velocity of the object in world frame."""
-        return self.motion.object_lin_vel_w[self.time_steps]
+        return torch.zeros_like(self.object_pos_w)
 
     @property
     def object_ang_vel_w(self) -> torch.Tensor:
         """Angular velocity of the object in world frame."""
-        return self.motion.object_ang_vel_w[self.time_steps]
+        return torch.zeros_like(self.object_pos_w)
 
     # VR 3-point properties (CHIP compliance tracking points)
     @property
@@ -516,6 +485,7 @@ class MotionCommandCfg(CommandTermCfg):
     body_names: list[str] = MISSING
 
     box_position: list[float] = [0.0, 0.0, 0.0]
+    box_rotation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
 
     pose_range: dict[str, tuple[float, float]] = {}
     velocity_range: dict[str, tuple[float, float]] = {}

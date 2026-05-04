@@ -6,6 +6,8 @@ from isaaclab.managers.reward_manager import RewardManager
 
 
 PER_TERM_REWARDS_RAW_KEY = "per_term_rewards_raw"
+PER_HEAD_REWARDS_KEY = "per_head_rewards"
+WEIGHTED_STEP_REWARDS_KEY = "weighted_step_rewards"
 REWARD_WEIGHTS_KEY = "reward_weights"
 REWARD_TERM_NAMES_KEY = "reward_term_names"
 
@@ -24,8 +26,11 @@ class BonesPerTermRewardManager(RewardManager):
     def _publish_static_extras(self):
         self._env.extras[REWARD_WEIGHTS_KEY] = self.reward_weights
         self._env.extras[REWARD_TERM_NAMES_KEY] = list(self._term_names)
+        self._env.extras[WEIGHTED_STEP_REWARDS_KEY] = self._step_reward
         if PER_TERM_REWARDS_RAW_KEY not in self._env.extras:
             self._env.extras[PER_TERM_REWARDS_RAW_KEY] = self._step_reward_raw
+        if PER_HEAD_REWARDS_KEY not in self._env.extras:
+            self._env.extras[PER_HEAD_REWARDS_KEY] = self._step_reward_raw
 
     def compute(self, dt: float) -> torch.Tensor:
         self._reward_buf[:] = 0.0
@@ -41,6 +46,8 @@ class BonesPerTermRewardManager(RewardManager):
 
         self._publish_static_extras()
         self._env.extras[PER_TERM_REWARDS_RAW_KEY] = self._step_reward_raw
+        self._env.extras[PER_HEAD_REWARDS_KEY] = self._step_reward_raw
+        self._env.extras[WEIGHTED_STEP_REWARDS_KEY] = self._step_reward
         return self._reward_buf
 
 

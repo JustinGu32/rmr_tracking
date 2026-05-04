@@ -14,7 +14,7 @@ from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
+from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, TiledCameraCfg, patterns
 from isaaclab.assets import RigidObjectCfg
 from isaaclab.terrains import TerrainImporterCfg
 
@@ -31,6 +31,7 @@ from isaaclab.terrains.config import TerrainGeneratorCfg
 import isaaclab.terrains.config as terrain_gen
 from isaaclab.terrains import HfPyramidStairsTerrainCfg
 from isaaclab.terrains.trimesh.mesh_terrains_cfg import MeshPyramidStairsTerrainCfg
+from whole_body_tracking.tasks.bones.terrain_mesh_spawner_cfg import TerrainMeshSpawnerCfg
 
 # from whole_body_tracking.tasks.chair_step.custom_terrains import LinearStairsTerrainCfg
 
@@ -58,7 +59,16 @@ VELOCITY_RANGE_Null = {
 }
 
 # Staircase definition
-STAIRCASE_POSITION = [0.0, 0.0, 0.0] # 0.0, -0.01 to avoid contact with the step
+STAIRCASE_URDF_PATH = (
+    "/move/u/karenvo/Projects/rmr_tracking/artifacts/up_continuous_v2_karen_stairs/multi_boxes.urdf"
+)
+STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/up_continuous_v2_karen_stairs_usd")
+STAIRCASE_RAYCAST_URDF_PATH = (
+    "/move/u/karenvo/Projects/rmr_tracking/artifacts/up_continuous_v2_karen_stairs/multi_boxes_combined.urdf"
+)
+STAIRCASE_POSITION = [3.7, 0.55, 0.0]
+# Quaternion is in (w, x, y, z); this is a +94 degree yaw.
+STAIRCASE_ROTATION = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
 
 @configclass
 class StaircaseSceneCfg(InteractiveSceneCfg):
@@ -94,13 +104,22 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
+    height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/torso_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.2, size=(1.0, 1.0)),
+        debug_vis=False,
+        mesh_prim_paths=["/World/envs/env_0/StaircaseRaycast"],
+    )
 
     # Staircase object
     staircase = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Staircase",
         spawn=sim_utils.UrdfFileCfg(
-            asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
-            usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
+            asset_path=STAIRCASE_URDF_PATH,
+            usd_dir=STAIRCASE_USD_DIR,
+            force_usd_conversion=True,
             fix_base=True,
             collision_props=sim_utils.CollisionPropertiesCfg(),
             joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -109,7 +128,18 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
             articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POSITION),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
+    )
+
+    # Single combined, non-physical staircase mesh used only by RayCaster height scans.
+    staircase_raycast = AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/StaircaseRaycast",
+        spawn=TerrainMeshSpawnerCfg(
+            urdf_path=STAIRCASE_RAYCAST_URDF_PATH,
+            visible=False,
+            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
+        ),
+        init_state=AssetBaseCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
     )
 
     # Depth camera mounted on the D435 link (head)
@@ -161,6 +191,7 @@ class CommandsCfg:
         velocity_range=VELOCITY_RANGE,
         joint_position_range=(-0.1, 0.1),
         box_position=STAIRCASE_POSITION,
+        box_rotation=STAIRCASE_ROTATION,
     )
 
 # Null pose
@@ -200,6 +231,12 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-1.0, 1.0),
+        )
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -217,6 +254,11 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
+        height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
+        )
         actions = ObsTerm(func=mdp.last_action)
 
     # observation groups
@@ -328,7 +370,7 @@ class RewardsCfg:
     )
     undesired_contacts = RewTerm(
         func=mdp.undesired_contacts,
-        weight=-0.1,
+        weight=-0.5, #-0.1
         params={
             "sensor_cfg": SceneEntityCfg(
                 "contact_forces",
@@ -348,7 +390,7 @@ class TerminationsCfg:
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
     anchor_pos_z = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
-        params={"command_name": "motion", "threshold": 0.25},
+        params={"command_name": "motion", "threshold": 0.12},
     )
     anchor_pos_xy = DoneTerm(
         func=mdp.bad_anchor_pos_x_y_only,

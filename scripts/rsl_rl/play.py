@@ -7,6 +7,7 @@ python scripts/rsl_rl/play.py --task=Chair-Step-G1-v0 --num_envs=2 --wandb_path=
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -27,7 +28,12 @@ parser.add_argument("--motion_file", type=str, default=None, help="Path to the m
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
-parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+parser.add_argument("--heightmap", action="store_true", default=False,
+                    help="Enable task-configured height-map observations.")
+parser.add_argument("--heightmap_debug_vis", action="store_true", default=False,
+                    help="Show height-map raycaster debug visualization.")
+parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
+                    help="PPO output mode: must match the checkpoint's training setting.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -36,6 +42,10 @@ args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
 if args_cli.video:
     args_cli.enable_cameras = True
+
+# Mirror env vars that __post_init__ reads and that affect obs/action shape.
+# These must be set before whole_body_tracking.tasks is imported.
+os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -47,7 +57,6 @@ simulation_app = app_launcher.app
 """Rest everything follows."""
 
 import gymnasium as gym
-import os
 import pathlib
 import torch
 
@@ -65,6 +74,104 @@ from isaaclab.utils.dict import print_dict
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils import get_checkpoint_path
 from isaaclab_tasks.utils.hydra import hydra_task_config
+
+def configure_height_map_obs(env_cfg, enabled: bool):
+    """Enable or remove task-provided height-map sensor and observation terms."""
+    height_scanner_cfg = getattr(env_cfg.scene, "height_scanner", None)
+    has_height_scan_term = False
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        if group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None:
+            has_height_scan_term = True
+
+    if enabled:
+        if height_scanner_cfg is None or not has_height_scan_term:
+            raise ValueError(
+                "--heightmap was passed, but this task does not define both scene.height_scanner "
+                "and observations.*.height_scan."
+            )
+        return
+
+    if height_scanner_cfg is not None:
+        env_cfg.scene.height_scanner = None
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        if group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None:
+            group_cfg.height_scan = None
+
+
+def print_height_map_obs_debug(env, env_cfg):
+    """Print enough state to verify height-map observations reached the built env."""
+    height_scanner_cfg = getattr(env_cfg.scene, "height_scanner", None)
+    print(f"[HEIGHT_MAP_DEBUG] scene.height_scanner configured: {height_scanner_cfg is not None}")
+    if height_scanner_cfg is not None:
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner prim_path: {height_scanner_cfg.prim_path}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner pattern: {height_scanner_cfg.pattern_cfg}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner mesh_prim_paths: {height_scanner_cfg.mesh_prim_paths}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner update_period: {height_scanner_cfg.update_period}")
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        has_term = group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None
+        print(f"[HEIGHT_MAP_DEBUG] cfg observations.{group_name}.height_scan: {has_term}")
+
+    unwrapped = env.unwrapped
+    sensor_names = sorted(getattr(unwrapped.scene, "sensors", {}).keys())
+    print(f"[HEIGHT_MAP_DEBUG] built scene sensors: {sensor_names}")
+    obs_manager = getattr(unwrapped, "observation_manager", None)
+    if obs_manager is not None:
+        print(f"[HEIGHT_MAP_DEBUG] active observation terms: {obs_manager.active_terms}")
+        print(f"[HEIGHT_MAP_DEBUG] observation term dims: {obs_manager.group_obs_term_dim}")
+    obs_space = getattr(unwrapped, "observation_space", None)
+    if hasattr(obs_space, "spaces"):
+        for group_name, space in obs_space.spaces.items():
+            print(f"[HEIGHT_MAP_DEBUG] observation_space[{group_name}]: {space}")
+    else:
+        print(f"[HEIGHT_MAP_DEBUG] observation_space: {obs_space}")
+
+
+def validate_checkpoint_obs_shape(ppo_runner: MotionOnPolicyRunner, resume_path: str, *, heightmap_enabled: bool):
+    """Fail early with a useful hint when the checkpoint and play obs shapes differ."""
+    loaded_dict = torch.load(resume_path, map_location="cpu")
+    model_state_dict = loaded_dict.get("model_state_dict", loaded_dict)
+
+    checkpoint_actor = model_state_dict.get("actor.0.weight")
+    checkpoint_critic = model_state_dict.get("critic.0.weight")
+    if checkpoint_actor is None and checkpoint_critic is None:
+        return
+
+    policy = ppo_runner.alg.policy
+    current_actor_in = getattr(policy.actor[0], "in_features", None) if hasattr(policy, "actor") else None
+    current_critic_in = getattr(policy.critic[0], "in_features", None) if hasattr(policy, "critic") else None
+
+    mismatches = []
+    if checkpoint_actor is not None and current_actor_in is not None:
+        checkpoint_actor_in = checkpoint_actor.shape[1]
+        if checkpoint_actor_in != current_actor_in:
+            mismatches.append(("actor", checkpoint_actor_in, current_actor_in))
+    if checkpoint_critic is not None and current_critic_in is not None:
+        checkpoint_critic_in = checkpoint_critic.shape[1]
+        if checkpoint_critic_in != current_critic_in:
+            mismatches.append(("critic", checkpoint_critic_in, current_critic_in))
+
+    if not mismatches:
+        return
+
+    lines = [
+        "Checkpoint observation shape does not match the play environment:",
+        *[
+            f"  {name}: checkpoint expects {checkpoint_in}, play env built {current_in}"
+            for name, checkpoint_in, current_in in mismatches
+        ],
+    ]
+    if not heightmap_enabled and any(checkpoint_in - current_in == 20 for _, checkpoint_in, current_in in mismatches):
+        lines.append(
+            "The checkpoint expects 20 extra observation features, which matches the height-map term. "
+            "Re-run play with --heightmap."
+        )
+    else:
+        lines.append("Use the same observation-affecting flags for play that were used during training.")
+    raise RuntimeError("\n".join(lines))
+
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
@@ -121,6 +228,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
+        if not hasattr(env_cfg.commands.motion, "zarr_path"):
+            raise ValueError("--zarr_path was provided, but this task does not use a zarr motion command.")
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
 
     # Override decimation if provided
@@ -131,8 +240,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.max_clips is not None and hasattr(env_cfg.commands.motion, 'max_clips'):
         env_cfg.commands.motion.max_clips = args_cli.max_clips
 
+    configure_height_map_obs(env_cfg, args_cli.heightmap)
+    if getattr(env_cfg.scene, "height_scanner", None) is not None and args_cli.heightmap_debug_vis:
+        env_cfg.scene.height_scanner.debug_vis = True
+
     # create isaac environment
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
+    if args_cli.heightmap_debug_vis:
+        print_height_map_obs_debug(env, env_cfg)
 
     log_dir = os.path.dirname(resume_path)
 
@@ -157,6 +272,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # load previously trained model
     ppo_runner = MotionOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    validate_checkpoint_obs_shape(ppo_runner, resume_path, heightmap_enabled=args_cli.heightmap)
     ppo_runner.load(resume_path)
 
     # obtain the trained policy for inference

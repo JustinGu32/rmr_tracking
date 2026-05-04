@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 import json
 import warnings
+from collections import Counter
+from collections.abc import Mapping
 
 import torch
 import torch.nn as nn
@@ -17,8 +19,160 @@ from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 import wandb
 
 PER_TERM_REWARDS_RAW_KEY = "per_term_rewards_raw"
+PER_HEAD_REWARDS_KEY = "per_head_rewards"
+WEIGHTED_STEP_REWARDS_KEY = "weighted_step_rewards"
 REWARD_WEIGHTS_KEY = "reward_weights"
 REWARD_TERM_NAMES_KEY = "reward_term_names"
+VALID_POPART_HEAD_MODES = ("per_term", "grouped")
+VALID_GROUPED_ACTOR_WEIGHT_MODES = ("uniform", "sum_user_weights")
+VALID_POPART_GROUP_PRESETS = ("upper_lower", "actual_individual")
+DEFAULT_POPART_GROUPS_UPPER_LOWER = {
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_lower",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+    "upper_limb_tracking": [
+        "vr_position_upper",
+    ],
+}
+DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL = {
+    "left_wrist_tracking": ["vr_position_left_wrist"],
+    "right_wrist_tracking": ["vr_position_right_wrist"],
+    "torso_tracking": ["vr_position_torso"],
+    "left_ankle_tracking": ["vr_position_left_ankle"],
+    "right_ankle_tracking": ["vr_position_right_ankle"],
+    "pelvis_tracking": ["vr_position_pelvis"],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_BY_PRESET = {
+    "upper_lower": DEFAULT_POPART_GROUPS_UPPER_LOWER,
+    "actual_individual": DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL,
+}
+
+
+def validate_popart_head_mode(head_mode: str) -> None:
+    if head_mode not in VALID_POPART_HEAD_MODES:
+        raise ValueError(
+            f"Unsupported popart_head_mode={head_mode!r}. Expected one of {VALID_POPART_HEAD_MODES}."
+        )
+
+
+def validate_popart_group_preset(group_preset: str) -> None:
+    if group_preset not in VALID_POPART_GROUP_PRESETS:
+        raise ValueError(
+            f"Unsupported popart_group_preset={group_preset!r}. Expected one of {VALID_POPART_GROUP_PRESETS}."
+        )
+
+
+def resolve_popart_groups(
+    reward_term_names: list[str],
+    popart_groups: Mapping[str, list[str]] | None,
+    popart_group_preset: str = "upper_lower",
+) -> tuple[list[str], dict[str, list[str]], torch.Tensor]:
+    validate_popart_group_preset(popart_group_preset)
+    groups = DEFAULT_POPART_GROUPS_BY_PRESET[popart_group_preset] if popart_groups is None else popart_groups
+    if not isinstance(groups, Mapping):
+        raise ValueError("popart_groups must be a mapping from group name to a list of reward term names.")
+
+    group_names = list(groups.keys())
+    normalized_groups = {group_name: list(term_names) for group_name, term_names in groups.items()}
+    assigned_terms = [term_name for term_names in normalized_groups.values() for term_name in term_names]
+    assigned_counter = Counter(assigned_terms)
+    active_term_set = set(reward_term_names)
+
+    empty_groups = [group_name for group_name, term_names in normalized_groups.items() if len(term_names) == 0]
+    duplicated_terms = sorted(term_name for term_name, count in assigned_counter.items() if count > 1)
+    unknown_terms = sorted(term_name for term_name in assigned_counter if term_name not in active_term_set)
+    unassigned_terms = sorted(term_name for term_name in reward_term_names if term_name not in assigned_counter)
+
+    if empty_groups or duplicated_terms or unknown_terms or unassigned_terms:
+        problems: list[str] = []
+        if empty_groups:
+            problems.append(f"empty groups: {empty_groups}")
+        if duplicated_terms:
+            problems.append(f"duplicated terms: {duplicated_terms}")
+        if unknown_terms:
+            problems.append(f"unknown terms: {unknown_terms}")
+        if unassigned_terms:
+            problems.append(f"unassigned terms: {unassigned_terms}")
+        raise ValueError("Invalid PopArt grouped head definition: " + "; ".join(problems))
+
+    term_to_group = {
+        term_name: group_index
+        for group_index, group_name in enumerate(group_names)
+        for term_name in normalized_groups[group_name]
+    }
+    group_membership = torch.tensor([term_to_group[term_name] for term_name in reward_term_names], dtype=torch.long)
+    return group_names, normalized_groups, group_membership
+
+
+def build_grouped_head_rewards(
+    weighted_step_reward: torch.Tensor,
+    group_membership: torch.Tensor,
+    num_groups: int,
+) -> torch.Tensor:
+    if weighted_step_reward.ndim != 2:
+        raise ValueError(
+            f"Expected weighted_step_reward with shape (num_envs, num_terms), received {tuple(weighted_step_reward.shape)}."
+        )
+    if group_membership.ndim != 1 or group_membership.shape[0] != weighted_step_reward.shape[1]:
+        raise ValueError(
+            "group_membership must be a 1D tensor whose length matches weighted_step_reward.shape[1]. "
+            f"Received {tuple(group_membership.shape)} for rewards {tuple(weighted_step_reward.shape)}."
+        )
+    grouped_rewards = torch.zeros(
+        (weighted_step_reward.shape[0], num_groups),
+        dtype=weighted_step_reward.dtype,
+        device=weighted_step_reward.device,
+    )
+    grouped_rewards.index_add_(1, group_membership.to(weighted_step_reward.device), weighted_step_reward)
+    return grouped_rewards
+
+
+def compute_grouped_actor_weights(
+    reward_weights: torch.Tensor,
+    group_membership: torch.Tensor,
+    num_groups: int,
+    grouped_actor_weight_mode: str,
+) -> torch.Tensor:
+    if grouped_actor_weight_mode == "uniform":
+        return torch.ones(num_groups, dtype=reward_weights.dtype, device=reward_weights.device)
+    if grouped_actor_weight_mode == "sum_user_weights":
+        grouped_weights = torch.zeros(num_groups, dtype=reward_weights.dtype, device=reward_weights.device)
+        grouped_weights.index_add_(0, group_membership.to(reward_weights.device), reward_weights)
+        return grouped_weights
+    raise ValueError(
+        "Unsupported popart_grouped_actor_weight_mode="
+        f"{grouped_actor_weight_mode!r}. Expected one of {VALID_GROUPED_ACTOR_WEIGHT_MODES}."
+    )
 
 
 def _build_mlp_layers(input_dim: int, hidden_dims: list[int], activation: str) -> list[nn.Module]:
@@ -379,6 +533,9 @@ class BonesPopArtPPO:
         policy,
         reward_weights: torch.Tensor,
         reward_term_names: list[str],
+        head_mode: str = "per_term",
+        per_head_rewards_key: str = PER_TERM_REWARDS_RAW_KEY,
+        group_membership: torch.Tensor | None = None,
         num_learning_epochs=5,
         num_mini_batches=4,
         clip_param=0.2,
@@ -434,7 +591,12 @@ class BonesPopArtPPO:
         self.rnd = None
         self.symmetry = None
 
-        self.reward_term_names = list(reward_term_names)
+        validate_popart_head_mode(head_mode)
+        self.head_mode = head_mode
+        self.head_names = list(reward_term_names)
+        self.reward_term_names = self.head_names
+        self.per_head_rewards_key = per_head_rewards_key
+        self.group_membership = group_membership.to(self.device) if group_membership is not None else None
         self.reward_weights = reward_weights.to(self.device)
         if popart_normalize_actor_weights:
             denom = self.reward_weights.abs().sum().clamp_min(1.0e-8)
@@ -473,13 +635,31 @@ class BonesPopArtPPO:
     def process_env_step(self, obs, rewards, dones, extras):
         if self.storage is None:
             raise RuntimeError("Rollout storage must be initialized before collecting transitions.")
-        if PER_TERM_REWARDS_RAW_KEY not in extras:
+        if self.head_mode == "grouped":
+            if self.group_membership is None:
+                raise RuntimeError("Grouped PopArt head mode requires a group_membership tensor.")
+            if WEIGHTED_STEP_REWARDS_KEY not in extras:
+                raise RuntimeError(
+                    "Grouped PopArt enabled but env does not expose weighted per-term rewards under "
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}']."
+                )
+            per_head_rewards = build_grouped_head_rewards(
+                extras[WEIGHTED_STEP_REWARDS_KEY].to(self.device),
+                self.group_membership,
+                self.reward_weights.numel(),
+            )
+            extras[PER_HEAD_REWARDS_KEY] = per_head_rewards
+            extras[PER_TERM_REWARDS_RAW_KEY] = per_head_rewards
+        elif self.per_head_rewards_key in extras:
+            per_head_rewards = extras[self.per_head_rewards_key]
+        else:
             raise RuntimeError(
-                "PopArt enabled but env does not expose per-head rewards under extras['per_term_rewards_raw']."
+                "PopArt enabled but env does not expose per-head rewards under "
+                f"extras['{self.per_head_rewards_key}']."
             )
 
         self.policy.update_normalization(obs)
-        self.transition.rewards = extras[PER_TERM_REWARDS_RAW_KEY].to(self.device).clone()
+        self.transition.rewards = per_head_rewards.to(self.device).clone()
         self.transition.dones = dones
         time_outs = extras.get("time_outs", torch.zeros_like(dones, dtype=torch.bool))
         self.transition.time_outs = time_outs.to(self.device).clone()
@@ -519,43 +699,43 @@ class BonesPopArtPPO:
         popart_mean, _ = self.policy.value_normalizer.debiased_mean_var()
         popart_std = self.policy.value_normalizer.debiased_std()
         diagnostics = {
-            f"popart/{term_name}/mean": popart_mean[index].item()
-            for index, term_name in enumerate(self.reward_term_names)
+            f"popart/mu/{head_name}": popart_mean[index].item()
+            for index, head_name in enumerate(self.head_names)
         }
         diagnostics.update(
             {
-                f"popart/{term_name}/std": popart_std[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"popart/sigma/{head_name}": popart_std[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         diagnostics.update(
             {
-                f"value/{term_name}/pred_mean_unnorm": preds_unnorm_for_logging[:, index].mean().item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"value/{head_name}/pred_mean_unnorm": preds_unnorm_for_logging[:, index].mean().item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         diagnostics.update(
             {
-                f"return/{term_name}/mean_unnorm": flat_returns[:, index].mean().item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"return/{head_name}/mean_unnorm": flat_returns[:, index].mean().item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         diagnostics.update(
             {
-                f"advantage/{term_name}/std_unwhitened": raw_std[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"advantage/{head_name}/std_unwhitened": raw_std[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         diagnostics.update(
             {
-                f"advantage/{term_name}/std_whitened": whitened_std[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"advantage/{head_name}/std_whitened": whitened_std[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         diagnostics.update(
             {
-                f"reward_weight/{term_name}": self.reward_weights[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"reward_weight/{head_name}": self.reward_weights[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         self.last_diagnostics = diagnostics
@@ -670,20 +850,20 @@ class BonesPopArtPPO:
 
         self.last_diagnostics.update(
             {
-                f"loss/value_per_head/{term_name}": per_head_value_loss[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"loss/value_per_head/{head_name}": per_head_value_loss[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         self.last_diagnostics.update(
             {
-                f"popart/actor_coeffs/{term_name}": actor_coefficients[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"popart/actor_coeffs/{head_name}": actor_coefficients[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
         self.last_diagnostics.update(
             {
-                f"popart/adv_share/{term_name}": actor_adv_share_sum[index].item()
-                for index, term_name in enumerate(self.reward_term_names)
+                f"popart/adv_share/{head_name}": actor_adv_share_sum[index].item()
+                for index, head_name in enumerate(self.head_names)
             }
         )
 
@@ -744,8 +924,8 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
 
         if not self.alg_cfg.get("use_popart_multihead", False):
             raise ValueError("BonesPopArtOnPolicyRunner requires use_popart_multihead=True.")
-        if self.alg_cfg.get("popart_head_mode", "per_term") != "per_term":
-            raise NotImplementedError("Only per_term PopArt heads are implemented in v1.")
+        head_mode = self.alg_cfg.get("popart_head_mode", "per_term")
+        validate_popart_head_mode(head_mode)
         actor_advantage_scaling = self.alg_cfg.get("popart_actor_advantage_scaling", "whitened")
         if actor_advantage_scaling not in BonesPopArtPPO.VALID_ACTOR_ADVANTAGE_SCALINGS:
             raise ValueError(
@@ -768,16 +948,16 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
         reward_term_names = list(extras[REWARD_TERM_NAMES_KEY])
         reward_weights = torch.as_tensor(extras[REWARD_WEIGHTS_KEY], dtype=torch.float, device=self.device)
         per_term_tensor = torch.as_tensor(extras[PER_TERM_REWARDS_RAW_KEY], device=self.device)
-        value_dim = len(reward_term_names)
-        if per_term_tensor.ndim != 2 or per_term_tensor.shape[-1] != value_dim:
+        num_terms = len(reward_term_names)
+        if per_term_tensor.ndim != 2 or per_term_tensor.shape[-1] != num_terms:
             raise RuntimeError(
                 f"extras['{PER_TERM_REWARDS_RAW_KEY}'] has shape {tuple(per_term_tensor.shape)}, "
-                f"expected (num_envs, {value_dim})."
+                f"expected (num_envs, {num_terms})."
             )
-        if reward_weights.shape != (value_dim,):
+        if reward_weights.shape != (num_terms,):
             raise RuntimeError(
                 f"extras['{REWARD_WEIGHTS_KEY}'] has shape {tuple(reward_weights.shape)}, "
-                f"expected ({value_dim},)."
+                f"expected ({num_terms},)."
             )
 
         policy_cfg = dict(self.policy_cfg)
@@ -787,8 +967,54 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
         algorithm_cfg.pop("use_popart_multihead", None)
         algorithm_cfg.pop("popart_head_mode", None)
         algorithm_cfg.pop("popart_groups", None)
+        grouped_actor_weight_mode = algorithm_cfg.pop("popart_grouped_actor_weight_mode", "uniform")
+        group_preset = algorithm_cfg.pop("popart_group_preset", "upper_lower")
         popart_momentum = algorithm_cfg.pop("popart_momentum", 0.1)
         popart_epsilon = algorithm_cfg.pop("popart_epsilon", 1.0e-5)
+
+        group_names: list[str] | None = None
+        popart_groups: dict[str, list[str]] | None = None
+        group_membership: torch.Tensor | None = None
+        per_head_rewards_key = PER_TERM_REWARDS_RAW_KEY
+        head_names = reward_term_names
+        actor_reward_weights = reward_weights
+        if head_mode == "grouped":
+            if grouped_actor_weight_mode not in VALID_GROUPED_ACTOR_WEIGHT_MODES:
+                raise ValueError(
+                    "Unsupported popart_grouped_actor_weight_mode="
+                    f"{grouped_actor_weight_mode!r}. Expected one of {VALID_GROUPED_ACTOR_WEIGHT_MODES}."
+                )
+            if WEIGHTED_STEP_REWARDS_KEY not in extras:
+                raise RuntimeError(
+                    "Grouped PopArt enabled but env does not expose weighted per-term rewards under "
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}']."
+                )
+            weighted_step_rewards = torch.as_tensor(extras[WEIGHTED_STEP_REWARDS_KEY], device=self.device)
+            if weighted_step_rewards.ndim != 2 or weighted_step_rewards.shape[-1] != num_terms:
+                raise RuntimeError(
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}'] has shape {tuple(weighted_step_rewards.shape)}, "
+                    f"expected (num_envs, {num_terms})."
+                )
+            group_names, popart_groups, group_membership = resolve_popart_groups(
+                reward_term_names,
+                self.alg_cfg.get("popart_groups"),
+                group_preset,
+            )
+            head_names = group_names
+            actor_reward_weights = compute_grouped_actor_weights(
+                reward_weights,
+                group_membership.to(self.device),
+                len(group_names),
+                grouped_actor_weight_mode,
+            )
+            extras[PER_HEAD_REWARDS_KEY] = build_grouped_head_rewards(
+                weighted_step_rewards,
+                group_membership.to(self.device),
+                len(group_names),
+            )
+            extras[PER_TERM_REWARDS_RAW_KEY] = extras[PER_HEAD_REWARDS_KEY]
+            per_head_rewards_key = PER_HEAD_REWARDS_KEY
+        value_dim = len(head_names)
 
         actor_critic = BonesPopArtActorCritic(
             obs=obs,
@@ -801,26 +1027,59 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
         ).to(self.device)
         alg = BonesPopArtPPO(
             actor_critic,
-            reward_weights=reward_weights,
-            reward_term_names=reward_term_names,
+            reward_weights=actor_reward_weights,
+            reward_term_names=head_names,
+            head_mode=head_mode,
+            per_head_rewards_key=per_head_rewards_key,
+            group_membership=group_membership,
             device=self.device,
             multi_gpu_cfg=self.multi_gpu_cfg,
             **algorithm_cfg,
         )
         alg.init_storage("rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions])
 
+        self.cfg["popart_head_mode"] = head_mode
+        self.cfg["popart_head_names"] = head_names
         self.cfg["popart_reward_term_names"] = reward_term_names
-        self.cfg["popart_reward_weights"] = reward_weights.detach().cpu().tolist()
+        self.cfg["popart_reward_weights"] = actor_reward_weights.detach().cpu().tolist()
         self.cfg["popart_value_dim"] = value_dim
+        self.cfg["popart_groups"] = popart_groups
+        self.cfg["popart_group_preset"] = group_preset if head_mode == "grouped" else None
+        self.cfg["popart_grouped_actor_weight_mode"] = grouped_actor_weight_mode if head_mode == "grouped" else None
         self.cfg["popart_terminate_reward_injection"] = False
+        if wandb.run is not None:
+            wandb.config.update(
+                {
+                    "popart_head_mode": head_mode,
+                    "popart_head_names": head_names,
+                    "popart_groups": popart_groups,
+                    "popart_group_preset": group_preset if head_mode == "grouped" else None,
+                    "popart_grouped_actor_weight_mode": (
+                        grouped_actor_weight_mode if head_mode == "grouped" else None
+                    ),
+                    "popart_reward_weights": actor_reward_weights.detach().cpu().tolist(),
+                    "popart_value_dim": value_dim,
+                },
+                allow_val_change=True,
+            )
 
         print("=" * 80)
         print("[BonesPopArtOnPolicyRunner] PopArt configuration:")
         print(f"  value_dim: {value_dim}")
-        print("  head_mode: per_term")
-        print("  reward term names (in head order):")
-        for index, name in enumerate(reward_term_names):
-            print(f"    [{index:2d}] {name:40s} weight={reward_weights[index].item():+.4f}")
+        print(f"  head_mode: {head_mode}")
+        if head_mode == "grouped":
+            print("  grouped head definitions:")
+            for index, group_name in enumerate(head_names):
+                print(
+                    f"    [{index:2d}] {group_name:28s} terms={popart_groups[group_name]} "
+                    f"actor_weight={actor_reward_weights[index].item():+.4f}"
+                )
+            print(f"  grouped_preset: {group_preset}")
+            print(f"  grouped_actor_weight_mode: {grouped_actor_weight_mode}")
+        else:
+            print("  reward term names (in head order):")
+            for index, name in enumerate(head_names):
+                print(f"    [{index:2d}] {name:40s} weight={actor_reward_weights[index].item():+.4f}")
         print(f"  popart_normalize_actor_weights: {alg.popart_normalize_actor_weights}")
         print(f"  popart_actor_advantage_scaling: {alg.actor_advantage_scaling}")
         print(f"  popart_momentum: {popart_momentum}")
@@ -838,8 +1097,13 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
                 "popart/config",
                 json.dumps(
                     {
+                        "head_mode": self.cfg["popart_head_mode"],
+                        "head_names": self.cfg["popart_head_names"],
                         "value_dim": self.cfg["popart_value_dim"],
                         "reward_term_names": self.cfg["popart_reward_term_names"],
+                        "groups": self.cfg["popart_groups"],
+                        "group_preset": self.cfg["popart_group_preset"],
+                        "grouped_actor_weight_mode": self.cfg["popart_grouped_actor_weight_mode"],
                         "reward_weights": self.cfg["popart_reward_weights"],
                         "normalize_actor_weights": self.alg.popart_normalize_actor_weights,
                         "actor_advantage_scaling": self.alg.actor_advantage_scaling,

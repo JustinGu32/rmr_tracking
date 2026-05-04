@@ -49,7 +49,20 @@ parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting 
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
 parser.add_argument("--popart_multihead", action="store_true", default=False, help="Enable the opt-in multi-head PopArt bones training path.")
-parser.add_argument("--popart_head_mode", type=str, default="per_term", choices=["per_term"], help="PopArt critic head layout when --popart_multihead is enabled. Only per_term is supported in v1.")
+parser.add_argument(
+    "--popart_head_mode",
+    type=str,
+    default="per_term",
+    choices=["per_term", "grouped"],
+    help="PopArt critic head layout when --popart_multihead is enabled.",
+)
+parser.add_argument(
+    "--popart_group_preset",
+    type=str,
+    default="actual_individual",
+    choices=["upper_lower", "actual_individual"],
+    help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.",
+)
 parser.add_argument(
     "--popart_actor_advantage_scaling",
     type=str,
@@ -263,8 +276,6 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
     with open(filename, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=sort_keys)
 
-
-
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.tasks.bones.popart_reward_manager import install_bones_per_term_reward_manager
@@ -286,6 +297,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.popart_multihead:
         agent_cfg.algorithm.use_popart_multihead = True
         agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
+        agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
         agent_cfg.algorithm.popart_actor_advantage_scaling = args_cli.popart_actor_advantage_scaling
 
     # Append sampling suffix to run name
