@@ -232,31 +232,32 @@ conda activate env_isaaclab
 # Mirrors the multiclip Bones config (target, swish, gravity curriculum, uniform sampling)
 # but uses MultiMotionCommand with a single-element motion_files list via --motion_file.
 
-python scripts/rsl_rl/train_bones.py \
-    --task=Tracking-Flat-G1-v0 \
-    --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
-    --num_envs=4096 \
-    --headless \
-    --logger wandb \
-    --log_project_name bones_singleclip \
-    --run_name tracking_jump_and_land_light_003_50hz \
-    --ppo_output target \
-    --activation swish \
-    --double_step
-    # --sampling uniform
-
 # python scripts/rsl_rl/train_bones.py \
 #     --task=Tracking-Flat-G1-v0 \
-#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+#     --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
 #     --num_envs=4096 \
 #     --headless \
 #     --logger wandb \
 #     --log_project_name bones_singleclip \
-#     --run_name tracking_stand_up_lying_R_002__A475_M_50hz \
+#     --run_name tracking_jump_and_land_light_003_50hz \
 #     --ppo_output target \
 #     --activation swish \
 #     --double_step
 #     # --sampling uniform
+
+python scripts/rsl_rl/train_bones.py \
+    --task=Tracking-Flat-G1-v0 \
+    --motion_file /move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+    --num_envs=4096 \
+    --headless \
+    --logger wandb \
+    --log_project_name bones_singleclip \
+    --run_name tracking_stand_up_lying_R_002__A475_M_50hz \
+    --ppo_output target \
+    --activation swish \
+    --num_steps_per_env 36 \
+    --double_step
+    # --sampling uniform
 
 # python scripts/rsl_rl/train_bones.py \
 #     --task=Tracking-Flat-G1-v0 \

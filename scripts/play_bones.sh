@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=24G
 #SBATCH --gres=gpu:titanrtx:1 
-#SBATCH --job-name=bones_crane
+#SBATCH --job-name=play_bones
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 
 set -uo pipefail
@@ -172,46 +172,184 @@ conda activate env_isaaclab
 # play_multiclip_run "3tultbot" "2026-04-07_02-40-14_bones_target_50hz_loose-terms" "target"
 
 
+# # ============================================================
+# # Single-clip BONES play: stand_up_lying_R_002 (run eozs32pw)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/eozs32pw \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/bones_stand_up_lying_R_002_37815_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_002_131_M_33hz (run hvgzk08y)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/hvgzk08y \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_002_131_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_and_land_light_005_M_33hz (run 27v9xoyy)
+# # NOTE: only candidate in bones_33hz/ is 5_jump_and_land_light_003__A001_M.npz
+# #       (run name's "_005" likely came from the file's "5_" prefix).
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/27v9xoyy \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/5_jump_and_land_light_003__A001_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_005_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: 125_Jump_002__A017_M_50hz (run el7o911j)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/el7o911j \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/125_Jump_002__A017_M_50hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: stand_up_lying_R_002__A475_M_50hz (run pbwpcori)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/pbwpcori \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/stand_up_lying_R_002__A475_M_50hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_and_land_light_003_50hz (run c1mcnvoc)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/c1mcnvoc \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_003_50hz" \
+#     --headless
+
+
 # ============================================================
-# Single-clip BONES play: stand_up_lying_R_002 (run eozs32pw)
+# Single-clip TRACKING play: tracking_jump_and_land_light_003_50hz (run vwy5ns2k)
 # ============================================================
 export BONES_PPO_OUTPUT="target"
 export WBT_PPO_OUTPUT="target"
 export BONES_DOUBLE_STEP="1"
 
 python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
+    --task=Tracking-Flat-G1-Play-v0 \
     --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/eozs32pw \
-    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+    --wandb_path=robot-mcrobotface/bones_singleclip/vwy5ns2k \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
     --activation=swish \
-    --decimation=6 \
+    --decimation=4 \
     --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/bones_stand_up_lying_R_002_37815_M_33hz" \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_jump_and_land_light_003_50hz" \
     --headless
 
 
 # ============================================================
-# Single-clip BONES play: jump_002_131_M_33hz (run hvgzk08y)
+# Single-clip TRACKING play: tracking_stand_up_lying_R_002__A475_M_50hz (run g1oa1vb4)
 # ============================================================
 export BONES_PPO_OUTPUT="target"
 export WBT_PPO_OUTPUT="target"
 export BONES_DOUBLE_STEP="1"
 
 python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
+    --task=Tracking-Flat-G1-Play-v0 \
     --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/hvgzk08y \
-    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
+    --wandb_path=robot-mcrobotface/bones_singleclip/g1oa1vb4 \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
     --activation=swish \
-    --decimation=6 \
+    --decimation=4 \
     --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/jump_002_131_M_33hz" \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_stand_up_lying_R_002__A475_M_50hz" \
     --headless
 
 
 # ============================================================
-# Single-clip BONES play: jump_and_land_light_005_M_33hz (run 27v9xoyy)
+# Single-clip TRACKING play: tracking_125_Jump_002__A017_M_50hz (run 9jhcjxr3)
+# ============================================================
+export BONES_PPO_OUTPUT="target"
+export WBT_PPO_OUTPUT="target"
+export BONES_DOUBLE_STEP="1"
+
+python scripts/rsl_rl/play_bones.py \
+    --task=Tracking-Flat-G1-Play-v0 \
+    --num_envs=1 \
+    --wandb_path=robot-mcrobotface/bones_singleclip/9jhcjxr3 \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+    --activation=swish \
+    --decimation=4 \
+    --video \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_125_Jump_002__A017_M_50hz" \
+    --headless
+
+
+# ============================================================
+# Single-clip TRACKING play: tracking_jump_and_land_light_005_M_33hz (run uaetnfwg)
 # NOTE: only candidate in bones_33hz/ is 5_jump_and_land_light_003__A001_M.npz
 #       (run name's "_005" likely came from the file's "5_" prefix).
 # ============================================================
@@ -220,69 +358,175 @@ export WBT_PPO_OUTPUT="target"
 export BONES_DOUBLE_STEP="1"
 
 python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
+    --task=Tracking-Flat-G1-Play-v0 \
     --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/27v9xoyy \
+    --wandb_path=robot-mcrobotface/bones_singleclip/uaetnfwg \
     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/5_jump_and_land_light_003__A001_M.npz \
     --activation=swish \
     --decimation=6 \
     --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_005_M_33hz" \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_jump_and_land_light_005_M_33hz" \
     --headless
 
 
 # ============================================================
-# Single-clip BONES play: 125_Jump_002__A017_M_50hz (run el7o911j)
+# Single-clip TRACKING play: tracking_stand_up_lying_R_002_37815_M_33hz (run y17mhuei)
 # ============================================================
 export BONES_PPO_OUTPUT="target"
 export WBT_PPO_OUTPUT="target"
 export BONES_DOUBLE_STEP="1"
 
 python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
+    --task=Tracking-Flat-G1-Play-v0 \
     --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/el7o911j \
-    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+    --wandb_path=robot-mcrobotface/bones_singleclip/y17mhuei \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
     --activation=swish \
-    --decimation=4 \
+    --decimation=6 \
     --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/125_Jump_002__A017_M_50hz" \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_stand_up_lying_R_002_37815_M_33hz" \
     --headless
 
 
 # ============================================================
-# Single-clip BONES play: stand_up_lying_R_002__A475_M_50hz (run pbwpcori)
+# Single-clip TRACKING play: tracking_jump_002_131_M_33hz (run 7uo3dtyw)
 # ============================================================
 export BONES_PPO_OUTPUT="target"
 export WBT_PPO_OUTPUT="target"
 export BONES_DOUBLE_STEP="1"
 
 python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
+    --task=Tracking-Flat-G1-Play-v0 \
     --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/pbwpcori \
-    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+    --wandb_path=robot-mcrobotface/bones_singleclip/7uo3dtyw \
+    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
     --activation=swish \
-    --decimation=4 \
+    --decimation=6 \
     --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/stand_up_lying_R_002__A475_M_50hz" \
+    --video_length=3000 \
+    --video_folder="eval_results/clip_videos/bones_singleclip/tracking_jump_002_131_M_33hz" \
     --headless
 
 
-# ============================================================
-# Single-clip BONES play: jump_and_land_light_003_50hz (run c1mcnvoc)
-# ============================================================
-export BONES_PPO_OUTPUT="target"
-export WBT_PPO_OUTPUT="target"
-export BONES_DOUBLE_STEP="1"
+# # ============================================================
+# # Single-clip BONES play: stand_up_lying_R_002_37815_M_33hz (run eozs32pw)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
 
-python scripts/rsl_rl/play_bones.py \
-    --task=Bones-Flat-chip-G1-Play-v0 \
-    --num_envs=1 \
-    --wandb_path=robot-mcrobotface/bones_singleclip/c1mcnvoc \
-    --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
-    --activation=swish \
-    --decimation=4 \
-    --video \
-    --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_003_50hz" \
-    --headless
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/eozs32pw \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/37815_stand_up_lying_R_002__A475_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/stand_up_lying_R_002_37815_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_002_131_M_33hz (run hvgzk08y)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/hvgzk08y \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/131_Jump_002__A017_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_002_131_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_and_land_light_005_M_33hz (run 27v9xoyy)
+# # NOTE: only candidate in bones_33hz/ is 5_jump_and_land_light_003__A001_M.npz
+# #       (run name's "_005" likely came from the file's "5_" prefix).
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/27v9xoyy \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_33hz/5_jump_and_land_light_003__A001_M.npz \
+#     --activation=swish \
+#     --decimation=6 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_005_M_33hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: 125_Jump_002__A017_M_50hz (run el7o911j)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/el7o911j \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/125_Jump_002__A017_M.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/125_Jump_002__A017_M_50hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: stand_up_lying_R_002__A475_M_50hz (run pbwpcori)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/pbwpcori \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/37810_stand_up_lying_R_002__A475_M.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/stand_up_lying_R_002__A475_M_50hz" \
+#     --headless
+
+
+# # ============================================================
+# # Single-clip BONES play: jump_and_land_light_003_50hz (run c1mcnvoc)
+# # ============================================================
+# export BONES_PPO_OUTPUT="target"
+# export WBT_PPO_OUTPUT="target"
+# export BONES_DOUBLE_STEP="1"
+
+# python scripts/rsl_rl/play_bones.py \
+#     --task=Bones-Flat-chip-G1-Play-v0 \
+#     --num_envs=1 \
+#     --wandb_path=robot-mcrobotface/bones_singleclip/c1mcnvoc \
+#     --motion_file=/move/u/justingu/rmr_tracking/motions/bones_50hz/3_jump_and_land_light_003__A001.npz \
+#     --activation=swish \
+#     --decimation=4 \
+#     --video \
+#     --video_length=3000 \
+#     --video_folder="eval_results/clip_videos/bones_singleclip/jump_and_land_light_003_50hz" \
+#     --headless

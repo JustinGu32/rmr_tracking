@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=multiclip_bones
-#SBATCH --partition=humanoid  --account=move
+#SBATCH --partition=move  --account=move
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
 #SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm/multiclip_bones_%j.out
-#SBATCH --error=logs/slurm/multiclip_bones_%j.err
+#SBATCH --error=logs/slurm/multiclip_bones/tracking_%j.err
 
 # Create log directory
 mkdir -p logs/slurm
@@ -234,17 +234,92 @@ conda activate env_isaaclab
 #     --sampling uniform
 
 # # 3. Walk+jog only: target, swish, 33hz (decimation 6), 4096 envs, uniform, no gravity curriculum
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_33hz_swish_uniform_timetolive_walk-jog_noXYterm_G1_29dof_gravity3.81 \
+#     --ppo_output target \
+#     --activation swish \
+#     --gravity_curriculum --start_gravity -3.81 --gravity_ramp_steps 240000 \
+#     --double_step \
+#     --sampling uniform \
+#     --include_motion_types walk,jog
+
+# # 4. Walk+jog only: target, swish, 100hz, 4096 envs, uniform, gravity start -12.81
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_100hz_walk_jog_jump_all.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_100hz_swish_uniform_timetolive_walk-jog-jump_noXYterm_G1_29dof_gravity12.81_decimation2 \
+#     --ppo_output target \
+#     --activation swish \
+#     --gravity_curriculum --start_gravity -12.81 --gravity_ramp_steps 240000 \
+#     --double_step \
+#     --sampling uniform \
+#     --decimation 2
+
+# -- 100hz --
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_100hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_100hz_gravity12.81_decimation2 \
+#     --ppo_output target \
+#     --activation swish \
+#     --gravity_curriculum --start_gravity -12.81 --gravity_ramp_steps 200000 \
+#     --double_step \
+#     --sampling uniform \
+#     --decimation 2
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_100hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_100hz_gravity12.81_decimation2 \
+#     --ppo_output target \
+#     --activation swish \
+#     --gravity_curriculum --start_gravity -12.81 --gravity_ramp_steps 200000 \
+#     --double_step \
+#     --sampling uniform \
+#     --decimation 2
+
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_swish_uniform \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform
+
 python scripts/rsl_rl/train_bones.py \
-    --task=Bones-MultiClip-Compliance-G1-v0 \
-    --zarr_path=/move/data/bones/g1/zarr/locomotion_33hz.zarr \
+    --task=Tracking-MultiClip-Flat-G1-v0 \
+    --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
     --num_envs=4096 \
     --headless \
     --logger wandb \
     --log_project_name multiclip_bones \
-    --run_name bones_target_33hz_swish_uniform_timetolive_walk-jog_noXYterm_G1_29dof_gravity3.81 \
+    --run_name tracking_baseline_target_50hz_elu_uniform \
     --ppo_output target \
-    --activation swish \
-    --gravity_curriculum --start_gravity -3.81 --gravity_ramp_steps 240000 \
+    --activation elu \
     --double_step \
-    --sampling uniform \
-    --include_motion_types walk,jog
+    --sampling uniform

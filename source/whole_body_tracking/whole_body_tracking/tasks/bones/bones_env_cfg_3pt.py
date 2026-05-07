@@ -176,7 +176,7 @@ class ObservationsCfg:
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
         actions = ObsTerm(func=mdp.last_action)
-        # time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
+        time_to_live = ObsTerm(func=mdp.time_to_live, params={"command_name": "motion"})
 
     # observation groups
     policy: PolicyCfg = PolicyCfg()
