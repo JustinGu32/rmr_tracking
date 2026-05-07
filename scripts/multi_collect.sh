@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --partition=move  --account=move
+#SBATCH --partition=humanoid  --account=move
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
-#SBATCH --gres=gpu:rtxpro6000:1 
-#SBATCH --job-name=up_continuous_v2_karen_stairs_collection
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --job-name=down_continuous_v2_karen_stairs_collection
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 #SBATCH --array=1-3
 
