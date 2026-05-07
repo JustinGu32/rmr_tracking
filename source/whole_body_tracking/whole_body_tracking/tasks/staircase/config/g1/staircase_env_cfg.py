@@ -9,6 +9,7 @@ from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import whole_body_tracking.tasks.staircase.mdp as mdp
 from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 from whole_body_tracking.tasks.staircase.staircase_env_cfg import StaircaseEnvCfg, CurriculumCfg
+from whole_body_tracking.tasks.staircase.staircase_collect_cfg import StaircaseCollectCfg
 from whole_body_tracking.tasks.staircase.staircase_compliance_cfg import StaircaseComplianceCfg
 
 @configclass
@@ -38,7 +39,7 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             "right_wrist_yaw_link",
         ]
 
-        assist_mode = os.environ.get("WBT_ASSIST_MODE", "both")
+        assist_mode = os.environ.get("WBT_ASSIST_MODE", "none")
         if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
             raise ValueError(f"Unsupported WBT_ASSIST_MODE: {assist_mode}")
 
@@ -92,6 +93,71 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
         self.commands.motion.min_sample_idx = 0
         self.commands.motion.max_sample_idx = 0
         self.terminations.anchor_pos_xy = None
+
+
+@configclass
+class G1StaircaseCollectEnvCfg(StaircaseCollectCfg):
+    """G1 robot configuration for staircase dataset collection."""
+
+    def __post_init__(self):
+        super().__post_init__()
+
+        self.scene.robot = G1_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.actions.joint_pos.scale = G1_ACTION_SCALE
+        self.commands.motion.anchor_body_name = "pelvis"
+        self.commands.motion.body_names = [
+            "pelvis",
+            "left_hip_roll_link",
+            "left_knee_link",
+            "left_ankle_roll_link",
+            "right_hip_roll_link",
+            "right_knee_link",
+            "right_ankle_roll_link",
+            "torso_link",
+            "left_shoulder_roll_link",
+            "left_elbow_link",
+            "left_wrist_yaw_link",
+            "right_shoulder_roll_link",
+            "right_elbow_link",
+            "right_wrist_yaw_link",
+        ]
+
+        assist_mode = os.environ.get("WBT_ASSIST_MODE", "none")
+        if assist_mode not in {"both", "gravity_only", "spring_only", "none"}:
+            raise ValueError(f"Unsupported WBT_ASSIST_MODE: {assist_mode}")
+
+        if assist_mode == "gravity_only":
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+        elif assist_mode == "spring_only":
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+        elif assist_mode == "none":
+            self.events.assistive_spring_force.params["stiffness"] = 0.0
+            self.events.assistive_spring_force.params["damping"] = 0.0
+            self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
+            self.events.assistive_spring_force.params["gravity_comp"] = 0.0
+
+        if os.environ.get("WBT_DOUBLE_STEP") == "1":
+            self.rewards.double_step_penalty = RewTerm(
+                func=mdp.double_step_penalty,
+                weight=0.5,
+                params={
+                    "command_name": "motion",
+                    "threshold": 2.0,
+                    "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        if os.environ.get("WBT_MOTION_JOINT_POS") == "1":
+            self.rewards.motion_joint_pos = RewTerm(
+                func=mdp.motion_joint_position_error_exp,
+                weight=1.0,
+                params={"command_name": "motion", "std": 0.15},
+            )
+
+        if os.environ.get("WBT_CURRICULUM") == "1":
+            self.curriculum = CurriculumCfg()
 
 
 @configclass

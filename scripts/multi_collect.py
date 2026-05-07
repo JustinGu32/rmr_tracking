@@ -57,7 +57,7 @@ def run_experiment(config: ExperimentConfig, task: str = "Tracking-Flat-G1-Colle
         env["ENABLE_CAMERAS"] = "1"
 
         # result = subprocess.run( command,  cwd="/move/u/takaraet/whole_body_tracking", check=True, capture_output=False, text=True)
-        result = subprocess.run( command,  cwd="/move/u/justingu/rmr_tracking",check=True, capture_output=False, text=True, env=env)
+        result = subprocess.run( command,  cwd="/move/u/karenvo/Projects/rmr_tracking",check=True, capture_output=False, text=True, env=env)
         # result = subprocess.run( command,  cwd=repo_root, check=True, capture_output=False, text=True)
         print(f"Experiment completed successfully")
         return True
@@ -92,7 +92,7 @@ def main():
     # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'robot-mcrobotface/chair_step/q4yp8tny',
+            wandb_path= 'robot-mcrobotface/new_staircase/n58t5xo6',
             # wandb_path = 'justingu-stanfo`rd-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
             episode_collect_length_s=5,
@@ -100,7 +100,7 @@ def main():
             num_eps_collect= 2000, #10000, #8000
             min_sample_idx = 0,
             max_sample_idx = 16000, #16000,
-            save_folder='CHAIR_STEP_DATA_COLLECTED', #_OU
+            save_folder='up_continuous_v2_karen_stairs_collection', #_OU
             delays=[0],  
             # num_obstacles=0,
     ),
@@ -122,7 +122,7 @@ def main():
         print(f"Running Experiment {i+1}/{total_experiments} (delay={config.min_delay})")
         print(f"{'='*50}")
         
-        success = run_experiment(config, task="Chair-Step-G1-Collect-v0", num_envs=750, seed=args.seed) # 750
+        success = run_experiment(config, task="Staircase-G1-Collect-v0", num_envs=750, seed=args.seed) # 750
         if success:
             successful_experiments += 1
         

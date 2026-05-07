@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --partition=humanoid  --account=move
+#SBATCH --partition=move  --account=move
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=20G
-#SBATCH --gres=gpu:l40s:1
+#SBATCH --gres=gpu:a5000:1
 #SBATCH --job-name=staircase
 
 set -euo pipefail
@@ -48,9 +48,7 @@ python scripts/rsl_rl/train.py \
    --headless \
    --logger wandb \
    --log_project_name new_staircase \
-   --run_name walk_down_karen_stairs_res0.3_mjp_undesiredcontactsup \
+   --run_name walk_down_karen_staircase_nohm_v2 \
    --video \
    --video_length 500 \
-   --video_interval 10000 \
-   --motion_joint_pos \
-   --heightmap
+   --video_interval 10000
