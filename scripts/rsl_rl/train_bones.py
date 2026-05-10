@@ -49,6 +49,16 @@ parser.add_argument("--sampling", type=str, default="adaptive", choices=["adapti
 parser.add_argument("--include_motion_types", type=str, default=None,
                     help="Comma-separated keywords to restrict training clips by clip_name (case-insensitive substring, OR semantics). "
                          "E.g., 'walk,jog' keeps any clip whose name contains 'walk' or 'jog'. Applied after object-scene exclusion.")
+# Popart-task-only override: drives include filter, number of categories, and the
+# categorizer itself from one comma-separated list. Ignored by non-popart tasks.
+# Order matters — a clip matching multiple keywords is bucketed by the first match
+# (so put more-specific category names first, e.g. 'stand_up,walk' not 'walk,stand_up').
+parser.add_argument("--categories", type=str, default=None,
+                    help="Comma-separated category names for the popart task. "
+                         "E.g., 'walk,stand_up'. Auto-derives num_categories=len(list), "
+                         "include_motion_types=list, and the priority-matching categorizer. "
+                         "List order = priority (put more-specific names first). "
+                         "Ignored by non-popart tasks.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -255,6 +265,16 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
 
+
+def _resolve_runner_class(agent_cfg):
+    """Dispatch on `agent_cfg.class_name` to pick the runner subclass.
+    Default to MotionOnPolicyRunner; popart task overrides to PopArtMotionOnPolicyRunner."""
+    name = getattr(agent_cfg, "class_name", None) or "MotionOnPolicyRunner"
+    if name == "PopArtMotionOnPolicyRunner":
+        from whole_body_tracking.utils.popart_runner import PopArtMotionOnPolicyRunner
+        return PopArtMotionOnPolicyRunner
+    return OnPolicyRunner
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.deterministic = False
@@ -311,6 +331,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             kws = [s.strip() for s in args_cli.include_motion_types.split(",") if s.strip()]
             env_cfg.commands.motion.include_motion_types = kws
             print(f"[INFO] Restricting clips by motion-type keywords: {kws}")
+        # Popart-task `categories` override (single source of truth — drives
+        # num_categories, the categorizer, and the include filter all at once).
+        if args_cli.categories is not None and hasattr(env_cfg.commands.motion, "categories"):
+            cats = [s.strip() for s in args_cli.categories.split(",") if s.strip()]
+            env_cfg.commands.motion.categories = cats
+            print(f"[INFO] PopArt categories (priority order): {cats}")
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)
@@ -385,8 +411,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         _wandb_resume_path = os.path.join(dl_dir, latest_file.name)
         print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
 
-    # create runner from rsl-rl
-    runner = OnPolicyRunner(
+    # create runner from rsl-rl (dispatched on agent_cfg.class_name)
+    Runner = _resolve_runner_class(agent_cfg)
+    print(f"[INFO]: Using runner class: {Runner.__name__}")
+    runner = Runner(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )
     # write git state to logs

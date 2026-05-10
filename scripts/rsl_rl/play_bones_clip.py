@@ -47,6 +47,10 @@ parser.add_argument("--decimation", type=int, default=None, help="Override env d
 parser.add_argument("--video_dir", type=str, default=None, help="Directory to save video. Default: logs/rsl_rl/temp/videos/clip_play/")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--categories", type=str, default=None,
+                    help="Comma-separated category names for PopArt tasks "
+                         "(e.g. 'stand_up,walk'). Must match the training-time "
+                         "categories so the env builds the same K-category command term.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -91,6 +95,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 import whole_body_tracking.tasks.tracking.mdp.commands as _tracking_cmds
+import whole_body_tracking.tasks.popart.mdp.commands as _popart_cmds
 
 
 def resolve_clip_id(zarr_path: str, clip_id: int | None, clip_name: str | None, exclude_objects: bool = True) -> tuple[int, str]:
@@ -286,11 +291,30 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             self.num_clips = 1
             self.clip_lengths = self.clip_end_idx - self.clip_start_idx
             self.time_step_total = L
+            # Needed by MultiClipMotionCommandPopArt.__init__, which iterates
+            # self.motion.clip_names to build the clip→category lookup.
+            _clip_name = str(store["clip_names"][raw]) if "clip_names" in store else f"clip_{raw}"
+            self.clip_names = [_clip_name]
 
             print(f"[SingleClipLoader] Loaded clip_id={_target_clip_id} (raw zarr idx={raw}), "
-                  f"{L} frames @ {self.fps} fps, {self._body_pos_w.shape[1]} bodies, device={device}")
+                  f"name={_clip_name!r}, {L} frames @ {self.fps} fps, "
+                  f"{self._body_pos_w.shape[1]} bodies, device={device}")
 
+    # Patch BOTH copies of ZarrMotionLoader. The tracking task and the popart
+    # task each have their own ZarrMotionLoader class in their own module, and
+    # the popart task's MultiClipMotionCommand instantiates the popart copy
+    # (via unqualified `ZarrMotionLoader(...)` in popart/mdp/commands.py:655).
     _tracking_cmds.ZarrMotionLoader = _SingleClipLoader
+    _popart_cmds.ZarrMotionLoader = _SingleClipLoader
+
+    # PopArt-task `categories` override (mirrors train_bones.py): single source
+    # of truth driving num_categories + the priority categorizer + the include
+    # filter. Must match training-time categories so the env builds the same
+    # K-category command term that the checkpoint's K-head critic expects.
+    if args_cli.categories is not None and hasattr(env_cfg.commands.motion, "categories"):
+        cats = [s.strip() for s in args_cli.categories.split(",") if s.strip()]
+        env_cfg.commands.motion.categories = cats
+        print(f"[INFO] PopArt categories (priority order): {cats}")
 
     # Apply decimation override before computing fps so episode_length_s is sized correctly
     if args_cli.decimation is not None:
@@ -345,7 +369,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = RslRlVecEnvWrapper(env)
 
     # --- Load policy ---
-    ppo_runner = MotionOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    # Dispatch on agent_cfg.class_name so PopArt tasks get the PopArt runner
+    # (which builds an ActorCriticPopArt with K-head critic + value_normalizer).
+    # Mirrors _resolve_runner_class in scripts/rsl_rl/train_bones.py.
+    _runner_class_name = getattr(agent_cfg, "class_name", None) or "MotionOnPolicyRunner"
+    if _runner_class_name == "PopArtMotionOnPolicyRunner":
+        from whole_body_tracking.utils.popart_runner import PopArtMotionOnPolicyRunner
+        _RunnerCls = PopArtMotionOnPolicyRunner
+    else:
+        _RunnerCls = MotionOnPolicyRunner
+    ppo_runner = _RunnerCls(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
