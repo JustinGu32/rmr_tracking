@@ -60,13 +60,13 @@ VELOCITY_RANGE_Null = {
 
 # Staircase definition
 STAIRCASE_URDF_PATH = (
-    "/move/u/karenvo/Projects/rmr_tracking/artifacts/down_continuous_v2_karen_stairs/multi_boxes.urdf"
+    "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes.urdf"
 )
-STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/down_continuous_v2_karen_stairs_usd")
+STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/walk_up_karen_stairs_usd")
 STAIRCASE_RAYCAST_URDF_PATH = (
-    "/move/u/karenvo/Projects/rmr_tracking/artifacts/down_continuous_v2_karen_stairs/multi_boxes_combined.urdf"
+    "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes_combined.urdf"
 )
-STAIRCASE_POSITION = [3.65, 0.47, 0.0]
+STAIRCASE_POSITION = [3.2, -0.2, 0.0]
 # Quaternion is in (w, x, y, z); this is a +94 degree yaw.
 STAIRCASE_ROTATION = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
 

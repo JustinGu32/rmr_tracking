@@ -678,6 +678,9 @@ def main():
             
             step += 1
 
+            if step % 10 == 0:
+                print("[DEBUG] sim step", step, "saved_epi", saved_epi, flush=True)
+
             if len(done_indices) > 0:
                 env_ids = done_indices.to("cpu").detach().numpy()
                 # import ipdb; ipdb.set_trace()

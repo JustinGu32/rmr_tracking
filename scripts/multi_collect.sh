@@ -5,7 +5,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --gres=gpu:l40s:1
-#SBATCH --job-name=down_continuous_v2_karen_stairs_collection
+#SBATCH --job-name=walk_up_karen_stairs_collection
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
 #SBATCH --array=1-3
 
