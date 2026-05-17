@@ -142,3 +142,49 @@ conda activate env_isaaclab
 #     --sampling uniform \
 #     --decimation 6 \
 #     --wandb_resume "robot-mcrobotface/multiclip_bones/r9rugj3k"
+
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Bones-MultiClip-Compliance-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_walk_jog_jump_all.zarr  \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name bones_target_100hz_swish_uniform_walk-jog-jump_noXYterm_G1_29dof_gravity12.81_decimation2_finetune33hz_dec6 \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform \
+#     --decimation 6 \
+#     --wandb_resume "robot-mcrobotface/multiclip_bones/r9rugj3k"
+
+python scripts/rsl_rl/train_bones.py \
+    --task=Tracking-MultiClip-Flat-G1-v0 \
+    --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_walk_all.zarr \
+    --num_envs=4096 \
+    --headless \
+    --logger wandb \
+    --log_project_name multiclip_bones_standup \
+    --run_name tracking_33hz_standup_decimation6_finetuneWalk \
+    --ppo_output target \
+    --activation swish \
+    --double_step \
+    --sampling uniform \
+    --decimation 6 \
+    --wandb_resume "robot-mcrobotface/multiclip_bones_standup/oyqt3l22"
+
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_walk_standup_all.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones_standup \
+#     --run_name tracking_33hz_standup_decimation6_finetuneWalkStandup \
+#     --ppo_output target \
+#     --activation swish \
+#     --double_step \
+#     --sampling uniform \
+#     --decimation 6 \
+#     --wandb_resume "robot-mcrobotface/multiclip_bones_standup/oyqt3l22"

@@ -311,15 +311,15 @@ conda activate env_isaaclab
 #     --double_step \
 #     --sampling uniform
 
-python scripts/rsl_rl/train_bones.py \
-    --task=Tracking-MultiClip-Flat-G1-v0 \
-    --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
-    --num_envs=4096 \
-    --headless \
-    --logger wandb \
-    --log_project_name multiclip_bones \
-    --run_name tracking_baseline_target_50hz_elu_uniform \
-    --ppo_output target \
-    --activation elu \
-    --double_step \
-    --sampling uniform
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Tracking-MultiClip-Flat-G1-v0 \
+#     --zarr_path=/move/data/bones/g1/zarr/locomotion_50hz.zarr \
+#     --num_envs=4096 \
+#     --headless \
+#     --logger wandb \
+#     --log_project_name multiclip_bones \
+#     --run_name tracking_baseline_target_50hz_elu_uniform \
+#     --ppo_output target \
+#     --activation elu \
+#     --double_step \
+#     --sampling uniform

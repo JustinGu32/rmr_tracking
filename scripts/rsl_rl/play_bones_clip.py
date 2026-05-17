@@ -51,11 +51,24 @@ parser.add_argument("--categories", type=str, default=None,
                     help="Comma-separated category names for PopArt tasks "
                          "(e.g. 'stand_up,walk'). Must match the training-time "
                          "categories so the env builds the same K-category command term.")
+# PopArt opt-in. Mirrors scripts/rsl_rl/train_bones.py:69 — must match the
+# training-time choice. Without this flag, vanilla MotionOnPolicyRunner is used
+# even on the popart task (overriding the cfg's class_name default) and
+# popart-specific policy fields are stripped so vanilla ActorCritic doesn't
+# error on unknown kwargs. With --popart, PopArtMotionOnPolicyRunner is forced.
+parser.add_argument("--popart", type=str, default="off", choices=["on", "off"],
+                    help="Enable PopArt runner at playback (popart task only). "
+                         "Must match the training-time --popart choice — pass "
+                         "'on' if the checkpoint was trained with --popart=on, "
+                         "'off' (default) otherwise.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+
+# Normalize --popart on/off → bool so downstream `if args_cli.popart` checks work unchanged.
+args_cli.popart = (args_cli.popart == "on")
 
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -169,6 +182,23 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg: RslRlOnPolicyRunnerCfg = cli_args.parse_rsl_rl_cfg(args_cli.task, args_cli)
     agent_cfg.policy.activation = args_cli.activation
     env_cfg.scene.num_envs = args_cli.num_envs
+
+    # PopArt is opt-in at play time too. Without --popart we force vanilla
+    # MotionOnPolicyRunner (even on the popart task, overriding the cfg's
+    # class_name default) and strip popart-specific policy fields so vanilla
+    # ActorCritic doesn't error on unknown kwargs. With --popart, force
+    # PopArtMotionOnPolicyRunner. Mirrors scripts/rsl_rl/train_bones.py:317-324.
+    # The runner-dispatch block further down reads `agent_cfg.class_name`.
+    # The strip is a no-op (guarded by hasattr) on non-popart tasks.
+    if args_cli.popart:
+        agent_cfg.class_name = "PopArtMotionOnPolicyRunner"
+        print("[INFO] --popart enabled -> PopArtMotionOnPolicyRunner")
+    else:
+        agent_cfg.class_name = "MotionOnPolicyRunner"
+        for k in ("num_categories", "popart_momentum", "category_obs_group"):
+            if hasattr(agent_cfg.policy, k):
+                delattr(agent_cfg.policy, k)
+        print("[INFO] --popart not set -> MotionOnPolicyRunner (vanilla)")
 
     # --- Resolve clip ---
     zarr_path = args_cli.zarr_path

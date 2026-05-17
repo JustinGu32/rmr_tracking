@@ -1168,13 +1168,104 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
         self.num_categories = K
 
         # Diagnostic: print category histogram so the user can eyeball bucketing.
-        print(f"[PopArt] categorizer={cfg.categorizer}  num_categories={cfg.num_categories}")
+        print(f"[PopArt] categorizer={cfg.categorizer}  num_categories={cfg.num_categories}  "
+              f"sampling_mode={getattr(cfg, 'sampling_mode', 'frame_uniform')}")
         for ci in range(K):
             mask = self.clip_to_category == ci
             n_clips = int(mask.sum().item())
             members = [self.motion.clip_names[i] for i, m in enumerate(mask.tolist()) if m]
             label = self.category_names[ci] if ci < len(self.category_names) else f"cat_{ci}"
             print(f"  cat {ci} ({label}): {n_clips} clips  e.g. {members[:5]}")
+
+        # ── Per-category clip pools for balanced sampling ──────────────────
+        # Packed layout: clips for cat 0 first, then cat 1, etc.
+        # `clips_by_cat_offsets[k]` is the start of cat k's slab in
+        # `clips_by_cat_flat`; `clips_by_cat_sizes[k]` is its length.
+        # Lets _balanced_sampling pick n clips with three vectorized gathers.
+        clips_by_cat = [
+            (self.clip_to_category == k).nonzero(as_tuple=True)[0]
+            for k in range(K)
+        ]
+        sizes_list = [int(p.numel()) for p in clips_by_cat]
+        empty_cats = [self.category_names[k] for k, s in enumerate(sizes_list) if s == 0]
+        if empty_cats and getattr(cfg, "sampling_mode", "frame_uniform") == "balanced":
+            raise RuntimeError(
+                f"Balanced sampling requires every category to have >= 1 clip. "
+                f"Empty categories: {empty_cats}. Check --categories alignment with the zarr."
+            )
+        self.clips_by_cat_flat = torch.cat(clips_by_cat) if clips_by_cat else torch.empty(0, dtype=torch.long, device=self.device)
+        self.clips_by_cat_sizes = torch.tensor(sizes_list, dtype=torch.long, device=self.device)
+        # Cumsum-of-prefix gives slab starts: [0, s0, s0+s1, ...]
+        offsets_list = [0] + sizes_list[:-1]
+        for i in range(1, len(offsets_list)):
+            offsets_list[i] = offsets_list[i - 1] + sizes_list[i - 1]
+        self.clips_by_cat_offsets = torch.tensor(offsets_list, dtype=torch.long, device=self.device)
+
+        # ── Per-clip failure-rate tracker (for sampling_mode == "clip_adaptive") ──
+        # Mirrors the bin-based scheme in MultiClipMotionCommand: _current_clip_failed
+        # gets bincounted from failed envs on reset; _update_command blends it into
+        # clip_failure_rate with the existing `adaptive_alpha` EMA every step.
+        self.clip_failure_rate = torch.zeros(self.motion.num_clips, dtype=torch.float, device=self.device)
+        self._current_clip_failed = torch.zeros(self.motion.num_clips, dtype=torch.float, device=self.device)
+
+        # Re-balance the initial clip assignment if in balanced mode. Parent's
+        # __init__ called _assign_random_clips(all_envs) BEFORE clips_by_cat_*
+        # existed, so that call fell through to frame-uniform sampling. Re-do
+        # it now so the very first rollout step starts balanced rather than
+        # converging only as episodes reset.
+        if getattr(cfg, "sampling_mode", "frame_uniform") == "balanced":
+            self._balanced_sampling(torch.arange(self.num_envs, device=self.device))
+            self.category_idx[:] = self.clip_to_category[self.clip_ids]
+        elif getattr(cfg, "sampling_mode", "frame_uniform") == "clip_adaptive":
+            # Same rationale as balanced: parent's __init__ ran _assign_random_clips
+            # before clip_failure_rate existed, so the initial assignment fell
+            # through to the parent's path. Re-do it now via clip_adaptive (which
+            # is effectively uniform at this point since clip_failure_rate is zero).
+            self._clip_adaptive_sampling(torch.arange(self.num_envs, device=self.device))
+            self.category_idx[:] = self.clip_to_category[self.clip_ids]
+        elif getattr(cfg, "sampling_mode", "frame_uniform") == "cat_uniform_clip_adaptive":
+            self._cat_uniform_clip_adaptive_sampling(torch.arange(self.num_envs, device=self.device))
+            self.category_idx[:] = self.clip_to_category[self.clip_ids]
+        elif getattr(cfg, "sampling_mode", "frame_uniform") == "cat_adaptive_clip_uniform":
+            self._cat_adaptive_clip_uniform_sampling(torch.arange(self.num_envs, device=self.device))
+            self.category_idx[:] = self.clip_to_category[self.clip_ids]
+
+    # ── Balanced sampling ─────────────────────────────────────────────────
+    # Two-stage uniform sampler: cat → clip → frame. Equalizes per-category
+    # rollout occupancy regardless of clip count or length. Activated by
+    # `cfg.sampling_mode == "balanced"`; dispatched from both
+    # _assign_random_clips and _adaptive_sampling overrides below so it
+    # fires regardless of the --sampling flag.
+
+    def _balanced_sampling(self, env_ids: torch.Tensor):
+        n = env_ids.numel()
+        device = self.device
+        K = self.num_categories
+
+        # Stage 1: uniform category per env.
+        cats = torch.randint(0, K, (n,), device=device)
+
+        # Stage 2: uniform clip within the sampled category.
+        sizes = self.clips_by_cat_sizes[cats]                       # [n]
+        offsets = self.clips_by_cat_offsets[cats]                   # [n]
+        local_idx = (torch.rand(n, device=device) * sizes.float()).long()
+        local_idx = torch.minimum(local_idx, sizes - 1)             # safety against fp rounding
+        clip_ids = self.clips_by_cat_flat[offsets + local_idx]      # [n]
+
+        # Stage 3: uniform frame within the picked clip.
+        clip_starts = self.motion.clip_start_idx[clip_ids]
+        clip_ends = self.motion.clip_end_idx[clip_ids]
+        lens = (clip_ends - clip_starts).clamp(min=1)
+        local_frame = (torch.rand(n, device=device) * lens.float()).long()
+        local_frame = torch.minimum(local_frame, lens - 1)
+        time_steps = clip_starts + local_frame
+
+        # Commit to per-env state. Cache refresh matches parent paths.
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = clip_starts
+        self.clip_end[env_ids] = clip_ends
+        self.time_steps[env_ids] = time_steps
+        self._cache_current_frames()
 
     # Refresh category_idx wherever clip_ids changes. The parent updates
     # clip_ids in two places: _assign_random_clips and _adaptive_sampling.
@@ -1184,16 +1275,238 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
     # has built clip_to_category / category_idx, so the hasattr guard makes
     # the first invocation a no-op. After our __init__ finishes, the buffers
     # exist and every subsequent call updates category_idx in lockstep.
+    #
+    # Balanced-mode dispatch: when cfg.sampling_mode == "balanced", both
+    # paths redirect to _balanced_sampling, so the failure-driven adaptive
+    # bins are bypassed (they're meaningless until every category has
+    # proportional rollout coverage — the imbalance is what we're fixing).
+
+    # ── Clip-adaptive sampling ────────────────────────────────────────────
+    # Per-clip clipped-adaptive sampler. Same termination signal and EMA
+    # mechanics as the bin-based adaptive, but the curriculum lives on clips
+    # rather than frame bins. The additive-uniform-offset (parallel to
+    # `adaptive_uniform_ratio`) ensures every clip retains a floor probability
+    # — addresses the bin-based mode's tendency to over-concentrate on a few
+    # hard regions and under-train everything else.
+
+    def _clip_adaptive_sampling(self, env_ids: torch.Tensor):
+        n = env_ids.numel()
+        device = self.device
+
+        # Stage 0: attribute failures to OLD clip_ids before we overwrite them.
+        # Mirrors the bin-based path's pre-overwrite read at line ~920. Guarded
+        # because this method also runs during the init re-balance, when the
+        # env's termination_manager hasn't been constructed yet — at that point
+        # clip_failure_rate is all zeros so the sampling distribution
+        # degenerates to uniform via the additive floor, which is what we want.
+        if hasattr(self._env, "termination_manager"):
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if episode_failed.any():
+                failed_clip_ids = self.clip_ids[env_ids][episode_failed]
+                self._current_clip_failed[:] = torch.bincount(
+                    failed_clip_ids, minlength=self.motion.num_clips
+                ).float()
+
+        # Stage 1: per-clip distribution = EMA failure score + uniform offset.
+        # Same additive-offset trick as `adaptive_uniform_ratio` in the
+        # bin-based path: floor scales self-adjustingly with total signal.
+        probs = self.clip_failure_rate + self.cfg.clip_adaptive_uniform_ratio / float(self.motion.num_clips)
+        probs = probs / probs.sum()
+
+        # Stage 2: sample clips.
+        clip_ids = torch.multinomial(probs, n, replacement=True)
+
+        # Stage 3: uniform frame within the picked clip.
+        clip_starts = self.motion.clip_start_idx[clip_ids]
+        clip_ends = self.motion.clip_end_idx[clip_ids]
+        lens = (clip_ends - clip_starts).clamp(min=1)
+        local_frame = (torch.rand(n, device=device) * lens.float()).long()
+        local_frame = torch.minimum(local_frame, lens - 1)
+        time_steps = clip_starts + local_frame
+
+        # Commit env state. Cache refresh matches parent paths.
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = clip_starts
+        self.clip_end[env_ids] = clip_ends
+        self.time_steps[env_ids] = time_steps
+        self._cache_current_frames()
+
+        # Sampling metrics (over clips for clip_adaptive). Keys match the
+        # bin-based path so wandb dashboards stay valid; the "bin" suffix
+        # is a historical naming carryover, not a semantic claim.
+        H = -(probs * (probs + 1e-12).log()).sum()
+        H_norm = H / torch.log(torch.tensor(float(self.motion.num_clips), device=device))
+        pmax, imax = probs.max(dim=0)
+        self.metrics["sampling_entropy"][:] = H_norm
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_top1_bin"][:] = imax.float() / float(self.motion.num_clips)
+
+    # ── cat_uniform_clip_adaptive sampling ────────────────────────────────
+    # Stage 1 uniform over cats (1/K), stage 2 clipped-adaptive within cat
+    # (using clip_failure_rate restricted to the cat's clips), stage 3 uniform
+    # frame. Reuses clip_adaptive_uniform_ratio for the within-cat floor.
+
+    def _cat_uniform_clip_adaptive_sampling(self, env_ids: torch.Tensor):
+        n = env_ids.numel()
+        device = self.device
+        K = self.num_categories
+
+        # Attribute failures to OLD clip_ids before overwriting. Guarded so
+        # the init re-balance path (called before termination_manager exists)
+        # works — at init clip_failure_rate is zero, so sampling falls back to
+        # the additive uniform floor.
+        if hasattr(self._env, "termination_manager"):
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if episode_failed.any():
+                failed_clip_ids = self.clip_ids[env_ids][episode_failed]
+                self._current_clip_failed[:] = torch.bincount(
+                    failed_clip_ids, minlength=self.motion.num_clips
+                ).float()
+
+        # Stage 1: uniform cat.
+        cats = torch.randint(0, K, (n,), device=device)
+
+        # Stage 2: within-cat clipped-adaptive over clips. Loop over cats (K
+        # is small, typically <10). Each iteration samples for all envs that
+        # picked that cat.
+        clip_ids = torch.empty(n, dtype=torch.long, device=device)
+        offsets_cpu = self.clips_by_cat_offsets.tolist()
+        sizes_cpu = self.clips_by_cat_sizes.tolist()
+        for k in range(K):
+            mask = cats == k
+            n_in_cat = int(mask.sum().item())
+            if n_in_cat == 0:
+                continue
+            size_k = sizes_cpu[k]
+            if size_k == 0:
+                # Should be guarded at init time, but no-op defensively.
+                continue
+            cat_clips = self.clips_by_cat_flat[offsets_cpu[k]:offsets_cpu[k] + size_k]
+            cat_rates = self.clip_failure_rate[cat_clips]
+            cat_probs = cat_rates + self.cfg.clip_adaptive_uniform_ratio / float(size_k)
+            cat_probs = cat_probs / cat_probs.sum()
+            sampled = torch.multinomial(cat_probs, n_in_cat, replacement=True)
+            clip_ids[mask] = cat_clips[sampled]
+
+        # Stage 3: uniform frame.
+        clip_starts = self.motion.clip_start_idx[clip_ids]
+        clip_ends = self.motion.clip_end_idx[clip_ids]
+        lens = (clip_ends - clip_starts).clamp(min=1)
+        local_frame = (torch.rand(n, device=device) * lens.float()).long()
+        local_frame = torch.minimum(local_frame, lens - 1)
+        time_steps = clip_starts + local_frame
+
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = clip_starts
+        self.clip_end[env_ids] = clip_ends
+        self.time_steps[env_ids] = time_steps
+        self._cache_current_frames()
+
+        # Metrics: cat marginal is uniform; log uniform stats so the keys
+        # stay populated. (Within-cat shaping isn't summarized here.)
+        self.metrics["sampling_entropy"][:] = 1.0
+        self.metrics["sampling_top1_prob"][:] = 1.0 / float(K)
+        self.metrics["sampling_top1_bin"][:] = 0.0
+
+    # ── cat_adaptive_clip_uniform sampling ────────────────────────────────
+    # Stage 1 clipped-adaptive over cats (per-cat score = mean of
+    # clip_failure_rate over that cat's clips, plus cat_adaptive_uniform_ratio
+    # floor), stage 2 uniform clip within cat, stage 3 uniform frame.
+
+    def _cat_adaptive_clip_uniform_sampling(self, env_ids: torch.Tensor):
+        n = env_ids.numel()
+        device = self.device
+        K = self.num_categories
+
+        # Attribute failures to OLD clip_ids before overwriting. Guarded so
+        # the init re-balance path (called before termination_manager exists)
+        # works — at init clip_failure_rate is zero, so sampling falls back to
+        # the additive uniform floor.
+        if hasattr(self._env, "termination_manager"):
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if episode_failed.any():
+                failed_clip_ids = self.clip_ids[env_ids][episode_failed]
+                self._current_clip_failed[:] = torch.bincount(
+                    failed_clip_ids, minlength=self.motion.num_clips
+                ).float()
+
+        # Stage 1: adaptive cat. Per-cat score = mean of clip_failure_rate.
+        cat_sum = torch.zeros(K, dtype=torch.float, device=device)
+        cat_sum.scatter_add_(0, self.clip_to_category, self.clip_failure_rate)
+        cat_rates = cat_sum / self.clips_by_cat_sizes.float().clamp(min=1)
+        cat_probs = cat_rates + self.cfg.cat_adaptive_uniform_ratio / float(K)
+        cat_probs = cat_probs / cat_probs.sum()
+        cats = torch.multinomial(cat_probs, n, replacement=True)
+
+        # Stage 2: uniform clip within cat (mirrors _balanced_sampling).
+        sizes = self.clips_by_cat_sizes[cats]
+        offsets = self.clips_by_cat_offsets[cats]
+        local_idx = (torch.rand(n, device=device) * sizes.float()).long()
+        local_idx = torch.minimum(local_idx, sizes - 1)
+        clip_ids = self.clips_by_cat_flat[offsets + local_idx]
+
+        # Stage 3: uniform frame.
+        clip_starts = self.motion.clip_start_idx[clip_ids]
+        clip_ends = self.motion.clip_end_idx[clip_ids]
+        lens = (clip_ends - clip_starts).clamp(min=1)
+        local_frame = (torch.rand(n, device=device) * lens.float()).long()
+        local_frame = torch.minimum(local_frame, lens - 1)
+        time_steps = clip_starts + local_frame
+
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = clip_starts
+        self.clip_end[env_ids] = clip_ends
+        self.time_steps[env_ids] = time_steps
+        self._cache_current_frames()
+
+        # Metrics: log cat-level entropy / top-1.
+        H = -(cat_probs * (cat_probs + 1e-12).log()).sum()
+        H_norm = H / torch.log(torch.tensor(float(K), device=device))
+        pmax, imax = cat_probs.max(dim=0)
+        self.metrics["sampling_entropy"][:] = H_norm
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_top1_bin"][:] = imax.float() / float(K)
 
     def _assign_random_clips(self, env_ids: torch.Tensor):
-        super()._assign_random_clips(env_ids)
+        mode = getattr(self.cfg, "sampling_mode", "frame_uniform")
+        if mode == "balanced" and hasattr(self, "clips_by_cat_flat"):
+            self._balanced_sampling(env_ids)
+        elif mode == "clip_adaptive" and hasattr(self, "clip_failure_rate"):
+            self._clip_adaptive_sampling(env_ids)
+        elif mode == "cat_uniform_clip_adaptive" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_uniform_clip_adaptive_sampling(env_ids)
+        elif mode == "cat_adaptive_clip_uniform" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_adaptive_clip_uniform_sampling(env_ids)
+        else:
+            super()._assign_random_clips(env_ids)
         if hasattr(self, "category_idx"):
             self.category_idx[env_ids] = self.clip_to_category[self.clip_ids[env_ids]]
 
     def _adaptive_sampling(self, env_ids: torch.Tensor):
-        super()._adaptive_sampling(env_ids)
+        mode = getattr(self.cfg, "sampling_mode", "frame_uniform")
+        if mode == "balanced" and hasattr(self, "clips_by_cat_flat"):
+            self._balanced_sampling(env_ids)
+        elif mode == "clip_adaptive" and hasattr(self, "clip_failure_rate"):
+            self._clip_adaptive_sampling(env_ids)
+        elif mode == "cat_uniform_clip_adaptive" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_uniform_clip_adaptive_sampling(env_ids)
+        elif mode == "cat_adaptive_clip_uniform" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_adaptive_clip_uniform_sampling(env_ids)
+        else:
+            super()._adaptive_sampling(env_ids)
         if hasattr(self, "category_idx"):
             self.category_idx[env_ids] = self.clip_to_category[self.clip_ids[env_ids]]
+
+    def _update_command(self):
+        # Parent does the time_steps tick, reset dispatch, cache refresh, and
+        # the bin-based EMA. We piggyback the per-clip EMA update with the
+        # exact same alpha so the two curriculum signals stay in lockstep.
+        super()._update_command()
+        self.clip_failure_rate = (
+            self.cfg.adaptive_alpha * self._current_clip_failed
+            + (1 - self.cfg.adaptive_alpha) * self.clip_failure_rate
+        )
+        self._current_clip_failed.zero_()
 
 
 @configclass
@@ -1227,3 +1540,53 @@ class MultiClipMotionCommandPopArtCfg(MultiClipMotionCommandCfg):
 
     unmatched_default: int = 0
     """Category index used when unmatched=='default'. Ignored otherwise."""
+
+    sampling_mode: str = "frame_uniform"
+    """Clip selection strategy on reset.
+    - 'frame_uniform' (default): sample uniformly over the global frame
+      timeline (clip-length-weighted; matches parent MultiClipMotionCommand
+      behavior).
+    - 'balanced': sample category uniformly (1/K), then clip uniformly
+      within that category, then frame uniformly within the clip.
+      Equalizes per-category rollout exposure regardless of clip count or
+      length. Directly addresses the imbalance documented in
+      markdowns/popart_implementation.md (Post-mortem). When set,
+      overrides the per-rollout --sampling flag (adaptive vs uniform) for
+      this command term — there's no within-category curriculum yet.
+    - 'clip_adaptive': per-clip clipped-adaptive sampling. Builds a
+      categorical distribution over clips from a per-clip EMA of failure
+      counts (same termination signal as the bin-based adaptive, same
+      `adaptive_alpha` EMA rate), with an additive uniform floor of
+      `clip_adaptive_uniform_ratio / num_clips` per clip so no clip can
+      starve. Then samples a frame uniformly within the chosen clip.
+      Overrides the per-rollout --sampling flag like 'balanced' does.
+    - 'cat_uniform_clip_adaptive': uniform category (1/K), then within the
+      chosen category, clipped-adaptive over that category's clips using
+      `clip_failure_rate` restricted to those clips with the same
+      `clip_adaptive_uniform_ratio` floor, then uniform frame.
+    - 'cat_adaptive_clip_uniform': adaptive over categories (per-cat score =
+      mean of `clip_failure_rate` over that cat's clips, with additive
+      `cat_adaptive_uniform_ratio` floor), then uniform clip within the cat,
+      then uniform frame."""
+
+    clip_adaptive_uniform_ratio: float = 0.5
+    """Total uniform mass added to the per-clip distribution before
+    normalization (same additive-offset mechanism as `adaptive_uniform_ratio`
+    but applied per clip rather than per global-timeline bin). Each clip gets
+    `clip_adaptive_uniform_ratio / num_clips` added to its raw failure score
+    before the distribution is normalized. Higher = stronger floor / more
+    uniform behavior. Default 0.5 is intentionally higher than the bin-based
+    0.2 because per-clip failure counts have much smaller scale (the EMA is
+    spread over `num_clips` entries instead of `bin_count`, so the same
+    additive offset would dominate too aggressively without rebalancing).
+
+    Also reused by `cat_uniform_clip_adaptive` for the within-category clip
+    distribution: each cat-k clip gets `clip_adaptive_uniform_ratio / |cat_k|`
+    added before within-cat normalization."""
+
+    cat_adaptive_uniform_ratio: float = 0.5
+    """Total uniform mass added to the per-category distribution before
+    normalization in `cat_adaptive_clip_uniform` mode. Each cat gets
+    `cat_adaptive_uniform_ratio / num_categories` added to its mean clip
+    failure rate before normalization. Same semantics and rationale as
+    `clip_adaptive_uniform_ratio` but applied at the cat level."""

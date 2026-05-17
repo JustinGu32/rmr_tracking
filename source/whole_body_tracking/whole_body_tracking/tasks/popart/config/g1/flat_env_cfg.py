@@ -96,3 +96,8 @@ class G1FlatEnvCfgPopArt_PLAY(G1FlatEnvCfgPopArt):
             self.events.force_push_robot = None
         if hasattr(self.terminations, "bad_anchor_pos_xy"):
             self.terminations.bad_anchor_pos_xy = None
+        if hasattr(self.terminations, "ee_body_pos"):
+            self.terminations.ee_body_pos = None
+        if hasattr(self.terminations, "anchor_pos"):
+            self.terminations.anchor_pos = None
+            

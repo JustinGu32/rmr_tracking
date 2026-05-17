@@ -59,12 +59,44 @@ parser.add_argument("--categories", type=str, default=None,
                          "include_motion_types=list, and the priority-matching categorizer. "
                          "List order = priority (put more-specific names first). "
                          "Ignored by non-popart tasks.")
+# Opt-in PopArt. Default = vanilla MotionOnPolicyRunner even on the popart task
+# (popart-specific policy fields num_categories / popart_momentum /
+# category_obs_group are stripped from the cfg dict so vanilla ActorCritic
+# doesn't choke on unknown kwargs). The `category` obs group stays in storage
+# but is ignored by the actor/critic (obs_groups routes only `policy` and
+# `critic`). Pass --popart to opt in to PopArtMotionOnPolicyRunner. Lets you
+# A/B popart vs vanilla on the same task, same dataset, same sampler.
+parser.add_argument("--popart", type=str, default="off", choices=["on", "off"],
+                    help="Enable PopArt (popart task only). 'on' uses PopArtMotionOnPolicyRunner; "
+                         "'off' (default) runs vanilla MotionOnPolicyRunner on the popart task.")
+# Clip-selection strategy for multi-clip training (popart task only — needs
+# clip_to_category, built by MultiClipMotionCommandPopArt). 'balanced' is the
+# direct fix for the 999:1 sampling imbalance noted in
+# markdowns/popart_implementation.md (Post-mortem).
+parser.add_argument("--sampling_mode", type=str, default=None,
+                    choices=["frame_uniform", "balanced", "clip_adaptive",
+                             "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform"],
+                    help="Multi-clip clip selection strategy. 'frame_uniform' samples "
+                         "uniformly over the global frame timeline (clip-length-weighted, "
+                         "current default). 'balanced' samples category uniformly, then "
+                         "clip uniformly within cat, then frame. 'clip_adaptive' samples "
+                         "clips via a per-clip EMA failure-rate distribution with a uniform "
+                         "floor (clip_adaptive_uniform_ratio), then uniform frame within. "
+                         "'cat_uniform_clip_adaptive' samples cat uniformly, then clip "
+                         "clipped-adaptively within cat, then uniform frame. "
+                         "'cat_adaptive_clip_uniform' samples cat clipped-adaptively (from "
+                         "mean clip failure rate per cat, with cat_adaptive_uniform_ratio "
+                         "floor), then uniform clip in cat, then uniform frame. The four "
+                         "cat-aware / clip-aware modes require --categories.")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
+
+# Normalize --popart on/off → bool so downstream `if args_cli.popart` checks work unchanged.
+args_cli.popart = (args_cli.popart == "on")
 
 # always enable cameras to record video
 if args_cli.video:
@@ -288,6 +320,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg.policy.activation = args_cli.activation
 
+    # PopArt is opt-in. Without --popart we force vanilla MotionOnPolicyRunner
+    # even on the popart task (overriding the cfg's class_name default) and
+    # strip popart-specific policy fields so vanilla ActorCritic doesn't error
+    # on unknown kwargs. With --popart, force PopArtMotionOnPolicyRunner.
+    # Runner dispatch (further down) reads `agent_cfg.class_name`. The strip
+    # is a no-op (guarded by hasattr) on non-popart tasks.
+    if args_cli.popart:
+        agent_cfg.class_name = "PopArtMotionOnPolicyRunner"
+        print("[INFO] --popart enabled  PopArtMotionOnPolicyRunner")
+    else:
+        agent_cfg.class_name = "MotionOnPolicyRunner"
+        for k in ("num_categories", "popart_momentum", "category_obs_group"):
+            if hasattr(agent_cfg.policy, k):
+                delattr(agent_cfg.policy, k)
+
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -337,6 +384,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             cats = [s.strip() for s in args_cli.categories.split(",") if s.strip()]
             env_cfg.commands.motion.categories = cats
             print(f"[INFO] PopArt categories (priority order): {cats}")
+        # Sampling-mode override (popart task only — guarded by hasattr so
+        # non-popart tasks silently ignore it).
+        if args_cli.sampling_mode is not None and hasattr(env_cfg.commands.motion, "sampling_mode"):
+            env_cfg.commands.motion.sampling_mode = args_cli.sampling_mode
+            print(f"[INFO] sampling_mode = {args_cli.sampling_mode}")
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)
@@ -488,6 +540,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "future_steps": args_cli.future_steps,
                         "wandb_resume": args_cli.wandb_resume,
                         "include_motion_types": args_cli.include_motion_types,
+                        "categories": args_cli.categories,
+                        "popart": args_cli.popart,
+                        "sampling_mode": args_cli.sampling_mode,
                     }
                 },
                 allow_val_change=True,
