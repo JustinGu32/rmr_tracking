@@ -32,6 +32,9 @@ parser.add_argument("--heightmap", action="store_true", default=False,
                     help="Enable task-configured height-map observations.")
 parser.add_argument("--heightmap_debug_vis", action="store_true", default=False,
                     help="Show height-map raycaster debug visualization.")
+parser.add_argument("--depth_obs", action="store_true", default=False, help="Enable optional RGB-D camera depth observations.")
+parser.add_argument("--depth_debug_save_frames", action="store_true", default=False, help="Save a few normalized depth frames during rollout.")
+parser.add_argument("--depth_debug_max_frames", type=int, default=4, help="Maximum number of depth debug frames to save.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: must match the checkpoint's training setting.")
 # append RSL-RL cli arguments
@@ -40,12 +43,17 @@ cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 # always enable cameras to record video
-if args_cli.video:
+if args_cli.video or args_cli.depth_obs:
     args_cli.enable_cameras = True
 
 # Mirror env vars that __post_init__ reads and that affect obs/action shape.
 # These must be set before whole_body_tracking.tasks is imported.
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
+if args_cli.depth_obs:
+    os.environ["WBT_USE_DEPTH_OBS"] = "1"
+if args_cli.depth_debug_save_frames:
+    os.environ["WBT_DEPTH_SAVE_FRAMES"] = "1"
+os.environ["WBT_DEPTH_DEBUG_MAX_FRAMES"] = str(args_cli.depth_debug_max_frames)
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -129,6 +137,32 @@ def print_height_map_obs_debug(env, env_cfg):
         print(f"[HEIGHT_MAP_DEBUG] observation_space: {obs_space}")
 
 
+def print_depth_obs_debug(env, env_cfg):
+    """Print enough state to verify depth observations reached the built env."""
+    depth_cfg = getattr(env_cfg.scene, "depth_camera", None)
+    depth_term = getattr(getattr(env_cfg.observations, "policy", None), "depth_image", None)
+    print(f"[DEPTH_OBS_DEBUG] scene.depth_camera configured: {depth_cfg is not None}")
+    if depth_cfg is not None:
+        print(f"[DEPTH_OBS_DEBUG] depth_camera prim_path: {depth_cfg.prim_path}")
+        print(f"[DEPTH_OBS_DEBUG] depth_camera resolution: ({depth_cfg.height}, {depth_cfg.width})")
+        print(f"[DEPTH_OBS_DEBUG] depth_camera data_types: {depth_cfg.data_types}")
+    print(f"[DEPTH_OBS_DEBUG] cfg observations.policy.depth_image: {depth_term is not None}")
+
+    unwrapped = env.unwrapped
+    sensor_names = sorted(getattr(unwrapped.scene, "sensors", {}).keys())
+    print(f"[DEPTH_OBS_DEBUG] built scene sensors: {sensor_names}")
+    obs_manager = getattr(unwrapped, "observation_manager", None)
+    if obs_manager is not None:
+        print(f"[DEPTH_OBS_DEBUG] active observation terms: {obs_manager.active_terms}")
+        print(f"[DEPTH_OBS_DEBUG] observation term dims: {obs_manager.group_obs_term_dim}")
+    obs_space = getattr(unwrapped, "observation_space", None)
+    if hasattr(obs_space, "spaces"):
+        for group_name, space in obs_space.spaces.items():
+            print(f"[DEPTH_OBS_DEBUG] observation_space[{group_name}]: {space}")
+    else:
+        print(f"[DEPTH_OBS_DEBUG] observation_space: {obs_space}")
+
+
 def validate_checkpoint_obs_shape(ppo_runner: MotionOnPolicyRunner, resume_path: str, *, heightmap_enabled: bool):
     """Fail early with a useful hint when the checkpoint and play obs shapes differ."""
     loaded_dict = torch.load(resume_path, map_location="cpu")
@@ -167,6 +201,11 @@ def validate_checkpoint_obs_shape(ppo_runner: MotionOnPolicyRunner, resume_path:
         lines.append(
             "The checkpoint expects 20 extra observation features, which matches the height-map term. "
             "Re-run play with --heightmap."
+        )
+    elif not args_cli.depth_obs and any(checkpoint_in - current_in == 768 for _, checkpoint_in, current_in in mismatches):
+        lines.append(
+            "The checkpoint expects 768 extra observation features, which matches the default flattened depth term. "
+            "Re-run play with --depth_obs."
         )
     else:
         lines.append("Use the same observation-affecting flags for play that were used during training.")
@@ -248,6 +287,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
     if args_cli.heightmap_debug_vis:
         print_height_map_obs_debug(env, env_cfg)
+    if args_cli.depth_obs:
+        print_depth_obs_debug(env, env_cfg)
 
     log_dir = os.path.dirname(resume_path)
 

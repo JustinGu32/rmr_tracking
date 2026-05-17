@@ -74,6 +74,18 @@ parser.add_argument("--num_eps_collect", type=int, default=500, help="num of epi
 
 parser.add_argument("--motion_file", type=str, default=None, help="Motion File")
 parser.add_argument("--save_folder", type=str, default=None, help="save folder")
+parser.add_argument(
+    "--dump_raw_depth_dir",
+    type=str,
+    default=None,
+    help="Optional directory to save raw pre-encoding depth frames as .npy files.",
+)
+parser.add_argument(
+    "--dump_raw_depth_limit",
+    type=int,
+    default=1,
+    help="Maximum number of raw depth frames to dump when --dump_raw_depth_dir is set.",
+)
 
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
@@ -402,6 +414,12 @@ def main():
     depth_embed_dim = 1024 # DeFM ViT-L14 class token size
     recorded_depth_embed_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
     recorded_depth_embed_flipped_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
+    raw_depth_dump_dir = None
+    dumped_raw_depth_count = 0
+    if args_cli.dump_raw_depth_dir is not None:
+        raw_depth_dump_dir = Path(args_cli.dump_raw_depth_dir)
+        raw_depth_dump_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[INFO] Dumping up to {args_cli.dump_raw_depth_limit} raw depth frames to: {raw_depth_dump_dir}")
 
     # OU parameters
     theta = .8 # 0 #0.4  # mean reversion rate
@@ -538,6 +556,15 @@ def main():
             # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
             depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
             depth_np_flipped = np.flip(depth_np, axis=2).copy()
+            if raw_depth_dump_dir is not None and dumped_raw_depth_count < args_cli.dump_raw_depth_limit:
+                dump_count = min(num_envs, args_cli.dump_raw_depth_limit - dumped_raw_depth_count)
+                for env_offset in range(dump_count):
+                    dump_path = raw_depth_dump_dir / f"depth_ep{int(num_epi[env_offset]):05d}_step{curr_idx:04d}_env{env_offset}.npy"
+                    np.save(dump_path, depth_np[env_offset].astype(np.float32))
+                    print(f"[INFO] Saved raw depth frame to {dump_path}")
+                    dumped_raw_depth_count += 1
+                    if dumped_raw_depth_count >= args_cli.dump_raw_depth_limit:
+                        break
             # Normalize depth for visualization-like input if needed, or just replicate channels
             # Here we replicate channels to make it (H, W, 3) grayscale-like
             # depth_images = []

@@ -60,7 +60,7 @@ parser.add_argument(
     "--popart_group_preset",
     type=str,
     default="actual_individual",
-    choices=["upper_lower", "actual_individual"],
+    choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual"],
     help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.",
 )
 parser.add_argument(

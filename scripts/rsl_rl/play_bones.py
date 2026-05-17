@@ -36,7 +36,7 @@ parser.add_argument("--decimation", type=int, default=None, help="Override decim
 parser.add_argument("--bones_popart", action="store_true", default=False, help="Use PopArt multi-head critic (must match training).")
 parser.add_argument("--popart_head_mode", type=str, default="grouped", choices=["per_term", "grouped"],
                     help="PopArt critic head layout for inference (default: per_term).")
-parser.add_argument("--popart_group_preset", type=str, default="upper_lower", choices=["upper_lower", "actual_individual"],
+parser.add_argument("--popart_group_preset", type=str, default="upper_lower", choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual"],
                     help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)

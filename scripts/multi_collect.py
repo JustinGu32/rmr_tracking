@@ -92,15 +92,15 @@ def main():
     # 25 hz walk fast
     experiment_configs = [
     ExperimentConfig(
-            wandb_path= 'robot-mcrobotface/new_staircase/hfv4s1wg',
+            wandb_path= 'robot-mcrobotface/new_staircase/zvhor4js',
             # wandb_path = 'justingu-stanfo`rd-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
             episode_collect_length_s=5,
             num_steps_collect=80,  # 60 -> 1.8 sec, 80 -> 2.4 sec
             num_eps_collect= 2000, #10000, #8000
             min_sample_idx = 0,
-            max_sample_idx = 313, #16000, # 313 for walk up
-            save_folder='walk_up_karen_stairs_collection', #_OU
+            max_sample_idx = 91, #16000, # 313 walk up, 171 walk down, 141 up, 91 down
+            save_folder='down_continuous_v2_karen_stairs_collection_v2', #_OU
             delays=[0],  
             # num_obstacles=0,
     ),

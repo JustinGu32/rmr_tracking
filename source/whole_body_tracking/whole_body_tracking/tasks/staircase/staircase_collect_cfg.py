@@ -23,11 +23,11 @@ class StaircaseCollectObservationsCfg(ObservationsCfg):
         body_ang_vel = ObsTerm(func=mdp.robot_body_ang_vel_w, noise=Unoise(n_min=-0.2, n_max=0.2))
         dof_pos = ObsTerm(func=mdp.joint_pos_rel)
         dof_vel = ObsTerm(func=mdp.joint_vel_rel)
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
-            clip=(-1.0, 1.0),
-        )
+        # height_scan = ObsTerm(
+        #     func=mdp.height_scan,
+        #     params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+        #     clip=(-1.0, 1.0),
+        # )
 
         def __post_init__(self):
             self.enable_corruption = False
@@ -44,6 +44,7 @@ class StaircaseCollectCfg(StaircaseEnvCfg):
 
     def __post_init__(self):
         super().__post_init__()
+        self.scene.height_scanner = None
         self.observations.policy.height_scan = None
         self.observations.critic.height_scan = None
         self.episode_length_s = 100.0

@@ -533,10 +533,10 @@ def main():
                 "root_pos": np.array(ep_data['root_pos'][:valid_steps]),
                 "root_rot": np.array(ep_data['root_rot'][:valid_steps]),
                 "act": np.array(ep_data['act'][:valid_steps]),
-                "rgb_embed":        np.concatenate(ep_rgb_embeds, axis=0),
-                "rgb_embed_flip":   np.concatenate(ep_rgb_embeds_flip, axis=0),
-                "depth_embed":      np.concatenate(ep_depth_embeds, axis=0),
-                "depth_embed_flip": np.concatenate(ep_depth_embeds_flip, axis=0),
+                "rgb_embed":           np.concatenate(ep_rgb_embeds, axis=0),
+                "rgb_embed_flipped":   np.concatenate(ep_rgb_embeds_flip, axis=0),
+                "depth_embed":         np.concatenate(ep_depth_embeds, axis=0),
+                "depth_embed_flipped": np.concatenate(ep_depth_embeds_flip, axis=0),
             }
 
             if 'body_lin_vel' in ep_data:

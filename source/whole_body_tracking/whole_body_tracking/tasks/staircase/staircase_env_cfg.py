@@ -66,9 +66,19 @@ STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/walk_up_karen_stairs_usd"
 STAIRCASE_RAYCAST_URDF_PATH = (
     "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes_combined.urdf"
 )
+
+# walk up: 3.2, -0.2
+# walk down: 3.2, 1.95
+# up: 3.7, 0.55
+# down: 3.65, 0.47
 STAIRCASE_POSITION = [3.2, -0.2, 0.0]
 # Quaternion is in (w, x, y, z); this is a +94 degree yaw.
 STAIRCASE_ROTATION = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
+
+DEPTH_CAMERA_WIDTH = 64
+DEPTH_CAMERA_HEIGHT = 48
+DEPTH_OBS_WIDTH = 32
+DEPTH_OBS_HEIGHT = 24
 
 @configclass
 class StaircaseSceneCfg(InteractiveSceneCfg):
@@ -142,28 +152,21 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
     )
 
-    # Depth camera mounted on the D435 link (head)
-    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
-    depth_camera: TiledCameraCfg | None = (
-        TiledCameraCfg(
-            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
-            spawn=sim_utils.PinholeCameraCfg(
-                focal_length=1.93,  # D435i: ~87° HFOV
-                horizontal_aperture=3.6,
-                clipping_range=(0.1, 5.0),
-            ),
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
-                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
-                convention="ros",
-            ),
-        )
-        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
-        else None
+    depth_camera: TiledCameraCfg | None = TiledCameraCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+        update_period=0.0,
+        height=DEPTH_CAMERA_HEIGHT,
+        width=DEPTH_CAMERA_WIDTH,
+        data_types=["distance_to_camera"],
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=8.0,
+            clipping_range=(0.1, 5.0),
+        ),
+        offset=TiledCameraCfg.OffsetCfg(
+            pos=(0.0, 0.0, 0.0),
+            rot=(0.9848078, 0.0, -0.1736482, 0.0),
+            convention="world",
+        ),
     )
 
 
@@ -212,6 +215,22 @@ class ActionsCfg:
 
 
 @configclass
+class DepthObservationCfg:
+    """Configuration for optional depth observations."""
+
+    enabled: bool = False
+    min_depth_m: float = 0.2
+    max_depth_m: float = 4.0
+    resized_height: int = DEPTH_OBS_HEIGHT
+    resized_width: int = DEPTH_OBS_WIDTH
+    flatten: bool = True
+    invert: bool = True
+    save_debug_frames: bool = False
+    debug_frame_dir: str = "data/debug_depth_frames"
+    debug_max_frames: int = 4
+
+
+@configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
 
@@ -236,6 +255,22 @@ class ObservationsCfg:
             params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
             noise=Unoise(n_min=-0.1, n_max=0.1),
             clip=(-1.0, 1.0),
+        )
+        depth_image = ObsTerm(
+            func=mdp.depth_observation,
+            params={
+                "sensor_cfg": SceneEntityCfg("depth_camera"),
+                "data_type": "distance_to_camera",
+                "min_depth_m": 0.2,
+                "max_depth_m": 4.0,
+                "resized_height": DEPTH_OBS_HEIGHT,
+                "resized_width": DEPTH_OBS_WIDTH,
+                "flatten": True,
+                "invert": True,
+                "save_debug_frames": False,
+                "debug_frame_dir": "data/debug_depth_frames",
+                "debug_max_frames": 4,
+            },
         )
         actions = ObsTerm(func=mdp.last_action)
 
@@ -460,6 +495,7 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
     curriculum: CurriculumCfg | None = None
+    depth_observation: DepthObservationCfg = DepthObservationCfg()
 
     def __post_init__(self):
         """Post initialization."""
@@ -475,3 +511,29 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        self.depth_observation.enabled = os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
+        self.depth_observation.save_debug_frames = os.environ.get("WBT_DEPTH_SAVE_FRAMES", "0") == "1"
+        self.depth_observation.debug_max_frames = int(
+            os.environ.get("WBT_DEPTH_DEBUG_MAX_FRAMES", str(self.depth_observation.debug_max_frames))
+        )
+
+        if self.depth_observation.enabled:
+            self.sim.render_interval = min(self.sim.render_interval, self.decimation)
+            depth_term = self.observations.policy.depth_image
+            depth_term.params.update(
+                {
+                    "min_depth_m": self.depth_observation.min_depth_m,
+                    "max_depth_m": self.depth_observation.max_depth_m,
+                    "resized_height": self.depth_observation.resized_height,
+                    "resized_width": self.depth_observation.resized_width,
+                    "flatten": self.depth_observation.flatten,
+                    "invert": self.depth_observation.invert,
+                    "save_debug_frames": self.depth_observation.save_debug_frames,
+                    "debug_frame_dir": self.depth_observation.debug_frame_dir,
+                    "debug_max_frames": self.depth_observation.debug_max_frames,
+                }
+            )
+        else:
+            self.scene.depth_camera = None
+            self.observations.policy.depth_image = None

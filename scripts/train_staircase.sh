@@ -44,11 +44,12 @@ export WANDB_ENTITY=robot-mcrobotface
 
 python scripts/rsl_rl/train.py \
    --task=Staircase-G1-v0 \
-   --registry_name robot-mcrobotface/csv_to_npz/walk_down_karen_stairs:latest \
+   --registry_name robot-mcrobotface/csv_to_npz/walk_up_33.npz:latest \
+   --depth_obs \
    --headless \
    --logger wandb \
    --log_project_name new_staircase \
-   --run_name walk_down_karen_staircase_nohm_v2 \
+   --run_name walk_up_karen_staircase_33hz_depth \
    --video \
    --video_length 500 \
    --video_interval 10000

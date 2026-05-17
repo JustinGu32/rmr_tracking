@@ -25,7 +25,14 @@ REWARD_WEIGHTS_KEY = "reward_weights"
 REWARD_TERM_NAMES_KEY = "reward_term_names"
 VALID_POPART_HEAD_MODES = ("per_term", "grouped")
 VALID_GROUPED_ACTOR_WEIGHT_MODES = ("uniform", "sum_user_weights")
-VALID_POPART_GROUP_PRESETS = ("upper_lower", "actual_individual")
+VALID_POPART_GROUP_PRESETS = (
+    "upper_lower",
+    "motion_tracking",
+    "actual_individual",
+    "limb_tracking",
+    "limb_tracking_ul",
+    "limb_tracking_ul_individual",
+)
 DEFAULT_POPART_GROUPS_UPPER_LOWER = {
     "global_pose_tracking": [
         "motion_global_anchor_pos",
@@ -72,9 +79,105 @@ DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL = {
         "undesired_contacts",
     ],
 }
+DEFAULT_POPART_GROUPS_MOTION_TRACKING = {
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_LIMB_TRACKING = {
+    "limb_tracking": [
+        "vr_position_left_wrist",
+        "vr_position_right_wrist",
+        "vr_position_torso",
+        "vr_position_left_ankle",
+        "vr_position_right_ankle",
+        "vr_position_pelvis",
+    ],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL = {
+    "upper_limb_tracking": [
+        "vr_position_upper",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_lower",
+    ],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL_INDIVIDUAL = {
+    "upper_limb_tracking": [
+        "vr_position_left_wrist",
+        "vr_position_right_wrist",
+        "vr_position_torso",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_left_ankle",
+        "vr_position_right_ankle",
+        "vr_position_pelvis",
+    ],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
 DEFAULT_POPART_GROUPS_BY_PRESET = {
     "upper_lower": DEFAULT_POPART_GROUPS_UPPER_LOWER,
+    "motion_tracking": DEFAULT_POPART_GROUPS_MOTION_TRACKING,
     "actual_individual": DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL,
+    "limb_tracking": DEFAULT_POPART_GROUPS_LIMB_TRACKING,
+    "limb_tracking_ul": DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL,
+    "limb_tracking_ul_individual": DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL_INDIVIDUAL,
 }
 
 
@@ -749,6 +852,10 @@ class BonesPopArtPPO:
         mean_entropy = 0.0
         per_head_value_loss = torch.zeros(self.reward_weights.numel(), device=self.device)
         actor_adv_share_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_abs_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sq_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sample_count = 0
         actor_coefficients = self.reward_weights.detach().clone()
         if self.actor_advantage_scaling == "sigma_rescaled":
             actor_coefficients = actor_coefficients * self.policy.value_normalizer.debiased_std().detach()
@@ -816,6 +923,11 @@ class BonesPopArtPPO:
                     "Unsupported actor_advantage_scaling="
                     f"{self.actor_advantage_scaling!r}. Expected one of {self.VALID_ACTOR_ADVANTAGE_SCALINGS}."
                 )
+            actor_adv_flat = actor_advantages.reshape(-1, actor_advantages.shape[-1])
+            actor_adv_abs_sum += actor_adv_flat.abs().sum(dim=0)
+            actor_adv_sum += actor_adv_flat.sum(dim=0)
+            actor_adv_sq_sum += actor_adv_flat.square().sum(dim=0)
+            actor_adv_sample_count += actor_adv_flat.shape[0]
             actor_adv_share = actor_advantages.abs()
             actor_adv_share = actor_adv_share / actor_adv_share.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
             actor_adv_share_sum += actor_adv_share.mean(dim=0)
@@ -846,6 +958,11 @@ class BonesPopArtPPO:
         mean_entropy /= num_updates
         per_head_value_loss /= num_updates
         actor_adv_share_sum /= num_updates
+        actor_adv_abs_mean = actor_adv_abs_sum / max(actor_adv_sample_count, 1)
+        actor_adv_mean = actor_adv_sum / max(actor_adv_sample_count, 1)
+        actor_adv_var = actor_adv_sq_sum / max(actor_adv_sample_count, 1) - actor_adv_mean.square()
+        actor_adv_std = actor_adv_var.clamp_min(0.0).sqrt()
+        actor_adv_share_exact = actor_adv_abs_mean / actor_adv_abs_mean.sum().clamp_min(1.0e-8)
         self.storage.clear()
 
         self.last_diagnostics.update(
@@ -863,6 +980,24 @@ class BonesPopArtPPO:
         self.last_diagnostics.update(
             {
                 f"popart/adv_share/{head_name}": actor_adv_share_sum[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_abs_mean/{head_name}": actor_adv_abs_mean[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_std/{head_name}": actor_adv_std[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_share_exact/{head_name}": actor_adv_share_exact[index].item()
                 for index, head_name in enumerate(self.head_names)
             }
         )
