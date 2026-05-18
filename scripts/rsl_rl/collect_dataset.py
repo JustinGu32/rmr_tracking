@@ -263,10 +263,15 @@ def main():
     NUM_EPISODE = int(args_cli.num_eps_collect)
     
     # Noise params for filename
-    noise_level = .3
-    hip_noise = .3
-    knee_noise = .3 
-    ankle_noise =.5
+    noise_level = .05
+    hip_noise = .05
+    knee_noise = .05
+    ankle_noise = .1
+
+    # noise_level = .3
+    # hip_noise = .3
+    # knee_noise = .3
+    # ankle_noise = .5
 
     # noise_level = .15
     # hip_noise = .15

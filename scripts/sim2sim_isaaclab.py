@@ -53,14 +53,15 @@ parser.add_argument("--steps", type=int, default=500, help="Number of simulation
 parser.add_argument("--deterministic", action="store_true", default=True, help="Deterministic sampling")
 parser.add_argument("--guidance_type", type=str, default=None, help="Guidance type (e.g. joystick, target_heading)")
 parser.add_argument("--guidance_scale", type=float, default=1.0, help="Guidance scale")
-parser.add_argument("--target_speed", type=float, default=0, help="Target speed")
-parser.add_argument("--target_lateral_speed", type=float, default=0, help="Target lateral speed")
 parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0", help="Isaac Lab task (e.g. Tracking-Flat-G1-v0)")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
 parser.add_argument("--motion_file", type=str, default="/move/u/justingu/whole_body_tracking/motions/takara_walk_isaac/motion.npz", help="Path to motion file for tracking command")
 parser.add_argument("--video", action="store_true", help="Record simulation to a video file (offscreen; use with --headless on servers)")
 parser.add_argument("--video_folder", type=str, default="videos/no_vision", help="Folder to save video (default: videos/no_vision)")
 parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record (default: 500)")
+parser.add_argument("--forward_speed", type=float, default=0, help="Forward speed")
+parser.add_argument("--lateral_speed", type=float, default=0, help="Lateral speed")
+parser.add_argument("--spin_speed", type=float, default=0, help="Spin speed")
 # Adds --headless, --device_id, etc. (use --headless on servers without a display)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -159,6 +160,60 @@ class KeyboardJoystick:
     def stop(self):
         if PYNPUT_AVAILABLE and hasattr(self, "_listener"):
             self._listener.stop()
+            
+def _patch_legacy_combined_normalizer(policy) -> None:
+    actor = getattr(policy, "actor", None)
+    normalizer = getattr(actor, "normalizer", None) if actor is not None else None
+    if normalizer is None:
+        return
+    horizon = int(getattr(actor, "horizon", 0))
+    n_past = int(getattr(actor, "n_past_steps", 0))
+    if horizon <= 1:
+        return
+    stream_dims = {
+        "obs": int(getattr(actor, "obs_dim", 0)) or None,
+        "action": int(getattr(actor, "action_dim", 0)) or None,
+    }
+    patched_any = False
+    for key, expected_D in stream_dims.items():
+        if key not in normalizer.params_dict:
+            continue
+        p = normalizer.params_dict[key]
+        scale = p["scale"].data
+        if scale.ndim != 1:
+            continue
+        total = scale.shape[0]
+        if expected_D and total == expected_D:
+            continue
+        if total % horizon != 0:
+            continue
+        D = total // horizon
+        if expected_D and D != expected_D:
+            continue
+        for k in ("scale", "offset"):
+            v = p[k].data
+            p[k].data = v.reshape(horizon, D).mean(dim=0)
+        input_stats = p["input_stats"]
+        for k in ("min", "max", "mean", "std"):
+            if k in input_stats:
+                v = input_stats[k].data
+                if k == "min":
+                    input_stats[k].data = v.reshape(horizon, D).min(dim=0).values
+                elif k == "max":
+                    input_stats[k].data = v.reshape(horizon, D).max(dim=0).values
+                else:
+                    input_stats[k].data = v.reshape(horizon, D).mean(dim=0)
+        patched_any = True
+        print(
+            f"[INFO] Patched legacy normalizer for key='{key}': "
+            f"({horizon}*{D}={total},) -> ({D},) [n_past_steps={n_past}]",
+            flush=True,
+        )
+    if patched_any and hasattr(actor, "set_normalizer"):
+        actor.set_normalizer(normalizer)
+        print("[INFO] Refreshed actor's cached scale/offset from patched normalizer.", flush=True)
+    if not patched_any:
+        print("[INFO] Normalizer shapes look clean; no legacy patch applied.", flush=True)
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -227,6 +282,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             deterministic=args_cli.deterministic,
         )
         model_name = args_cli.wandb_path.split("/")[-1]
+        
+    _patch_legacy_combined_normalizer(policy)
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
     
     render_mode = "rgb_array" if record_video else None
@@ -240,7 +297,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         video_length = getattr(args_cli, "video_length", 500)
         os.makedirs(video_folder, exist_ok=True)
         if args_cli.guidance_type:
-            name_prefix = f"{model_name}_speed{args_cli.target_speed}_lateral{args_cli.target_lateral_speed}_scale{args_cli.guidance_scale}"
+            name_prefix = f"{model_name}_speed{args_cli.forward_speed}_lateral{args_cli.lateral_speed}_spin{args_cli.spin_speed}_scale{args_cli.guidance_scale}"
         else:
             name_prefix = f"{model_name}_noguidance"
         env = gym.wrappers.RecordVideo(
@@ -267,13 +324,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             #
             # target_speed / target_lateral_speed are in NORMALIZED units (limits → [-1, 1]):
             #   0.0 = stopped, 1.0 ≈ max forward speed seen in training data
-            "dataset_class": "G1KimodoMotionDataset",
-            "target_speed": args_cli.target_speed,          # normalized forward speed
-            "target_lateral_speed": args_cli.target_lateral_speed,  # normalized leftward speed
+            # "dataset_class": "G1KimodoMotionDataset",
+            # "target_speed": args_cli.target_speed,          # normalized forward speed
+            # "target_lateral_speed": args_cli.target_lateral_speed,  # normalized leftward speed
             # FOR G1Dataset (root_separate=True) with guidance_type="velocity":
-            # "dataset_class": "root_only",
-            # "target_velocity": [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            "dataset_class": "root_only",
+            "target_velocity": [args_cli.forward_speed, args_cli.lateral_speed, 0.0, 0.0, 0.0, args_cli.spin_speed],
             # "root_vel_indices": (3, 9)
+            "root_vel_indices": (6, 12)
             # FOR G1Dataset (full, reduced) with guidance_type="velocity":
             # "dataset_class": "G1Dataset",
             # "root_vel_indices": (64, 70)

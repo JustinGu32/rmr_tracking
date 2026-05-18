@@ -1,18 +1,20 @@
 """
-Run diffusion policy in Isaac Lab (G1 Tracking-Flat) instead of MuJoCo.
-Same logic as sim2sim.py: load policy, run control loop with optional guidance,
-but simulation is Isaac Lab as in rmr_tracking/scripts/collect_dataset.py and play.py.
+Vision sanity check: does the depth-trained policy walk backwards when an
+obstacle appears ~30-40 cm in front of it?
 
-Usage (from rmr_tracking or with PYTHONPATH including rmr_tracking):
-  python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/diffusion_policy_latest.pt
-  python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --wandb_path user/project/run_id
+Same scaffolding as sim2sim_isaaclab_vision.py and sim2sim_isaaclab_vision_stairs.py,
+but adds a single tall cylinder to the scene and repositions it every control
+step so it stays a fixed carrot distance in front of the robot's current
+facing direction. If the vision pathway works, the policy should retreat
+backwards; the cylinder follows, keeping the stimulus constant.
 
-Headless + save video (for servers without display):
-  --headless          Disable interactive viewer (required on servers).
-  --video             Record simulation to a video file (uses offscreen rendering).
-  --video_folder DIR  Where to save the video (default: videos/vision).
-  --video_length N    Steps to record (default: 500).
-  Example: python scripts/sim2sim_isaaclab_vision.py --task=Tracking-Flat-G1-v0 --checkpoint ckpts/foo.pt --headless --video --video_folder ./out
+Usage:
+  python scripts/sim2sim_isaaclab_vision_carrot.py \
+      --checkpoint /path/to/ckpt.pt \
+      --carrot_distance_m 0.35 \
+      --headless --video
+
+Tune --carrot_distance_m anywhere in [0.30, 0.40] per the test protocol.
 """
 
 import argparse
@@ -24,11 +26,8 @@ from threading import Lock
 import numpy as np
 import torch
 
-# Vision script needs the depth camera; set before any Isaac Lab imports
-# (tracking_env_cfg adds depth_camera to scene only when ENABLE_CAMERAS=1)
 os.environ["ENABLE_CAMERAS"] = "1"
 
-# Add rmr_tracking for task registration (collect_dataset / play style)
 TML_ROOT = Path(__file__).resolve().parent.parent
 RMR_TRACKING_ROOT = TML_ROOT.parent / "rmr_tracking"
 if RMR_TRACKING_ROOT.exists():
@@ -40,58 +39,54 @@ else:
         sys.path.insert(0, str(RMR_TRACKING_ROOT))
         sys.path.insert(0, str(RMR_TRACKING_ROOT / "scripts" / "rsl_rl"))
 
-# Isaac Lab app must be launched before other Isaac imports (play.py / collect_dataset.py pattern)
 from isaaclab.app import AppLauncher
 
-# CLI: diffusion args + task/num_envs + AppLauncher
-parser = argparse.ArgumentParser(description="Run diffusion policy in Isaac Lab (G1)")
+parser = argparse.ArgumentParser(description="Run diffusion policy in Isaac Lab (G1) with a carrot cylinder in front")
 parser.add_argument("--checkpoint", type=str, default=None, help="Path to local checkpoint (.pt)")
 parser.add_argument("--wandb_path", type=str, default=None, help="Wandb run path (e.g. user/project/run_id)")
 parser.add_argument("--wandb_file", type=str, default="latest.ckpt", help="Checkpoint filename in wandb")
 parser.add_argument("--steps", type=int, default=500, help="Number of simulation steps")
-# parser.add_argument("--device", type=str, default="cuda", help="Device (cuda/cpu)")
 parser.add_argument("--deterministic", action="store_true", default=True, help="Deterministic sampling")
 parser.add_argument("--guidance_type", type=str, default=None, help="Guidance type (e.g. joystick, target_heading)")
 parser.add_argument("--guidance_scale", type=float, default=1.0, help="Guidance scale")
-parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0", help="Isaac Lab task (e.g. Tracking-Flat-G1-v0)")
+parser.add_argument("--task", type=str, default="Tracking-Flat-G1-v0", help="Isaac Lab task")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
 parser.add_argument("--motion_file", type=str, default="/move/u/justingu/whole_body_tracking/motions/takara_walk_isaac/motion.npz", help="Path to motion file for tracking command")
-parser.add_argument("--video", action="store_true", help="Record simulation to a video file (offscreen; use with --headless on servers)")
-parser.add_argument("--video_folder", type=str, default="videos/vision", help="Folder to save video (default: videos/vision)")
-parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record (default: 500)")
+parser.add_argument("--video", action="store_true", help="Record simulation to a video file")
+parser.add_argument("--video_folder", type=str, default="videos/vision_carrot", help="Folder to save video")
+parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record")
 parser.add_argument("--debug_vision", action="store_true", help="Print and save robot vision (RGB/depth) for debugging")
 parser.add_argument("--forward_speed", type=float, default=0.0, help="Forward speed")
 parser.add_argument("--lateral_speed", type=float, default=0.0, help="Lateral speed")
 parser.add_argument("--spin_speed", type=float, default=0.0, help="Spin speed")
-parser.add_argument("--vision_guidance_image", type=str, default=None,
-                    help="Path to reference RGB image (PNG/JPG). Enables vision guidance.")
-parser.add_argument("--vision_guidance_depth", type=str, default=None,
-                    help="Optional path to reference depth map (.npy, meters). "
-                         "If omitted, only the RGB slice is used.")
-parser.add_argument("--vision_guidance_scale", type=float, default=1.0,
-                    help="Vision guidance strength (gradient scale).")
-parser.add_argument("--vision_guidance_rgb_only", action="store_true",
-                    help="Force RGB-only guidance even when a reference depth is provided.")
-parser.add_argument("--vision_guidance_mse", action="store_true",
-                    help="Use MSE instead of cosine similarity for the vision loss.")
-# Adds --headless, --device_id, etc. (use --headless on servers without a display)
+# Carrot cylinder controls
+parser.add_argument("--carrot_distance_m", type=float, default=0.35,
+                    help="Distance from robot root (xy) to cylinder center, along robot facing direction. "
+                         "Test protocol suggests 0.30-0.40 m.")
+parser.add_argument("--carrot_radius_m", type=float, default=0.15,
+                    help="Cylinder radius in meters.")
+parser.add_argument("--carrot_height_m", type=float, default=1.8,
+                    help="Cylinder height in meters. Tall enough to show up in head-mounted depth camera view.")
+parser.add_argument("--carrot_z_center_m", type=float, default=0.9,
+                    help="Cylinder center height above ground (so base of cylinder ~0 if z_center == height/2).")
+parser.add_argument("--carrot_warmup_steps", type=int, default=0,
+                    help="Skip repositioning the cylinder for this many steps after reset (let it sit far away). "
+                         "Useful for an A/B comparison within one episode.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
-# Enable cameras for offscreen rendering when recording video (required for headless + video)
 if getattr(args_cli, "video", False):
     args_cli.enable_cameras = True
 
-# Clear sys.argv for Hydra (collect_dataset / play pattern)
 sys.argv = [sys.argv[0]] + hydra_args
 
-# Launch Omniverse app first
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 print("[INFO] Isaac Lab app ready.", flush=True)
 
-# Rest of imports after app launch (play.py / collect_dataset.py pattern)
 import gymnasium as gym
 
+import isaaclab.sim as sim_utils
+from isaaclab.assets import RigidObjectCfg
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -101,16 +96,12 @@ from isaaclab.envs import (
 )
 from isaaclab_tasks.utils.hydra import hydra_task_config
 
-# Register tasks (G1 Tracking-Flat, etc.)
 import whole_body_tracking.tasks  # noqa: E402, F401
 
-# Diffusion policy (TML-BeyondMimic)
 sys.path.insert(0, str(TML_ROOT))
 from diffusion_policy.inference.guidance import create_guidance_fn  # noqa: E402
-from diffusion_policy.inference.vision_guidance import create_reference_image_guidance_fn  # noqa: E402
 from diffusion_policy.inference.diffusion_agent import DiffusionAgentIsaac  # noqa: E402
 
-# Keyboard joystick for guidance (same as sim2sim.py)
 try:
     from pynput import keyboard
     PYNPUT_AVAILABLE = True
@@ -118,10 +109,9 @@ except ImportError:
     PYNPUT_AVAILABLE = False
     print("[WARNING] pynput not available - keyboard joystick disabled (pip install pynput)")
 
-# Vision embedding dims: SigLIP2 1152 + DeFM 1024
 RGB_EMBED_DIM = 1152
 DEPTH_EMBED_DIM = 1024
-VISION_EMBED_DIM = RGB_EMBED_DIM + DEPTH_EMBED_DIM  # 2176
+VISION_EMBED_DIM = RGB_EMBED_DIM + DEPTH_EMBED_DIM
 
 seed = 42
 torch.manual_seed(seed)
@@ -129,8 +119,8 @@ np.random.seed(seed)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+
 class KeyboardJoystick:
-    """Keyboard joystick for guidance (same as sim2sim.py)."""
     def __init__(self):
         self.lx = self.ly = self.rx = self.ry = 0.0
         self._keys_pressed = set()
@@ -178,25 +168,19 @@ class KeyboardJoystick:
             self._listener.stop()
 
 
-def load_vision_encoders(device: str = "cuda", use_rgb: bool = True, use_depth: bool = True):
-    """Load SigLIP2 (RGB) and/or DeFM (depth) per the model's modality needs."""
+def load_vision_encoders(device: str = "cuda", load_defm: bool = True):
     siglip_model, siglip_processor = None, None
     defm_model = None
-
-    if use_rgb:
-        try:
-            from transformers import AutoImageProcessor, AutoModel
-            ckpt = "google/siglip2-so400m-patch14-384"
-            siglip_model = AutoModel.from_pretrained(ckpt, device_map=device).eval()
-            siglip_processor = AutoImageProcessor.from_pretrained(ckpt)
-            print(f"[VISION] Loaded SigLIP2 from {ckpt}")
-        except Exception as e:
-            print(f"[VISION] Failed to load SigLIP: {e}")
-            raise
-    else:
-        print("[VISION] Skipping SigLIP2 (model does not use RGB)")
-
-    if use_depth:
+    try:
+        from transformers import AutoImageProcessor, AutoModel
+        ckpt = "google/siglip2-so400m-patch14-384"
+        siglip_model = AutoModel.from_pretrained(ckpt, device_map=device).eval()
+        siglip_processor = AutoImageProcessor.from_pretrained(ckpt)
+        print(f"[VISION] Loaded SigLIP2 from {ckpt}")
+    except Exception as e:
+        print(f"[VISION] Failed to load SigLIP: {e}")
+        raise
+    if load_defm:
         try:
             torch.hub.set_dir("/move/u/chrzhang/.cache/torch/hub")
             defm_model = torch.hub.load(
@@ -207,121 +191,41 @@ def load_vision_encoders(device: str = "cuda", use_rgb: bool = True, use_depth: 
         except Exception as e:
             print(f"[VISION] Failed to load DeFM: {e}")
             raise
-    else:
-        print("[VISION] Skipping DeFM (model does not use depth)")
-
     return siglip_model, siglip_processor, defm_model
 
 
-def _detect_vision_modalities(policy):
-    """Determine (use_rgb, use_depth) for the loaded policy.
-
-    Primary: read training cfg's dataset.with_rgb / with_depth (matches how the
-    zarr data was concatenated at train time). Fallback: infer from the model's
-    vision input dim (RGB=1152, depth=1024, both=2176)."""
-    use_rgb, use_depth = None, None
-    cfg = getattr(policy, "cfg", None)
-    ds_cfg = getattr(cfg, "dataset", None) if cfg is not None else None
-    if ds_cfg is not None:
-        if hasattr(ds_cfg, "with_rgb"):
-            use_rgb = bool(ds_cfg.with_rgb)
-        if hasattr(ds_cfg, "with_depth"):
-            use_depth = bool(ds_cfg.with_depth)
-
-    actor = getattr(policy, "actor", None)
-    backbone = getattr(actor, "backbone", None) if actor is not None else None
-    vision_dim = (
-        getattr(actor, "vision_dim", None)
-        or (getattr(backbone, "v_input_dim", None) if backbone is not None else None)
-        or (getattr(backbone, "vision_input_dim", None) if backbone is not None else None)
-    )
-
-    if use_rgb is None or use_depth is None:
-        if vision_dim is None or vision_dim <= 0:
-            raise RuntimeError(
-                "Could not determine vision modalities: cfg.dataset.with_rgb/with_depth "
-                "missing and model has no vision_input_dim."
-            )
-        # Infer from dim
-        if vision_dim == RGB_EMBED_DIM + DEPTH_EMBED_DIM:
-            inferred_rgb, inferred_depth = True, True
-        elif vision_dim == RGB_EMBED_DIM:
-            inferred_rgb, inferred_depth = True, False
-        elif vision_dim == DEPTH_EMBED_DIM:
-            inferred_rgb, inferred_depth = False, True
-        else:
-            raise RuntimeError(
-                f"Unrecognized vision_dim={vision_dim}; cannot infer rgb/depth split."
-            )
-        if use_rgb is None:
-            use_rgb = inferred_rgb
-        if use_depth is None:
-            use_depth = inferred_depth
-
-    # Sanity-check against the model's expected dim if available
-    if vision_dim is not None and vision_dim > 0:
-        expected = (RGB_EMBED_DIM if use_rgb else 0) + (DEPTH_EMBED_DIM if use_depth else 0)
-        if expected != vision_dim:
-            raise RuntimeError(
-                f"Vision modality mismatch: cfg implies dim {expected} "
-                f"(rgb={use_rgb}, depth={use_depth}) but model expects {vision_dim}."
-            )
-
-    print(f"[VISION] Model uses rgb={use_rgb}, depth={use_depth} (vision_dim={vision_dim})")
-    return use_rgb, use_depth
-
-
 def encode_rgb(rgb: np.ndarray, model, processor, device: str) -> np.ndarray:
-    """Encode single RGB image (H, W, 3) to (1152,) with SigLIP."""
     from PIL import Image
-    
-    # Ensure RGB is uint8 [0, 255] format
     if rgb.dtype == np.uint8:
-        # MuJoCo returns uint8, but ensure it's in valid range
         rgb_uint8 = np.clip(rgb, 0, 255).astype(np.uint8)
     else:
-        # Convert float to uint8
         if rgb.max() <= 1.0:
             rgb_uint8 = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
         else:
             rgb_uint8 = np.clip(rgb, 0, 255).astype(np.uint8)
-    
-    # Ensure shape is (H, W, 3)
     if rgb_uint8.ndim == 4:
         rgb_uint8 = rgb_uint8.squeeze(0)
     if rgb_uint8.shape[-1] != 3:
         raise ValueError(f"Expected RGB image with 3 channels, got shape {rgb_uint8.shape}")
-    
-    # Convert to PIL Image (SigLIP expects PIL Image)
     pil = Image.fromarray(rgb_uint8, mode="RGB")
-    
-    # Process with SigLIP processor (handles resizing, normalization, etc.)
     inputs = processor(images=[pil], return_tensors="pt").to(device)
-    
-    # Encode with SigLIP2
     with torch.no_grad():
         out = model.get_image_features(**inputs)
         emb = out if isinstance(out, torch.Tensor) else out.pooler_output
-    
-    # Return as numpy array
     emb_np = emb.cpu().numpy().squeeze(0).astype(np.float32)
-    
-    # Verify embedding dimension matches expected
     if emb_np.shape[0] != RGB_EMBED_DIM:
         raise ValueError(f"Expected RGB embedding dim {RGB_EMBED_DIM}, got {emb_np.shape[0]}")
-    
     return emb_np
 
 
 def encode_depth(depth: np.ndarray, model, device: str, target_size: int = 518, patch_size: int = 14) -> np.ndarray:
-    """Encode single depth image (H, W) in meters to (1024,) with DeFM."""
     try:
         from diffusion_policy.dataset.defm_utils import preprocess_depth_batch
     except ImportError:
         from defm_utils import preprocess_depth_batch
     depth = np.asarray(depth, dtype=np.float32).squeeze()
     if depth.ndim == 2:
-        depth = depth[np.newaxis, :, :]  # (1, H, W)
+        depth = depth[np.newaxis, :, :]
     else:
         depth = depth[np.newaxis, :, :] if depth.shape[0] != 1 else depth
     normalized = preprocess_depth_batch(
@@ -336,9 +240,6 @@ def encode_depth(depth: np.ndarray, model, device: str, target_size: int = 518, 
 
 
 def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debug_dir: str) -> None:
-    """Print vision stats and save RGB/depth images to debug_dir for inspection.
-    Depth is visualized with viridis colormap (same as TML-BeyondMimic orig depth):
-    close=dark purple, mid=yellow/green, far=blue; invalid/zero depth=white."""
     depth_flat = np.asarray(depth).reshape(-1).astype(np.float64)
     valid = np.isfinite(depth_flat) & (depth_flat > 0)
     depth_min = float(np.min(depth_flat[valid])) if valid.any() else float("nan")
@@ -350,23 +251,22 @@ def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debu
     )
     os.makedirs(debug_dir, exist_ok=True)
     from PIL import Image
-
     rgb_uint8 = np.clip(rgb, 0, 255).astype(np.uint8)
     if rgb_uint8.ndim == 4:
         rgb_uint8 = rgb_uint8.squeeze(0)
     Image.fromarray(rgb_uint8, mode="RGB").save(os.path.join(debug_dir, f"step_{step_count:05d}_rgb.png"))
+    np.save(os.path.join(debug_dir, f"step_{step_count:05d}_depth.npy"), np.asarray(depth))
     d = np.asarray(depth).squeeze().astype(np.float64)
     if d.size > 0:
         valid_mask = np.isfinite(d) & (d > 0)
         if valid_mask.any():
             d_min, d_max = float(d[valid_mask].min()), float(d[valid_mask].max())
-            # Normalize valid depth to [0, 1]; leave invalid as NaN so colormap maps them to white
             d_norm = np.full_like(d, np.nan, dtype=np.float64)
             d_norm[valid_mask] = (d[valid_mask] - d_min) / (d_max - d_min + 1e-9)
             import matplotlib
             cmap = matplotlib.colormaps["viridis"]
             cmap.set_bad(color="white")
-            rgba = cmap(d_norm)  # (H, W, 4) in [0, 1]
+            rgba = cmap(d_norm)
             d_vis = (np.clip(rgba[..., :3], 0, 1) * 255).astype(np.uint8)
         else:
             d_vis = np.full((*d.shape, 3), 255, dtype=np.uint8)
@@ -374,15 +274,57 @@ def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debu
     print(f"[VISION] Saved to {debug_dir}/step_{step_count:05d}_*.png", flush=True)
 
 
+def _yaw_from_quat_wxyz(w: float, x: float, y: float, z: float) -> float:
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def add_carrot_cylinder_to_scene(env_cfg, radius_m: float, height_m: float):
+    """Attach a kinematic cylinder to the scene. Spawned far away; repositioned each step."""
+    env_cfg.scene.carrot_cylinder = RigidObjectCfg(
+        prim_path="{ENV_REGEX_NS}/CarrotCylinder",
+        spawn=sim_utils.CylinderCfg(
+            radius=float(radius_m),
+            height=float(height_m),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.1, 0.1)),
+        ),
+        # Park it far away initially so the reset frame isn't contaminated by a
+        # collision or a mid-frame warp before the first reposition call.
+        init_state=RigidObjectCfg.InitialStateCfg(pos=(1000.0, 1000.0, 500.0)),
+    )
+    print(f"[SCENE] Carrot cylinder cfg added: radius={radius_m:.3f} m, height={height_m:.3f} m", flush=True)
+
+
+def reposition_carrot_cylinder(env, distance_m: float, z_center_m: float, device: str, env_id: int = 0):
+    """Write the cylinder's root state so it sits `distance_m` in front of the robot along its facing yaw."""
+    scene = env.unwrapped.scene
+    if "carrot_cylinder" not in scene.keys():
+        return
+    robot = scene["robot"]
+    root_pos_w = robot.data.root_pos_w[env_id].detach().cpu().numpy()
+    root_quat_w = robot.data.root_quat_w[env_id].detach().cpu().numpy()  # (w, x, y, z)
+    yaw = _yaw_from_quat_wxyz(*root_quat_w)
+    fwd = np.array([np.cos(yaw), np.sin(yaw)], dtype=np.float64)
+
+    target_xy = root_pos_w[:2] + fwd * float(distance_m)
+
+    cyl = scene["carrot_cylinder"]
+    state = cyl.data.root_state_w[env_id:env_id + 1].clone()
+    state[0, 0] = float(target_xy[0])
+    state[0, 1] = float(target_xy[1])
+    state[0, 2] = float(z_center_m)
+    state[0, 3] = 1.0  # w
+    state[0, 4] = 0.0
+    state[0, 5] = 0.0
+    state[0, 6] = 0.0  # identity quat
+    state[0, 7:] = 0.0
+    cyl.write_root_state_to_sim(state, env_ids=torch.tensor([env_id], device=device))
+
+
 def _patch_legacy_combined_normalizer(policy) -> None:
-    """Fix ``obs``/``action``/``cond`` normalizer stats saved by the buggy
-    ``CombinedDataset.get_normalizer`` (pre-fix), which fit stats on
-    ``(N, H*D)`` and so persisted ``scale`` of shape ``(H*D,)`` instead of
-    ``(D,)``. At inference we feed ``(B, n_past_steps, D)`` which fails the
-    ``reshape(-1, H*D)`` inside ``LinearNormalizer._normalize``. Collapse the
-    per-timestep stats back to a single ``(D,)`` by averaging across H.
-    Idempotent for already-correct checkpoints.
-    """
     actor = getattr(policy, "actor", None)
     normalizer = getattr(actor, "normalizer", None) if actor is not None else None
     if normalizer is None:
@@ -391,7 +333,6 @@ def _patch_legacy_combined_normalizer(policy) -> None:
     n_past = int(getattr(actor, "n_past_steps", 0))
     if horizon <= 1:
         return
-
     stream_dims = {
         "obs": int(getattr(actor, "obs_dim", 0)) or None,
         "action": int(getattr(actor, "action_dim", 0)) or None,
@@ -406,7 +347,7 @@ def _patch_legacy_combined_normalizer(policy) -> None:
             continue
         total = scale.shape[0]
         if expected_D and total == expected_D:
-            continue  # already correct
+            continue
         if total % horizon != 0:
             continue
         D = total // horizon
@@ -431,25 +372,16 @@ def _patch_legacy_combined_normalizer(policy) -> None:
             f"({horizon}*{D}={total},) -> ({D},) [n_past_steps={n_past}]",
             flush=True,
         )
-
     if patched_any and hasattr(actor, "set_normalizer"):
-        # ``DiffusionActor`` caches ``obs_scale``/``obs_offset``/``action_scale``/
-        # ``action_offset`` as cloned tensors at load time for a torch.compile /
-        # JIT-friendly fast path (see ``set_normalizer``). Those caches still hold
-        # the buggy ``(H*D,)`` shapes, so re-extract them from the now-patched
-        # ``normalizer.params_dict`` so ``unnormalize_action`` uses the fixed stats.
         actor.set_normalizer(normalizer)
         print("[INFO] Refreshed actor's cached scale/offset from patched normalizer.", flush=True)
-
     if not patched_any:
         print("[INFO] Normalizer shapes look clean; no legacy patch applied.", flush=True)
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
 def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agent_cfg):
-    """Run diffusion policy in Isaac Lab (same flow as sim2sim.py, sim from collect_dataset/play)."""
     print("[INFO] main() entered (Hydra config loaded).", flush=True)
-    # Validate checkpoint args
     if args_cli.checkpoint is None and args_cli.wandb_path is None:
         print(f"[ERROR] No checkpoint specified")
         sys.exit(1)
@@ -463,37 +395,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.motion_file:
         env_cfg.commands.motion.motion_file = args_cli.motion_file
 
-    # Create env (play.py / collect_dataset style); use rgb_array for video (works headless)
+    add_carrot_cylinder_to_scene(env_cfg, args_cli.carrot_radius_m, args_cli.carrot_height_m)
+
     record_video = getattr(args_cli, "video", False)
     video_length = getattr(args_cli, "video_length", 500)
 
-    # Relax termination thresholds: the diffusion policy generates
-    # its own motion and does NOT track the reference motion file, so the reference-based
-    # terminations (anchor_pos, anchor_ori, ee_body_pos) trigger spurious resets that
-    # corrupt the policy's temporal observation buffer.
     steps_to_seconds = env_cfg.decimation * env_cfg.sim.dt
     episode_s = (max(args_cli.steps, video_length) + 200) * steps_to_seconds
     env_cfg.episode_length_s = max(env_cfg.episode_length_s, episode_s)
     if hasattr(env_cfg.terminations, "anchor_pos") and hasattr(env_cfg.terminations.anchor_pos, "params"):
-        env_cfg.terminations.anchor_pos.params["threshold"] = 10.0
+        env_cfg.terminations.anchor_pos.params["threshold"] = 100.0
     if hasattr(env_cfg.terminations, "anchor_ori") and hasattr(env_cfg.terminations.anchor_ori, "params"):
-        env_cfg.terminations.anchor_ori.params["threshold"] = 10.0
+        env_cfg.terminations.anchor_ori.params["threshold"] = 100.0
     if hasattr(env_cfg.terminations, "ee_body_pos") and hasattr(env_cfg.terminations.ee_body_pos, "params"):
-        env_cfg.terminations.ee_body_pos.params["threshold"] = 10.0
-    if hasattr(env_cfg.terminations, "bad_anchor_pos_xy") and hasattr(env_cfg.terminations.bad_anchor_pos_xy, "params"):                                                                                                                                                  
-        env_cfg.terminations.bad_anchor_pos_xy.params["threshold"] = 100.0 
+        env_cfg.terminations.ee_body_pos.params["threshold"] = 100.0
+    if hasattr(env_cfg.terminations, "bad_anchor_pos_xy") and hasattr(env_cfg.terminations.bad_anchor_pos_xy, "params"):
+        env_cfg.terminations.bad_anchor_pos_xy.params["threshold"] = 100.0
     print(f"[INFO] Relaxed termination thresholds for sim2sim (episode_length_s={env_cfg.episode_length_s:.1f})", flush=True)
-    
+
     render_mode = "rgb_array" if record_video else None
     debug_vision = getattr(args_cli, "debug_vision", False)
-    
-    # Disable debug visuals (contact-force arrows, motion command frames) so they don't appear in the robot's camera view.
+
     if hasattr(env_cfg.scene, "contact_forces") and hasattr(env_cfg.scene.contact_forces, "debug_vis"):
         env_cfg.scene.contact_forces.debug_vis = False
     if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "motion") and hasattr(env_cfg.commands.motion, "debug_vis"):
         env_cfg.commands.motion.debug_vis = False
 
-    # Load diffusion policy (Isaac ordering: no MuJoCo conversion inside agent)
     print("[INFO] Loading diffusion policy (DiffusionAgentIsaac); wandb download can be slow...", flush=True)
     model_name = ""
     if args_cli.checkpoint:
@@ -503,7 +430,6 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
-            # use_two_phase=True,
         )
         model_name = args_cli.checkpoint.split("/")[-3]
     else:
@@ -514,39 +440,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
-            # use_two_phase=True,
         )
         model_name = args_cli.wandb_path.split("/")[-1]
 
     _patch_legacy_combined_normalizer(policy)
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
 
-    # Detect which vision modalities the model was trained with so we only load
-    # (and only invoke) the encoders the model actually consumes.
-    use_rgb, use_depth = _detect_vision_modalities(policy)
-
-    print("[INFO] Loading vision encoders...", flush=True)
-    siglip_model, siglip_processor, defm_model = load_vision_encoders(
-        device, use_rgb=use_rgb, use_depth=use_depth
-    )
+    print("[INFO] Loading vision encoders (SigLIP2 + DeFM)...", flush=True)
+    siglip_model, siglip_processor, defm_model = load_vision_encoders(device, load_defm=True)
     print("[INFO] Vision encoders loaded.", flush=True)
-    
+
     print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
     print("[INFO] Environment created.", flush=True)
+    try:
+        scene_keys = list(env.unwrapped.scene.keys())
+        print(f"[SCENE] Scene entities after env creation: {scene_keys}", flush=True)
+        if "carrot_cylinder" not in scene_keys:
+            print("[SCENE][ERROR] 'carrot_cylinder' is NOT in the scene — the cfg mutation was lost.", flush=True)
+    except Exception as e:
+        print(f"[SCENE] Could not list scene keys: {e}", flush=True)
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
     if record_video:
-        video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab")))
+        video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/vision_carrot")))
         video_length = getattr(args_cli, "video_length", 500)
+        carrot_tag = f"carrot{args_cli.carrot_distance_m:.2f}m"
         if args_cli.guidance_type:
-            video_name = f"{model_name}_forward{args_cli.forward_speed}_lateral{args_cli.lateral_speed}_spin{args_cli.spin_speed}_scale{args_cli.guidance_scale}"
+            video_name = f"{model_name}_{carrot_tag}_fwd{args_cli.forward_speed}_lat{args_cli.lateral_speed}_spin{args_cli.spin_speed}_scale{args_cli.guidance_scale}"
         else:
-            video_name = f"{model_name}_noguidance"
+            video_name = f"{model_name}_{carrot_tag}_noguidance"
         os.makedirs(video_folder, exist_ok=True)
-        # Match video FPS to sim control rate (1 step = decimation*dt sec) so playback is smooth.
-        # With obstacles, heavier physics can make wall-clock step time variable; explicit fps
-        # ensures encoding is consistent and avoids jitter from wrong/default fps.
         video_fps = round(1.0 / (env_cfg.decimation * env_cfg.sim.dt))
         env = gym.wrappers.RecordVideo(
             env,
@@ -557,83 +481,33 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             disable_logger=True,
             fps=video_fps,
         )
-        print(f"[INFO] Video recording: first {video_length} steps @ {video_fps} FPS -> {video_folder} (prefix: {video_name} -> {video_name}-step-0.mp4)")
-    
-    # Guidance
+        print(f"[INFO] Video recording: first {video_length} steps @ {video_fps} FPS -> {video_folder} (prefix: {video_name})")
+
     guidance_fn = None
     keyboard_joystick = None
     if args_cli.guidance_type and args_cli.guidance_scale > 0.0:
         guidance_config = {
             "dataset_class": "root_only",
             "target_velocity": [args_cli.forward_speed, args_cli.lateral_speed, 0.0, 0.0, 0.0, args_cli.spin_speed],
-            # FOR REDUCED:
-            # "dataset_class": "G1Dataset",
-            # "root_pos_indices": (58, 61),
-            # "root_vel_indices": (64, 70) # THIS IS FOR REDUCED. when running for limited, just comment this out
-            "root_vel_indices": (3, 9) # this is for root only
+            "root_vel_indices": (3, 9),
         }
         guidance_fn = create_guidance_fn(args_cli.guidance_type, guidance_config, torch.device(device))
-        # empirically i found that this works better than the default (True) for listening to guidance
         policy.actor.guidance_inpaint_nominal_state = False
         print(f"[GUIDANCE] {args_cli.guidance_type} scale={args_cli.guidance_scale}")
         if args_cli.guidance_type == "joystick":
             keyboard_joystick = KeyboardJoystick()
 
-    # Vision guidance: encode a reference image/depth into an embedding
-    # target and pull the predicted vision stream toward it each denoising step.
-    # Reuses the already-loaded SigLIP2 + DeFM so the reference lives in the same
-    # encoder distribution as training data.
-    vision_guidance_fn = None
-    vision_guidance_scale = 0.0
-    if args_cli.vision_guidance_image is not None:
-        if not use_rgb:
-            raise RuntimeError(
-                "--vision_guidance_image requires an RGB-capable model, "
-                "but this checkpoint was trained without RGB."
-            )
-        from PIL import Image
-        print(f"[VISION-GUIDANCE] Encoding reference image: {args_cli.vision_guidance_image}", flush=True)
-        ref_rgb = np.array(Image.open(args_cli.vision_guidance_image).convert("RGB"))
-        ref_rgb_emb = encode_rgb(ref_rgb, siglip_model, siglip_processor, device)  # (1152,)
-
-        # Only consider the reference depth when the model was trained with depth.
-        depth_given = use_depth and args_cli.vision_guidance_depth is not None
-        ref_parts = [ref_rgb_emb]
-        if use_depth:
-            if depth_given:
-                ref_depth = np.load(args_cli.vision_guidance_depth).astype(np.float32)
-                ref_depth_emb = encode_depth(ref_depth, defm_model, device)  # (1024,)
-            else:
-                ref_depth_emb = np.zeros(DEPTH_EMBED_DIM, dtype=np.float32)
-            ref_parts.append(ref_depth_emb)
-
-        ref_raw = torch.from_numpy(
-            np.concatenate(ref_parts).astype(np.float32)
-        ).to(device).view(1, 1, -1)
-        # Match the model's inference-time normalization so target and vision_pred live in the same space.
-        ref_normed = policy.actor.normalize_vision(ref_raw).squeeze(0).squeeze(0)
-
-        # rgb_only behavior: enforced when the model has no depth stream, or when
-        # the user requested rgb-only, or when no reference depth was supplied.
-        rgb_only = args_cli.vision_guidance_rgb_only or not depth_given or not use_depth
-        vision_guidance_fn = create_reference_image_guidance_fn(
-            target_embed=ref_normed,
-            horizon_start=policy.actor.n_past_steps,
-            rgb_slice=(0, RGB_EMBED_DIM),
-            rgb_only=rgb_only,
-            use_cosine=not args_cli.vision_guidance_mse,
-        )
-        vision_guidance_scale = args_cli.vision_guidance_scale
-        print(
-            f"[VISION-GUIDANCE] scale={vision_guidance_scale} rgb_only={rgb_only} "
-            f"loss={'mse' if args_cli.vision_guidance_mse else 'cosine'}",
-            flush=True,
-        )
-
     policy.reset()
     print("[INFO] Resetting environment (first step may be slow)...", flush=True)
     obs, _ = env.reset()
     print("[INFO] Environment reset; starting control loop.", flush=True)
+    # Seed cylinder position in front of the robot before the first camera frame is used.
+    if args_cli.carrot_warmup_steps <= 0:
+        reposition_carrot_cylinder(env, args_cli.carrot_distance_m, args_cli.carrot_z_center_m, device)
+        print(f"[CARROT] Cylinder placed {args_cli.carrot_distance_m:.3f} m ahead of robot (initial).", flush=True)
+    else:
+        print(f"[CARROT] Warmup {args_cli.carrot_warmup_steps} steps: cylinder stays parked far away.", flush=True)
+
     step_count = 0
     max_steps = args_cli.steps
     env_id = 0
@@ -641,12 +515,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     debug_vision_dir = ""
     if debug_vision:
         debug_vision_dir = os.path.abspath(
-            os.path.join(getattr(args_cli, "video_folder", "videos/sim2sim_isaaclab"), "vision_debug")
+            os.path.join(getattr(args_cli, "video_folder", "videos/vision_carrot"), "vision_debug")
         )
         print(f"[VISION] Debug vision enabled: images will be saved to {debug_vision_dir}", flush=True)
 
     while step_count < max_steps and simulation_app.is_running():
-        # Get state from diffusion_collect (flattened); reshape to (30, 3), (30, 4) for policy
+        # Carrot-on-a-stick: reposition BEFORE reading the camera so the rendered
+        # frame for this step already shows the cylinder at distance_m ahead.
+        if step_count >= args_cli.carrot_warmup_steps:
+            reposition_carrot_cylinder(env, args_cli.carrot_distance_m, args_cli.carrot_z_center_m, device)
+
         dc = obs['diffusion_collect']
         _idx = env_id if dc['body_pos'].ndim > 1 else slice(None)
         body_pos = dc['body_pos'][_idx].float().cpu().numpy().reshape(30, 3)
@@ -655,26 +533,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         body_ang_vel = dc['body_ang_vel'][_idx].float().cpu().numpy().reshape(30, 3)
         joint_pos = dc['dof_pos'][_idx].float().cpu().numpy()
         joint_vel = dc['dof_vel'][_idx].float().cpu().numpy()
-        
-        # Get vision embeds (only encode modalities the model was trained with)
+
         camera_data = env.unwrapped.scene["depth_camera"].data
         rgb = camera_data.output["rgb"].detach().cpu().numpy()
         depth = camera_data.output["depth"].detach().cpu().numpy()
-        # Debug: print and save robot vision at selected steps
         if debug_vision and step_count % 200 == 0:
             _debug_vision_step(step_count, rgb, depth, debug_vision_dir)
-        embed_parts = []
-        if use_rgb:
-            embed_parts.append(encode_rgb(rgb, siglip_model, siglip_processor, device))
-        if use_depth:
-            embed_parts.append(encode_depth(depth, defm_model, device))
-        vision_embeds = np.concatenate(embed_parts, axis=0).astype(np.float32)
-        # assert vision_embeds.shape[0] == VISION_EMBED_DIM, (
-        #     f"Expected vision_embeds dim {VISION_EMBED_DIM}, got {vision_embeds.shape[0]}"
-        # )
+        rgb_emb = encode_rgb(rgb, siglip_model, siglip_processor, device)
+        depth_emb = encode_depth(depth, defm_model, device)
+        vision_embeds = np.concatenate([rgb_emb, depth_emb], axis=0).astype(np.float32)
 
-        # Query policy every env step (each env.step() advances decimation physics steps;
-        # we need a fresh action per step, matching play.py and collect_dataset)
         if guidance_fn is not None:
             if args_cli.guidance_type == "joystick" and keyboard_joystick is not None:
                 if hasattr(guidance_fn, "joystick_values"):
@@ -685,44 +553,36 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
-                vision_embeds=vision_embeds, # vision_embeds
+                vision_embeds=vision_embeds,
                 guidance_fn=guidance_fn,
                 guidance_kwargs=None,
                 guidance_scale=args_cli.guidance_scale,
-                vision_guidance_fn=vision_guidance_fn,
-                vision_guidance_scale=vision_guidance_scale,
             )
         else:
             action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
-                vision_embeds=vision_embeds, # vision_embeds
-                # vision_embeds=None, # for debugging
-                vision_guidance_fn=vision_guidance_fn,
-                vision_guidance_scale=vision_guidance_scale,
+                vision_embeds=vision_embeds,
             )
         if action is None:
             action = np.zeros(29, dtype=np.float32)
-            
+
         action = torch.from_numpy(action).float().to(device).unsqueeze(0)
 
-        # Step env (vec: obs is batched)
         if action.shape[0] < env.unwrapped.num_envs:
             action = action.repeat(env.unwrapped.num_envs, 1)
         obs, _, _, _, _ = env.step(action)
         step_count += 1
 
-        # Print progress
         if step_count % 100 == 0:
             robot = env.unwrapped.scene["robot"]
+            pelvis_xy = robot.data.root_pos_w[env_id, :2].detach().cpu().numpy()
             pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
-            print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m")
+            print(f"Step {step_count}: root xy = ({pelvis_xy[0]:.3f}, {pelvis_xy[1]:.3f}), pelvis height = {pelvis_z:.3f}m")
 
-    # loop done
     if keyboard_joystick is not None:
         keyboard_joystick.stop()
 
-    # Final stats before closing env
     print(f"[INFO] Completed {step_count} steps")
     robot = env.unwrapped.scene["robot"]
     pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
