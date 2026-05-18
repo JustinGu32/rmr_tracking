@@ -7,12 +7,14 @@
 #SBATCH --gres=gpu:titanrtx:1 
 #SBATCH --job-name=takara_obstacle_collect
 #SBATCH --output=slurm_outputs/slurm-%A_%a.out
-#SBATCH --array=1-5
+#SBATCH --array=1-2
 
 set -euo pipefail
 
 cd /move/u/karenvo/Projects/rmr_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 export OMNI_KIT_ACCEPT_EULA=y
 conda activate env_isaaclab

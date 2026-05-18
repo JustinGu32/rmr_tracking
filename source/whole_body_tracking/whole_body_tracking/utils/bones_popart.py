@@ -1,39 +1,108 @@
 from __future__ import annotations
 
 import os
-import statistics
-import time
+import json
 import warnings
-from collections import deque
+from collections import Counter
+from collections.abc import Mapping
 
-import gymnasium as gym
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tensordict import TensorDict
+from torch.distributions import Normal
 
-from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.modules import resolve_rnd_config, resolve_symmetry_config
+from rsl_rl.env import VecEnv
 from rsl_rl.networks import EmpiricalNormalization, MLP
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
-from rsl_rl.storage.rollout_storage import RolloutStorage
-from rsl_rl.utils import resolve_obs_groups
 
-DEFAULT_REWARD_HEADS = ["upper", "lower", "global"]
-BALANCED_REWARD_HEADS = [
+import wandb
+
+PER_TERM_REWARDS_RAW_KEY = "per_term_rewards_raw"
+PER_HEAD_REWARDS_KEY = "per_head_rewards"
+WEIGHTED_STEP_REWARDS_KEY = "weighted_step_rewards"
+REWARD_WEIGHTS_KEY = "reward_weights"
+REWARD_TERM_NAMES_KEY = "reward_term_names"
+VALID_POPART_HEAD_MODES = ("per_term", "grouped")
+VALID_GROUPED_ACTOR_WEIGHT_MODES = ("uniform", "sum_user_weights")
+VALID_POPART_GROUP_PRESETS = (
+    "upper_lower",
+    "motion_tracking",
+    "actual_individual",
     "limb_tracking",
-    "global_pose_tracking",
-    "motion_dynamics",
-    "regularization_constraints",
-]
-INDIVIDUAL_REWARD_HEADS = ["left_arm", "right_arm", "torso", "left_leg", "right_leg", "pelvis", "global"]
-
-BALANCED_REWARD_HEAD_TERMS = {
+    "limb_tracking_ul",
+    "limb_tracking_ul_individual",
+)
+DEFAULT_POPART_GROUPS_UPPER_LOWER = {
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_lower",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+    "upper_limb_tracking": [
+        "vr_position_upper",
+    ],
+}
+DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL = {
+    "left_wrist_tracking": ["vr_position_left_wrist"],
+    "right_wrist_tracking": ["vr_position_right_wrist"],
+    "torso_tracking": ["vr_position_torso"],
+    "left_ankle_tracking": ["vr_position_left_ankle"],
+    "right_ankle_tracking": ["vr_position_right_ankle"],
+    "pelvis_tracking": ["vr_position_pelvis"],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_MOTION_TRACKING = {
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_LIMB_TRACKING = {
     "limb_tracking": [
-        "vr_position_left_arm",
-        "vr_position_right_arm",
+        "vr_position_left_wrist",
+        "vr_position_right_wrist",
         "vr_position_torso",
-        "vr_position_left_leg",
-        "vr_position_right_leg",
+        "vr_position_left_ankle",
+        "vr_position_right_ankle",
         "vr_position_pelvis",
     ],
     "global_pose_tracking": [
@@ -52,219 +121,288 @@ BALANCED_REWARD_HEAD_TERMS = {
         "undesired_contacts",
     ],
 }
+DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL = {
+    "upper_limb_tracking": [
+        "vr_position_upper",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_lower",
+    ],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL_INDIVIDUAL = {
+    "upper_limb_tracking": [
+        "vr_position_left_wrist",
+        "vr_position_right_wrist",
+        "vr_position_torso",
+    ],
+    "lower_limb_tracking": [
+        "vr_position_left_ankle",
+        "vr_position_right_ankle",
+        "vr_position_pelvis",
+    ],
+    "global_pose_tracking": [
+        "motion_global_anchor_pos",
+        "motion_global_anchor_ori",
+        "motion_body_pos",
+        "motion_body_ori",
+    ],
+    "motion_dynamics": [
+        "motion_body_lin_vel",
+        "motion_body_ang_vel",
+    ],
+    "regularization_constraints": [
+        "action_rate_l2",
+        "joint_limit",
+        "undesired_contacts",
+    ],
+}
+DEFAULT_POPART_GROUPS_BY_PRESET = {
+    "upper_lower": DEFAULT_POPART_GROUPS_UPPER_LOWER,
+    "motion_tracking": DEFAULT_POPART_GROUPS_MOTION_TRACKING,
+    "actual_individual": DEFAULT_POPART_GROUPS_ACTUAL_INDIVIDUAL,
+    "limb_tracking": DEFAULT_POPART_GROUPS_LIMB_TRACKING,
+    "limb_tracking_ul": DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL,
+    "limb_tracking_ul_individual": DEFAULT_POPART_GROUPS_LIMB_TRACKING_UL_INDIVIDUAL,
+}
 
 
-def should_use_bones_popart_runner(train_cfg: dict | object) -> bool:
-    cfg = _get_bones_popart_cfg(train_cfg)
-    return bool(cfg.get("enabled", False))
-
-
-def _get_bones_popart_cfg(train_cfg: dict | object) -> dict:
-    if isinstance(train_cfg, dict):
-        cfg = train_cfg.get("bones_popart", {})
-    else:
-        cfg = getattr(train_cfg, "bones_popart", {})
-    if cfg is None:
-        cfg = {}
-    if not isinstance(cfg, dict):
-        raise TypeError(f"Expected bones_popart config to be a dict, got: {type(cfg)}")
-    return cfg
-
-
-def _compute_reward_head_vector(
-    step_reward: torch.Tensor,
-    term_names: list[str],
-    dt: float,
-    reward_heads: list[str] | None = None,
-) -> tuple[torch.Tensor, list[str]]:
-    reward_heads = reward_heads or DEFAULT_REWARD_HEADS
-
-    if reward_heads == DEFAULT_REWARD_HEADS:
-        try:
-            upper_idx = term_names.index("vr_position_upper")
-            lower_idx = term_names.index("vr_position_lower")
-        except ValueError as exc:
-            raise RuntimeError(
-                "Bones reward vectors require compliance reward terms 'vr_position_upper' and 'vr_position_lower'."
-            ) from exc
-
-        head_reward = torch.zeros(step_reward.shape[0], 3, dtype=step_reward.dtype, device=step_reward.device)
-        head_reward[:, 0] = step_reward[:, upper_idx]
-        head_reward[:, 1] = step_reward[:, lower_idx]
-
-        global_mask = torch.ones(len(term_names), dtype=torch.bool, device=step_reward.device)
-        global_mask[upper_idx] = False
-        global_mask[lower_idx] = False
-        head_reward[:, 2] = step_reward[:, global_mask].sum(dim=-1)
-
-        return head_reward, reward_heads
-
-    elif reward_heads == BALANCED_REWARD_HEADS:
-        term_index = {name: idx for idx, name in enumerate(term_names)}
-        missing_terms = [
-            term_name
-            for head_name in BALANCED_REWARD_HEADS
-            for term_name in BALANCED_REWARD_HEAD_TERMS[head_name]
-            if term_name not in term_index
-        ]
-        if missing_terms:
-            missing = ", ".join(missing_terms)
-            raise RuntimeError(f"Balanced bones reward vectors require reward terms: {missing}")
-
-        head_reward = torch.zeros(
-            step_reward.shape[0], len(BALANCED_REWARD_HEADS), dtype=step_reward.dtype, device=step_reward.device
-        )
-        for head_idx, head_name in enumerate(BALANCED_REWARD_HEADS):
-            indices = [term_index[term_name] for term_name in BALANCED_REWARD_HEAD_TERMS[head_name]]
-            head_reward[:, head_idx] = step_reward[:, indices].sum(dim=-1)
-
-        return head_reward, reward_heads
-
-    elif reward_heads == INDIVIDUAL_REWARD_HEADS:
-        try:
-            l_arm_idx = term_names.index("vr_position_left_arm")
-            r_arm_idx = term_names.index("vr_position_right_arm")
-            torso_idx = term_names.index("vr_position_torso")
-            l_leg_idx = term_names.index("vr_position_left_leg")
-            r_leg_idx = term_names.index("vr_position_right_leg")
-            pelvis_idx = term_names.index("vr_position_pelvis")
-        except ValueError as exc:
-            raise RuntimeError(
-                "Individual bones reward vectors require specific limb terms (vr_position_left_arm, etc.)."
-            ) from exc
-
-        head_reward = torch.zeros(step_reward.shape[0], 7, dtype=step_reward.dtype, device=step_reward.device)
-        head_reward[:, 0] = step_reward[:, l_arm_idx]
-        head_reward[:, 1] = step_reward[:, r_arm_idx]
-        head_reward[:, 2] = step_reward[:, torso_idx]
-        head_reward[:, 3] = step_reward[:, l_leg_idx]
-        head_reward[:, 4] = step_reward[:, r_leg_idx]
-        head_reward[:, 5] = step_reward[:, pelvis_idx]
-
-        global_mask = torch.ones(len(term_names), dtype=torch.bool, device=step_reward.device)
-        for idx in [l_arm_idx, r_arm_idx, torso_idx, l_leg_idx, r_leg_idx, pelvis_idx]:
-            global_mask[idx] = False
-        head_reward[:, 6] = step_reward[:, global_mask].sum(dim=-1)
-
-        return head_reward, reward_heads
-
-    else:
+def validate_popart_head_mode(head_mode: str) -> None:
+    if head_mode not in VALID_POPART_HEAD_MODES:
         raise ValueError(
-            f"Only the default, balanced, or individual reward heads are supported in v1, got: {reward_heads}"
+            f"Unsupported popart_head_mode={head_mode!r}. Expected one of {VALID_POPART_HEAD_MODES}."
         )
 
 
-class BonesRewardVectorWrapper(gym.Wrapper):
-    """Adds a learning-only reward vector while preserving the scalar env reward path."""
-
-    def __init__(self, env: gym.Env, reward_heads: list[str] | None = None):
-        super().__init__(env)
-        self.reward_heads = reward_heads or DEFAULT_REWARD_HEADS
-        reward_manager = getattr(self.unwrapped, "reward_manager", None)
-        if reward_manager is None:
-            raise RuntimeError("BonesRewardVectorWrapper requires an env with a reward_manager.")
-        self._term_names = list(reward_manager.active_terms)
-        _compute_reward_head_vector(
-            reward_manager._step_reward,
-            self._term_names,
-            self.unwrapped.step_dt,
-            self.reward_heads,
+def validate_popart_group_preset(group_preset: str) -> None:
+    if group_preset not in VALID_POPART_GROUP_PRESETS:
+        raise ValueError(
+            f"Unsupported popart_group_preset={group_preset!r}. Expected one of {VALID_POPART_GROUP_PRESETS}."
         )
 
-    def reset(self, **kwargs):
-        obs, extras = self.env.reset(**kwargs)
-        extras = dict(extras)
-        extras["reward_vector_names"] = list(self.reward_heads)
-        return obs, extras
 
-    def step(self, action):
-        obs, reward, terminated, truncated, extras = self.env.step(action)
-        reward_manager = self.unwrapped.reward_manager
-        reward_vector, reward_names = _compute_reward_head_vector(
-            reward_manager._step_reward,
-            self._term_names,
-            self.unwrapped.step_dt,
-            self.reward_heads,
+def resolve_popart_groups(
+    reward_term_names: list[str],
+    popart_groups: Mapping[str, list[str]] | None,
+    popart_group_preset: str = "upper_lower",
+) -> tuple[list[str], dict[str, list[str]], torch.Tensor]:
+    validate_popart_group_preset(popart_group_preset)
+    groups = DEFAULT_POPART_GROUPS_BY_PRESET[popart_group_preset] if popart_groups is None else popart_groups
+    if not isinstance(groups, Mapping):
+        raise ValueError("popart_groups must be a mapping from group name to a list of reward term names.")
+
+    group_names = list(groups.keys())
+    normalized_groups = {group_name: list(term_names) for group_name, term_names in groups.items()}
+    assigned_terms = [term_name for term_names in normalized_groups.values() for term_name in term_names]
+    assigned_counter = Counter(assigned_terms)
+    active_term_set = set(reward_term_names)
+
+    empty_groups = [group_name for group_name, term_names in normalized_groups.items() if len(term_names) == 0]
+    duplicated_terms = sorted(term_name for term_name, count in assigned_counter.items() if count > 1)
+    unknown_terms = sorted(term_name for term_name in assigned_counter if term_name not in active_term_set)
+    unassigned_terms = sorted(term_name for term_name in reward_term_names if term_name not in assigned_counter)
+
+    if empty_groups or duplicated_terms or unknown_terms or unassigned_terms:
+        problems: list[str] = []
+        if empty_groups:
+            problems.append(f"empty groups: {empty_groups}")
+        if duplicated_terms:
+            problems.append(f"duplicated terms: {duplicated_terms}")
+        if unknown_terms:
+            problems.append(f"unknown terms: {unknown_terms}")
+        if unassigned_terms:
+            problems.append(f"unassigned terms: {unassigned_terms}")
+        raise ValueError("Invalid PopArt grouped head definition: " + "; ".join(problems))
+
+    term_to_group = {
+        term_name: group_index
+        for group_index, group_name in enumerate(group_names)
+        for term_name in normalized_groups[group_name]
+    }
+    group_membership = torch.tensor([term_to_group[term_name] for term_name in reward_term_names], dtype=torch.long)
+    return group_names, normalized_groups, group_membership
+
+
+def build_grouped_head_rewards(
+    weighted_step_reward: torch.Tensor,
+    group_membership: torch.Tensor,
+    num_groups: int,
+) -> torch.Tensor:
+    if weighted_step_reward.ndim != 2:
+        raise ValueError(
+            f"Expected weighted_step_reward with shape (num_envs, num_terms), received {tuple(weighted_step_reward.shape)}."
         )
-        extras = dict(extras)
-        extras["reward_vector"] = reward_vector
-        extras["reward_vector_names"] = reward_names
-        return obs, reward, terminated, truncated, extras
+    if group_membership.ndim != 1 or group_membership.shape[0] != weighted_step_reward.shape[1]:
+        raise ValueError(
+            "group_membership must be a 1D tensor whose length matches weighted_step_reward.shape[1]. "
+            f"Received {tuple(group_membership.shape)} for rewards {tuple(weighted_step_reward.shape)}."
+        )
+    grouped_rewards = torch.zeros(
+        (weighted_step_reward.shape[0], num_groups),
+        dtype=weighted_step_reward.dtype,
+        device=weighted_step_reward.device,
+    )
+    grouped_rewards.index_add_(1, group_membership.to(weighted_step_reward.device), weighted_step_reward)
+    return grouped_rewards
 
 
-class MultiHeadPopArt(nn.Module):
+def compute_grouped_actor_weights(
+    reward_weights: torch.Tensor,
+    group_membership: torch.Tensor,
+    num_groups: int,
+    grouped_actor_weight_mode: str,
+) -> torch.Tensor:
+    if grouped_actor_weight_mode == "uniform":
+        return torch.ones(num_groups, dtype=reward_weights.dtype, device=reward_weights.device)
+    if grouped_actor_weight_mode == "sum_user_weights":
+        grouped_weights = torch.zeros(num_groups, dtype=reward_weights.dtype, device=reward_weights.device)
+        grouped_weights.index_add_(0, group_membership.to(reward_weights.device), reward_weights)
+        return grouped_weights
+    raise ValueError(
+        "Unsupported popart_grouped_actor_weight_mode="
+        f"{grouped_actor_weight_mode!r}. Expected one of {VALID_GROUPED_ACTOR_WEIGHT_MODES}."
+    )
+
+
+def _build_mlp_layers(input_dim: int, hidden_dims: list[int], activation: str) -> list[nn.Module]:
+    if not hidden_dims:
+        raise ValueError("PopArt critic requires at least one hidden dimension.")
+    layers: list[nn.Module] = []
+    activation_cls = type(MLP(1, 1, [1], activation=activation)[1])
+    prev_dim = input_dim
+    for hidden_dim in hidden_dims:
+        layers.append(nn.Linear(prev_dim, hidden_dim))
+        layers.append(activation_cls())
+        prev_dim = hidden_dim
+    return layers
+
+
+def compute_multi_head_gae(
+    rewards: torch.Tensor,
+    values: torch.Tensor,
+    dones: torch.Tensor,
+    time_outs: torch.Tensor,
+    last_values: torch.Tensor,
+    gamma: float,
+    lam: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute per-head GAE in unnormalized value space."""
+
+    returns = torch.zeros_like(values)
+    advantages = torch.zeros_like(values)
+    advantage = torch.zeros_like(last_values)
+
+    for step in reversed(range(rewards.shape[0])):
+        if step == rewards.shape[0] - 1:
+            next_values = last_values
+        else:
+            next_values = values[step + 1]
+
+        done = dones[step].float()
+        timeout = time_outs[step].float()
+        true_terminated = done * (1.0 - timeout)
+        bootstrap_mask = 1.0 - true_terminated
+        recursion_mask = 1.0 - done
+
+        delta = rewards[step] + gamma * bootstrap_mask * next_values - values[step]
+        advantage = delta + gamma * lam * recursion_mask * advantage
+        advantages[step] = advantage
+        returns[step] = advantage + values[step]
+
+    return returns, advantages
+
+
+def whiten_advantages_per_head(advantages: torch.Tensor, eps: float = 1.0e-8) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    flat_advantages = advantages.view(-1, advantages.shape[-1])
+    unbiased = flat_advantages.shape[0] > 1
+    std, mean = torch.std_mean(flat_advantages, dim=0, unbiased=unbiased)
+    whitened = (advantages - mean.view(1, 1, -1)) / (std.view(1, 1, -1) + eps)
+    return whitened, mean, std
+
+
+def compute_scalar_weighted_reward(per_term_rewards_raw: torch.Tensor, reward_weights: torch.Tensor) -> torch.Tensor:
+    """Collapse per-head raw rewards back to the scalar weighted reward used by the env."""
+    view_shape = [1] * (per_term_rewards_raw.ndim - 1) + [reward_weights.shape[0]]
+    return (per_term_rewards_raw * reward_weights.view(*view_shape)).sum(dim=-1)
+
+
+class DiagonalPopArt(nn.Module):
+    """PopArt normalizer that preserves unnormalized critic outputs exactly."""
+
     def __init__(
         self,
-        num_heads: int,
-        beta: float = 5.0e-4,
-        debiased: bool = False,
+        value_dim: int,
+        weight: nn.Parameter,
+        bias: nn.Parameter,
+        momentum: float = 0.1,
         epsilon: float = 1.0e-5,
-        min_sigma: float = 1.0e-4,
-        max_sigma: float | None = None,
-        stats_dtype: str = "float32",
     ):
         super().__init__()
-        self.num_heads = num_heads
-        self.beta = beta
-        self.debiased = debiased
+        self.value_dim = value_dim
+        self.weight = weight
+        self.bias = bias
+        self.momentum = momentum
         self.epsilon = epsilon
-        self.min_sigma = min_sigma
-        self.max_sigma = max_sigma
-        if stats_dtype not in {"float32", "float64"}:
-            raise ValueError(f"Unsupported PopArt stats dtype: {stats_dtype}")
-        self.stats_dtype = getattr(torch, stats_dtype)
 
-        self.register_buffer("mu", torch.zeros(num_heads, dtype=self.stats_dtype))
-        self.register_buffer("nu", torch.ones(num_heads, dtype=self.stats_dtype))
-        self.register_buffer("sigma", torch.ones(num_heads, dtype=self.stats_dtype))
-        if self.debiased:
-            self.register_buffer("raw_mu", torch.zeros(num_heads, dtype=self.stats_dtype))
-            self.register_buffer("raw_nu", torch.full((num_heads,), self.epsilon, dtype=self.stats_dtype))
-            self.register_buffer("debias", torch.zeros(1, dtype=self.stats_dtype))
+        self.register_buffer("mean", torch.zeros(value_dim))
+        self.register_buffer("mean_sq", torch.full((value_dim,), epsilon))
+        self.register_buffer("debias", torch.zeros(1))
 
-    def normalize(self, values: torch.Tensor) -> torch.Tensor:
-        return ((values.to(self.mu.dtype) - self.mu) / self.sigma).to(values.dtype)
+    def debiased_mean_var(self) -> tuple[torch.Tensor, torch.Tensor]:
+        debias = self.debias.clamp_min(self.epsilon)
+        mean = self.mean / debias
+        mean_sq = self.mean_sq / debias
+        var = (mean_sq - mean.square()).clamp_min(self.epsilon)
+        return mean, var
 
-    def denormalize(self, values: torch.Tensor) -> torch.Tensor:
-        return (values.to(self.mu.dtype) * self.sigma + self.mu).to(values.dtype)
+    def debiased_std(self) -> torch.Tensor:
+        _, var = self.debiased_mean_var()
+        return torch.sqrt(var)
+
+    def forward(self, value: torch.Tensor, unnorm: bool = False) -> torch.Tensor:
+        mean, _ = self.debiased_mean_var()
+        std = self.debiased_std()
+        if unnorm:
+            return value * std + mean
+        return (value - mean) / std
 
     @torch.no_grad()
-    def update_stats(self, targets: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        old_mu = self.mu.clone()
-        old_sigma = self.sigma.clone()
+    def update(self, targets: torch.Tensor):
+        if targets.ndim != 2 or targets.shape[-1] != self.value_dim:
+            raise ValueError(
+                f"Expected PopArt targets with shape [batch, {self.value_dim}], received {tuple(targets.shape)}."
+            )
 
-        targets = targets.to(self.mu.dtype)
+        old_mean, _ = self.debiased_mean_var()
+        old_std = self.debiased_std()
+
         batch_mean = targets.mean(dim=0)
-        batch_second_moment = targets.square().mean(dim=0)
+        batch_mean_sq = targets.square().mean(dim=0)
 
-        if self.debiased:
-            self.raw_mu.mul_(1.0 - self.beta).add_(self.beta * batch_mean)
-            self.raw_nu.mul_(1.0 - self.beta).add_(self.beta * batch_second_moment)
-            self.debias.mul_(1.0 - self.beta).add_(self.beta)
+        self.mean.mul_(1.0 - self.momentum).add_(batch_mean, alpha=self.momentum)
+        self.mean_sq.mul_(1.0 - self.momentum).add_(batch_mean_sq, alpha=self.momentum)
+        self.debias.mul_(1.0 - self.momentum).add_(self.momentum)
 
-            debias = self.debias.clamp(min=self.epsilon)
-            self.mu.copy_(self.raw_mu / debias)
-            self.nu.copy_(self.raw_nu / debias)
-        else:
-            self.mu.mul_(1.0 - self.beta).add_(self.beta * batch_mean)
-            self.nu.mul_(1.0 - self.beta).add_(self.beta * batch_second_moment)
+        new_mean, _ = self.debiased_mean_var()
+        new_std = self.debiased_std()
 
-        variance = torch.clamp(self.nu - self.mu.square(), min=self.epsilon)
-        self.sigma.copy_(variance.sqrt().clamp(min=self.min_sigma))
-        if self.max_sigma is not None:
-            self.sigma.clamp_(max=self.max_sigma)
-
-        return old_mu, old_sigma
-
-    @torch.no_grad()
-    def preserve_output(self, layer: nn.Linear, old_mu: torch.Tensor, old_sigma: torch.Tensor):
-        new_mu = self.mu.to(layer.weight.dtype)
-        new_sigma = self.sigma.to(layer.weight.dtype)
-        old_mu = old_mu.to(layer.weight.dtype)
-        old_sigma = old_sigma.to(layer.weight.dtype)
-        scale = (old_sigma / new_sigma).view(-1, 1)
-        layer.weight.data.mul_(scale)
-        layer.bias.data.copy_((old_sigma * layer.bias.data + old_mu - new_mu) / new_sigma)
+        scale = (old_std / new_std).unsqueeze(-1)
+        self.weight.data.mul_(scale)
+        self.bias.data.copy_((old_std * self.bias.data + old_mean - new_mean) / new_std)
 
 
 class BonesPopArtActorCritic(nn.Module):
@@ -275,21 +413,16 @@ class BonesPopArtActorCritic(nn.Module):
         obs,
         obs_groups,
         num_actions,
-        actor_obs_normalization=False,
-        critic_obs_normalization=False,
-        actor_hidden_dims=[256, 256, 256],
-        critic_hidden_dims=[256, 256, 256],
-        activation="elu",
-        init_noise_std=1.0,
+        value_dim: int,
+        actor_obs_normalization: bool = False,
+        critic_obs_normalization: bool = False,
+        actor_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
+        critic_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
+        activation: str = "elu",
+        init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
-        value_head_names: list[str] | None = None,
-        popart_beta: float = 5.0e-4,
-        popart_debiased: bool = False,
+        popart_momentum: float = 0.1,
         popart_epsilon: float = 1.0e-5,
-        popart_min_sigma: float = 1.0e-4,
-        popart_max_sigma: float | None = None,
-        popart_stats_dtype: str = "float32",
-        use_popart: bool = True,
         **kwargs,
     ):
         if kwargs:
@@ -300,46 +433,35 @@ class BonesPopArtActorCritic(nn.Module):
         super().__init__()
 
         self.obs_groups = obs_groups
-        self.value_head_names = value_head_names or list(DEFAULT_REWARD_HEADS)
-        self.num_value_heads = len(self.value_head_names)
-        self.use_popart = use_popart
+        self.value_dim = value_dim
 
-        num_actor_obs = 0
-        for obs_group in obs_groups["policy"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
-            num_actor_obs += obs[obs_group].shape[-1]
+        num_actor_obs = sum(obs[group_name].shape[-1] for group_name in obs_groups["policy"])
+        num_critic_obs = sum(obs[group_name].shape[-1] for group_name in obs_groups["critic"])
 
-        num_critic_obs = 0
-        for obs_group in obs_groups["critic"]:
-            assert len(obs[obs_group].shape) == 2, "The ActorCritic module only supports 1D observations."
-            num_critic_obs += obs[obs_group].shape[-1]
-
-        self.actor = MLP(num_actor_obs, num_actions, actor_hidden_dims, activation)
+        self.actor = MLP(num_actor_obs, num_actions, list(actor_hidden_dims), activation)
         self.actor_obs_normalization = actor_obs_normalization
-        if actor_obs_normalization:
-            self.actor_obs_normalizer = EmpiricalNormalization(num_actor_obs)
-        else:
-            self.actor_obs_normalizer = nn.Identity()
+        self.actor_obs_normalizer = (
+            EmpiricalNormalization(num_actor_obs) if actor_obs_normalization else torch.nn.Identity()
+        )
+        print(f"Actor MLP: {self.actor}")
 
-        self.critic = MLP(num_critic_obs, self.num_value_heads, critic_hidden_dims, activation)
+        critic_layers = _build_mlp_layers(num_critic_obs, list(critic_hidden_dims), activation)
+        self.critic_trunk = nn.Sequential(*critic_layers)
+        self.critic_head = nn.Linear(list(critic_hidden_dims)[-1], value_dim)
+        nn.init.uniform_(self.critic_head.weight, -1.0e-4, 1.0e-4)
+        nn.init.zeros_(self.critic_head.bias)
+
         self.critic_obs_normalization = critic_obs_normalization
-        if critic_obs_normalization:
-            self.critic_obs_normalizer = EmpiricalNormalization(num_critic_obs)
-        else:
-            self.critic_obs_normalizer = nn.Identity()
-
-        if self.use_popart:
-            self.popart = MultiHeadPopArt(
-                self.num_value_heads,
-                beta=popart_beta,
-                debiased=popart_debiased,
-                epsilon=popart_epsilon,
-                min_sigma=popart_min_sigma,
-                max_sigma=popart_max_sigma,
-                stats_dtype=popart_stats_dtype,
-            )
-        else:
-            self.popart = None
+        self.critic_obs_normalizer = (
+            EmpiricalNormalization(num_critic_obs) if critic_obs_normalization else torch.nn.Identity()
+        )
+        self.value_normalizer = DiagonalPopArt(
+            value_dim=value_dim,
+            weight=self.critic_head.weight,
+            bias=self.critic_head.bias,
+            momentum=popart_momentum,
+            epsilon=popart_epsilon,
+        )
 
         self.noise_std_type = noise_std_type
         if self.noise_std_type == "scalar":
@@ -347,16 +469,13 @@ class BonesPopArtActorCritic(nn.Module):
         elif self.noise_std_type == "log":
             self.log_std = nn.Parameter(torch.log(init_noise_std * torch.ones(num_actions)))
         else:
-            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}. Should be 'scalar' or 'log'")
+            raise ValueError(f"Unknown standard deviation type: {self.noise_std_type}.")
 
         self.distribution = None
-        torch.distributions.Normal.set_default_validate_args(False)
+        Normal.set_default_validate_args(False)
 
     def reset(self, dones=None):
-        pass
-
-    def forward(self):
-        raise NotImplementedError
+        return None
 
     @property
     def action_mean(self):
@@ -371,10 +490,10 @@ class BonesPopArtActorCritic(nn.Module):
         return self.distribution.entropy().sum(dim=-1)
 
     def get_actor_obs(self, obs):
-        return torch.cat([obs[group] for group in self.obs_groups["policy"]], dim=-1)
+        return torch.cat([obs[group_name] for group_name in self.obs_groups["policy"]], dim=-1)
 
     def get_critic_obs(self, obs):
-        return torch.cat([obs[group] for group in self.obs_groups["critic"]], dim=-1)
+        return torch.cat([obs[group_name] for group_name in self.obs_groups["critic"]], dim=-1)
 
     def update_distribution(self, obs):
         mean = self.actor(obs)
@@ -383,7 +502,7 @@ class BonesPopArtActorCritic(nn.Module):
         else:
             std = torch.exp(self.log_std).expand_as(mean)
         std = torch.clamp(std, min=0.3)
-        self.distribution = torch.distributions.Normal(mean, std)
+        self.distribution = Normal(mean, std)
 
     def act(self, obs, **kwargs):
         actor_obs = self.actor_obs_normalizer(self.get_actor_obs(obs))
@@ -394,15 +513,12 @@ class BonesPopArtActorCritic(nn.Module):
         actor_obs = self.actor_obs_normalizer(self.get_actor_obs(obs))
         return self.actor(actor_obs)
 
-    def evaluate_normalized(self, obs, **kwargs):
+    def evaluate(self, obs, unnorm: bool = False, **kwargs):
         critic_obs = self.critic_obs_normalizer(self.get_critic_obs(obs))
-        return self.critic(critic_obs)
-
-    def evaluate(self, obs, denormalize: bool = True, **kwargs):
-        values = self.evaluate_normalized(obs, **kwargs)
-        if denormalize and self.popart is not None:
-            return self.popart.denormalize(values)
-        return values
+        normalized_values = self.critic_head(self.critic_trunk(critic_obs))
+        if unnorm:
+            return self.value_normalizer(normalized_values, unnorm=True)
+        return normalized_values
 
     def get_actions_log_prob(self, actions):
         return self.distribution.log_prob(actions).sum(dim=-1)
@@ -413,13 +529,7 @@ class BonesPopArtActorCritic(nn.Module):
         if self.critic_obs_normalization:
             self.critic_obs_normalizer.update(self.get_critic_obs(obs))
 
-    def get_critic_output_layer(self) -> nn.Linear:
-        layer = self.critic[-1]
-        if not isinstance(layer, nn.Linear):
-            raise TypeError(f"Expected final critic layer to be nn.Linear, got: {type(layer)}")
-        return layer
-
-    def load_state_dict(self, state_dict, strict=True):
+    def load_state_dict(self, state_dict, strict: bool = True):
         super().load_state_dict(state_dict, strict=strict)
         return True
 
@@ -431,58 +541,48 @@ class BonesRolloutStorage:
             self.actions = None
             self.rewards = None
             self.dones = None
+            self.time_outs = None
             self.values = None
             self.actions_log_prob = None
             self.action_mean = None
             self.action_sigma = None
-            self.hidden_states = None
 
         def clear(self):
             self.__init__()
 
-    def __init__(
-        self,
-        num_envs,
-        num_transitions_per_env,
-        obs,
-        actions_shape,
-        num_value_heads,
-        device="cpu",
-    ):
+    def __init__(self, num_envs, num_transitions_per_env, obs, actions_shape, value_dim: int, device="cpu"):
         self.device = device
         self.num_envs = num_envs
         self.num_transitions_per_env = num_transitions_per_env
         self.actions_shape = actions_shape
-        self.num_value_heads = num_value_heads
+        self.value_dim = value_dim
 
-        self.observations = RolloutStorage(
-            "rl",
-            num_envs,
-            num_transitions_per_env,
-            obs,
-            actions_shape,
-            device,
-        ).observations
-        self.rewards = torch.zeros(num_transitions_per_env, num_envs, num_value_heads, device=device)
+        self.observations = TensorDict(
+            {key: torch.zeros(num_transitions_per_env, *value.shape, device=device) for key, value in obs.items()},
+            batch_size=[num_transitions_per_env, num_envs],
+            device=device,
+        )
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=device)
+        self.rewards = torch.zeros(num_transitions_per_env, num_envs, value_dim, device=device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=device).byte()
-        self.values = torch.zeros(num_transitions_per_env, num_envs, num_value_heads, device=device)
+        self.time_outs = torch.zeros(num_transitions_per_env, num_envs, 1, device=device).byte()
+        self.values = torch.zeros(num_transitions_per_env, num_envs, value_dim, device=device)
+        self.raw_advantages = torch.zeros(num_transitions_per_env, num_envs, value_dim, device=device)
         self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=device)
         self.mu = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=device)
         self.sigma = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=device)
-        self.returns = torch.zeros(num_transitions_per_env, num_envs, num_value_heads, device=device)
-        self.head_advantages = torch.zeros(num_transitions_per_env, num_envs, num_value_heads, device=device)
-        self.actor_head_advantages = torch.zeros(num_transitions_per_env, num_envs, num_value_heads, device=device)
-        self.advantages = torch.zeros(num_transitions_per_env, num_envs, 1, device=device)
+        self.returns = torch.zeros(num_transitions_per_env, num_envs, value_dim, device=device)
+        self.advantages = torch.zeros(num_transitions_per_env, num_envs, value_dim, device=device)
         self.step = 0
 
     def add_transitions(self, transition: Transition):
         if self.step >= self.num_transitions_per_env:
-            raise OverflowError("Rollout buffer overflow! You should call clear() before adding new transitions.")
+            raise OverflowError("Rollout buffer overflow. Call clear() before adding new transitions.")
         self.observations[self.step].copy_(transition.observations)
         self.actions[self.step].copy_(transition.actions)
         self.rewards[self.step].copy_(transition.rewards)
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
+        self.time_outs[self.step].copy_(transition.time_outs.view(-1, 1))
         self.values[self.step].copy_(transition.values)
         self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
         self.mu[self.step].copy_(transition.action_mean)
@@ -492,57 +592,33 @@ class BonesRolloutStorage:
     def clear(self):
         self.step = 0
 
-    def compute_returns(self, last_values, gamma, lam):
-        advantage = torch.zeros_like(last_values)
-        for step in reversed(range(self.num_transitions_per_env)):
-            if step == self.num_transitions_per_env - 1:
-                next_values = last_values
-            else:
-                next_values = self.values[step + 1]
-            next_is_not_terminal = 1.0 - self.dones[step].float()
-            delta = self.rewards[step] + next_is_not_terminal * gamma * next_values - self.values[step]
-            advantage = delta + next_is_not_terminal * gamma * lam * advantage
-            self.returns[step] = advantage + self.values[step]
-        self.head_advantages = self.returns - self.values
-        self.actor_head_advantages = self.head_advantages.clone()
-
-    def finalize_advantages(self, normalize_advantage: bool = True):
-        flat_head_advantages = self.actor_head_advantages.flatten(0, 1)
-        sigma, mu = torch.std_mean(flat_head_advantages, dim=0, unbiased=True)
-        self.actor_head_advantages = (
-            (self.actor_head_advantages - mu.view(1, 1, -1)) / (sigma.view(1, 1, -1) + 1e-8)
-        )
-        self.advantages = self.actor_head_advantages.sum(dim=-1, keepdim=True)
-        if normalize_advantage:
-            self.advantages = (self.advantages - self.advantages.mean()) / (self.advantages.std() + 1e-8)
-
-    def mini_batch_generator(self, num_mini_batches, num_epochs=8):
+    def mini_batch_generator(self, num_mini_batches, num_epochs=1):
         batch_size = self.num_envs * self.num_transitions_per_env
         mini_batch_size = batch_size // num_mini_batches
-        indices = torch.randperm(num_mini_batches * mini_batch_size, requires_grad=False, device=self.device)
+        indices = torch.randperm(num_mini_batches * mini_batch_size, device=self.device)
 
         observations = self.observations.flatten(0, 1)
         actions = self.actions.flatten(0, 1)
         values = self.values.flatten(0, 1)
+        raw_advantages = self.raw_advantages.flatten(0, 1)
         returns = self.returns.flatten(0, 1)
-        head_advantages = self.head_advantages.flatten(0, 1)
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
         advantages = self.advantages.flatten(0, 1)
         old_mu = self.mu.flatten(0, 1)
         old_sigma = self.sigma.flatten(0, 1)
 
         for _ in range(num_epochs):
-            for i in range(num_mini_batches):
-                start = i * mini_batch_size
-                end = (i + 1) * mini_batch_size
+            for index in range(num_mini_batches):
+                start = index * mini_batch_size
+                end = (index + 1) * mini_batch_size
                 batch_idx = indices[start:end]
                 yield (
                     observations[batch_idx],
                     actions[batch_idx],
                     values[batch_idx],
+                    raw_advantages[batch_idx],
                     advantages[batch_idx],
                     returns[batch_idx],
-                    head_advantages[batch_idx],
                     old_actions_log_prob[batch_idx],
                     old_mu[batch_idx],
                     old_sigma[batch_idx],
@@ -551,42 +627,108 @@ class BonesRolloutStorage:
                 )
 
 
-class BonesPopArtPPO(PPO):
+class BonesPopArtPPO:
+    policy: BonesPopArtActorCritic
+    VALID_ACTOR_ADVANTAGE_SCALINGS = ("whitened", "sigma_rescaled", "raw")
+
     def __init__(
         self,
         policy,
-        value_head_names: list[str] | None = None,
-        use_popart: bool = True,
-        actor_advantage_reduction: str = "sum",
+        reward_weights: torch.Tensor,
+        reward_term_names: list[str],
+        head_mode: str = "per_term",
+        per_head_rewards_key: str = PER_TERM_REWARDS_RAW_KEY,
+        group_membership: torch.Tensor | None = None,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        clip_param=0.2,
+        gamma=0.99,
+        lam=0.95,
+        value_loss_coef=1.0,
+        entropy_coef=0.01,
+        learning_rate=0.001,
+        max_grad_norm=1.0,
+        use_clipped_value_loss=False,
+        schedule="adaptive",
+        desired_kl=0.01,
+        device="cpu",
+        normalize_advantage_per_mini_batch=False,
+        popart_normalize_actor_weights: bool = False,
+        popart_actor_advantage_scaling: str = "whitened",
+        multi_gpu_cfg: dict | None = None,
         **kwargs,
     ):
-        super().__init__(policy, **kwargs)
+        if kwargs:
+            print(
+                "BonesPopArtPPO.__init__ got unexpected arguments, which will be ignored: "
+                + str([key for key in kwargs.keys()])
+            )
+        self.device = device
+        self.is_multi_gpu = multi_gpu_cfg is not None
+        if multi_gpu_cfg is not None:
+            self.gpu_global_rank = multi_gpu_cfg["global_rank"]
+            self.gpu_world_size = multi_gpu_cfg["world_size"]
+        else:
+            self.gpu_global_rank = 0
+            self.gpu_world_size = 1
+
+        self.policy = policy
+        self.policy.to(self.device)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=learning_rate)
+        self.storage: BonesRolloutStorage | None = None
         self.transition = BonesRolloutStorage.Transition()
-        self.reward_head_names = value_head_names or list(DEFAULT_REWARD_HEADS)
-        self.use_popart = use_popart
-        self.actor_advantage_reduction = actor_advantage_reduction
-        if self.actor_advantage_reduction != "sum":
-            raise ValueError(f"Only sum reduction is supported in v1, got: {self.actor_advantage_reduction}")
-        self.latest_popart_stats = {}
-        self.latest_advantage_stats = {}
-        self.latest_value_stats = {}
+
+        self.clip_param = clip_param
+        self.num_learning_epochs = num_learning_epochs
+        self.num_mini_batches = num_mini_batches
+        self.value_loss_coef = value_loss_coef
+        self.entropy_coef = entropy_coef
+        self.gamma = gamma
+        self.lam = lam
+        self.max_grad_norm = max_grad_norm
+        self.use_clipped_value_loss = False
+        self.desired_kl = desired_kl
+        self.schedule = schedule
+        self.learning_rate = learning_rate
+        self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
+        self.rnd = None
+        self.symmetry = None
+
+        validate_popart_head_mode(head_mode)
+        self.head_mode = head_mode
+        self.head_names = list(reward_term_names)
+        self.reward_term_names = self.head_names
+        self.per_head_rewards_key = per_head_rewards_key
+        self.group_membership = group_membership.to(self.device) if group_membership is not None else None
+        self.reward_weights = reward_weights.to(self.device)
+        if popart_normalize_actor_weights:
+            denom = self.reward_weights.abs().sum().clamp_min(1.0e-8)
+            self.reward_weights = self.reward_weights * (self.reward_weights.numel() / denom)
+        self.popart_normalize_actor_weights = popart_normalize_actor_weights
+        if popart_actor_advantage_scaling not in self.VALID_ACTOR_ADVANTAGE_SCALINGS:
+            raise ValueError(
+                "Unsupported popart_actor_advantage_scaling="
+                f"{popart_actor_advantage_scaling!r}. Expected one of {self.VALID_ACTOR_ADVANTAGE_SCALINGS}."
+            )
+        self.actor_advantage_scaling = popart_actor_advantage_scaling
+
+        self.last_diagnostics: dict[str, float] = {}
 
     def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
         if training_type != "rl":
             raise ValueError("BonesPopArtPPO only supports RL training.")
         self.storage = BonesRolloutStorage(
-            num_envs,
-            num_transitions_per_env,
-            obs,
-            actions_shape,
-            len(self.reward_head_names),
-            self.device,
+            num_envs=num_envs,
+            num_transitions_per_env=num_transitions_per_env,
+            obs=obs,
+            actions_shape=actions_shape,
+            value_dim=self.reward_weights.numel(),
+            device=self.device,
         )
-        self.transition = BonesRolloutStorage.Transition()
 
     def act(self, obs):
         self.transition.actions = self.policy.act(obs).detach()
-        self.transition.values = self.policy.evaluate(obs, denormalize=True).detach()
+        self.transition.values = self.policy.evaluate(obs).detach()
         self.transition.actions_log_prob = self.policy.get_actions_log_prob(self.transition.actions).detach()
         self.transition.action_mean = self.policy.action_mean.detach()
         self.transition.action_sigma = self.policy.action_std.detach()
@@ -594,98 +736,154 @@ class BonesPopArtPPO(PPO):
         return self.transition.actions
 
     def process_env_step(self, obs, rewards, dones, extras):
-        self.policy.update_normalization(obs)
-        reward_vector = extras.get("reward_vector")
-        if reward_vector is None:
-            raise RuntimeError(
-                "BonesPopArtPPO expected extras['reward_vector']. Wrap the env with BonesRewardVectorWrapper."
+        if self.storage is None:
+            raise RuntimeError("Rollout storage must be initialized before collecting transitions.")
+        if self.head_mode == "grouped":
+            if self.group_membership is None:
+                raise RuntimeError("Grouped PopArt head mode requires a group_membership tensor.")
+            if WEIGHTED_STEP_REWARDS_KEY not in extras:
+                raise RuntimeError(
+                    "Grouped PopArt enabled but env does not expose weighted per-term rewards under "
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}']."
+                )
+            per_head_rewards = build_grouped_head_rewards(
+                extras[WEIGHTED_STEP_REWARDS_KEY].to(self.device),
+                self.group_membership,
+                self.reward_weights.numel(),
             )
-        self.transition.rewards = reward_vector.to(self.device).clone()
-        self.transition.dones = dones
+            extras[PER_HEAD_REWARDS_KEY] = per_head_rewards
+            extras[PER_TERM_REWARDS_RAW_KEY] = per_head_rewards
+        elif self.per_head_rewards_key in extras:
+            per_head_rewards = extras[self.per_head_rewards_key]
+        else:
+            raise RuntimeError(
+                "PopArt enabled but env does not expose per-head rewards under "
+                f"extras['{self.per_head_rewards_key}']."
+            )
 
-        if "time_outs" in extras:
-            time_outs = extras["time_outs"].to(self.device).unsqueeze(-1)
-            self.transition.rewards += self.gamma * self.transition.values * time_outs
+        self.policy.update_normalization(obs)
+        self.transition.rewards = per_head_rewards.to(self.device).clone()
+        self.transition.dones = dones
+        time_outs = extras.get("time_outs", torch.zeros_like(dones, dtype=torch.bool))
+        self.transition.time_outs = time_outs.to(self.device).clone()
 
         self.storage.add_transitions(self.transition)
         self.transition.clear()
         self.policy.reset(dones)
 
     def compute_returns(self, obs):
-        last_values = self.policy.evaluate(obs, denormalize=True).detach()
-        self.storage.compute_returns(last_values, self.gamma, self.lam)
+        if self.storage is None:
+            raise RuntimeError("Rollout storage must be initialized before computing returns.")
 
-        if self.use_popart and self.policy.popart is not None:
-            targets = self.storage.returns.view(-1, len(self.reward_head_names))
-            old_mu, old_sigma = self.policy.popart.update_stats(targets)
-            self.policy.popart.preserve_output(self.policy.get_critic_output_layer(), old_mu, old_sigma)
-            self.storage.values = self.policy.popart.normalize(self.storage.values)
-            self.storage.returns = self.policy.popart.normalize(self.storage.returns)
-            self.storage.head_advantages = self.storage.returns - self.storage.values
-            self.storage.actor_head_advantages = self.storage.head_advantages.clone()
-            self.latest_popart_stats = {
-                f"mu_{name}": self.policy.popart.mu[idx].item() for idx, name in enumerate(self.reward_head_names)
-            }
-            self.latest_popart_stats.update(
-                {f"sigma_{name}": self.policy.popart.sigma[idx].item() for idx, name in enumerate(self.reward_head_names)}
-            )
-        else:
-            self.latest_popart_stats = {}
+        last_values = self.policy.evaluate(obs).detach()
+        values_unnorm = self.policy.value_normalizer(self.storage.values, unnorm=True)
+        last_values_unnorm = self.policy.value_normalizer(last_values, unnorm=True)
+        returns_unnorm, advantages_raw = compute_multi_head_gae(
+            rewards=self.storage.rewards,
+            values=values_unnorm,
+            dones=self.storage.dones.float(),
+            time_outs=self.storage.time_outs.float(),
+            last_values=last_values_unnorm,
+            gamma=self.gamma,
+            lam=self.lam,
+        )
+        whitened_advantages, _, raw_std = whiten_advantages_per_head(advantages_raw)
+        flat_returns = returns_unnorm.view(-1, returns_unnorm.shape[-1])
+        preds_unnorm_for_logging = values_unnorm.view(-1, self.reward_weights.numel()).clone()
+        self.policy.value_normalizer.update(flat_returns)
 
-        self.storage.finalize_advantages(normalize_advantage=not self.normalize_advantage_per_mini_batch)
-        flat_actor_head_advantages = self.storage.actor_head_advantages.flatten(0, 1)
-        head_abs_mean = flat_actor_head_advantages.abs().mean(dim=0)
-        total_abs_mean = head_abs_mean.sum().clamp(min=1.0e-8)
-        self.latest_advantage_stats = {}
-        for idx, name in enumerate(self.reward_head_names):
-            self.latest_advantage_stats[f"adv_mean_{name}"] = flat_actor_head_advantages[:, idx].mean().item()
-            self.latest_advantage_stats[f"adv_std_{name}"] = flat_actor_head_advantages[:, idx].std(unbiased=True).item()
-            self.latest_advantage_stats[f"adv_abs_mean_{name}"] = head_abs_mean[idx].item()
-            self.latest_advantage_stats[f"adv_share_{name}"] = (head_abs_mean[idx] / total_abs_mean).item()
+        self.storage.returns.copy_(self.policy.value_normalizer(returns_unnorm))
+        self.storage.raw_advantages.copy_(advantages_raw)
+        self.storage.advantages.copy_(whitened_advantages)
 
-        flat_values = self.storage.values.flatten(0, 1)
-        flat_returns = self.storage.returns.flatten(0, 1)
-        value_residual = flat_returns - flat_values
-        self.latest_value_stats = {
-            "value_target_mean_abs": flat_returns.abs().mean().item(),
-            "value_pred_mean_abs": flat_values.abs().mean().item(),
-            "value_residual_mean_abs": value_residual.abs().mean().item(),
-            "value_residual_max_abs": value_residual.abs().max().item(),
+        whitened_std = whitened_advantages.view(-1, whitened_advantages.shape[-1]).std(
+            dim=0, unbiased=whitened_advantages.shape[0] * whitened_advantages.shape[1] > 1
+        )
+        popart_mean, _ = self.policy.value_normalizer.debiased_mean_var()
+        popart_std = self.policy.value_normalizer.debiased_std()
+        diagnostics = {
+            f"popart/mu/{head_name}": popart_mean[index].item()
+            for index, head_name in enumerate(self.head_names)
         }
+        diagnostics.update(
+            {
+                f"popart/sigma/{head_name}": popart_std[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        diagnostics.update(
+            {
+                f"value/{head_name}/pred_mean_unnorm": preds_unnorm_for_logging[:, index].mean().item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        diagnostics.update(
+            {
+                f"return/{head_name}/mean_unnorm": flat_returns[:, index].mean().item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        diagnostics.update(
+            {
+                f"advantage/{head_name}/std_unwhitened": raw_std[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        diagnostics.update(
+            {
+                f"advantage/{head_name}/std_whitened": whitened_std[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        diagnostics.update(
+            {
+                f"reward_weight/{head_name}": self.reward_weights[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics = diagnostics
 
-    def update(self):  # noqa: C901
+    def update(self):
+        if self.storage is None:
+            raise RuntimeError("Rollout storage must be initialized before PPO updates.")
+
         mean_value_loss = 0.0
         mean_surrogate_loss = 0.0
         mean_entropy = 0.0
-        per_head_value_loss = torch.zeros(len(self.reward_head_names), device=self.device)
+        per_head_value_loss = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_share_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_abs_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sq_sum = torch.zeros(self.reward_weights.numel(), device=self.device)
+        actor_adv_sample_count = 0
+        actor_coefficients = self.reward_weights.detach().clone()
+        if self.actor_advantage_scaling == "sigma_rescaled":
+            actor_coefficients = actor_coefficients * self.policy.value_normalizer.debiased_std().detach()
 
         generator = self.storage.mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
-
         for (
             obs_batch,
             actions_batch,
             target_values_batch,
+            raw_advantages_batch,
             advantages_batch,
             returns_batch,
-            head_advantages_batch,
             old_actions_log_prob_batch,
             old_mu_batch,
             old_sigma_batch,
-            hid_states_batch,
-            masks_batch,
+            _hid_states_batch,
+            _masks_batch,
         ) in generator:
-            original_batch_size = obs_batch.batch_size[0]
+            if self.normalize_advantage_per_mini_batch and self.actor_advantage_scaling != "raw":
+                advantages_batch, _, _ = whiten_advantages_per_head(advantages_batch.view(1, -1, advantages_batch.shape[-1]))
+                advantages_batch = advantages_batch.view_as(returns_batch)
 
-            if self.normalize_advantage_per_mini_batch:
-                with torch.no_grad():
-                    advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-8)
-
-            self.policy.act(obs_batch, masks=masks_batch, hidden_states=hid_states_batch[0])
+            self.policy.act(obs_batch)
             actions_log_prob_batch = self.policy.get_actions_log_prob(actions_batch)
-            value_batch = self.policy.evaluate(obs_batch, denormalize=False, masks=masks_batch, hidden_states=hid_states_batch[1])
-            mu_batch = self.policy.action_mean[:original_batch_size]
-            sigma_batch = self.policy.action_std[:original_batch_size]
-            entropy_batch = self.policy.entropy[:original_batch_size]
+            value_batch = self.policy.evaluate(obs_batch)
+            mu_batch = self.policy.action_mean
+            sigma_batch = self.policy.action_std
+            entropy_batch = self.policy.entropy
 
             if self.desired_kl is not None and self.schedule == "adaptive":
                 with torch.inference_mode():
@@ -702,9 +900,9 @@ class BonesPopArtPPO(PPO):
                         kl_mean /= self.gpu_world_size
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            self.learning_rate = max(1.0e-5, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            self.learning_rate = min(1.0e-2, self.learning_rate * 1.5)
                     if self.is_multi_gpu:
                         lr_tensor = torch.tensor(self.learning_rate, device=self.device)
                         torch.distributed.broadcast(lr_tensor, src=0)
@@ -713,26 +911,35 @@ class BonesPopArtPPO(PPO):
                         param_group["lr"] = self.learning_rate
 
             ratio = torch.exp(actions_log_prob_batch - torch.squeeze(old_actions_log_prob_batch))
-            surrogate = -torch.squeeze(advantages_batch) * ratio
-            surrogate_clipped = -torch.squeeze(advantages_batch) * torch.clamp(
-                ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
-            )
-            surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
-
-            if self.use_clipped_value_loss:
-                value_clipped = target_values_batch + (value_batch - target_values_batch).clamp(
-                    -self.clip_param, self.clip_param
-                )
-                value_losses = (value_batch - returns_batch).pow(2)
-                value_losses_clipped = (value_clipped - returns_batch).pow(2)
-                value_loss_terms = torch.max(value_losses, value_losses_clipped)
+            if self.actor_advantage_scaling == "whitened":
+                actor_advantages = advantages_batch * self.reward_weights
+            elif self.actor_advantage_scaling == "sigma_rescaled":
+                sigma = self.policy.value_normalizer.debiased_std().detach()
+                actor_advantages = advantages_batch * sigma * self.reward_weights
+            elif self.actor_advantage_scaling == "raw":
+                actor_advantages = raw_advantages_batch * self.reward_weights
             else:
-                value_loss_terms = (returns_batch - value_batch).pow(2)
-            value_loss = value_loss_terms.mean()
-            per_head_value_loss += value_loss_terms.mean(dim=0)
+                raise ValueError(
+                    "Unsupported actor_advantage_scaling="
+                    f"{self.actor_advantage_scaling!r}. Expected one of {self.VALID_ACTOR_ADVANTAGE_SCALINGS}."
+                )
+            actor_adv_flat = actor_advantages.reshape(-1, actor_advantages.shape[-1])
+            actor_adv_abs_sum += actor_adv_flat.abs().sum(dim=0)
+            actor_adv_sum += actor_adv_flat.sum(dim=0)
+            actor_adv_sq_sum += actor_adv_flat.square().sum(dim=0)
+            actor_adv_sample_count += actor_adv_flat.shape[0]
+            actor_adv_share = actor_advantages.abs()
+            actor_adv_share = actor_adv_share / actor_adv_share.sum(dim=-1, keepdim=True).clamp_min(1.0e-8)
+            actor_adv_share_sum += actor_adv_share.mean(dim=0)
+            surrogate = ratio.unsqueeze(-1) * actor_advantages
+            surrogate_clipped = torch.clamp(ratio, 1.0 - self.clip_param, 1.0 + self.clip_param).unsqueeze(-1) * actor_advantages
+            surrogate_loss = -torch.min(surrogate, surrogate_clipped).sum(dim=-1).mean()
+
+            value_losses = (value_batch - returns_batch).pow(2)
+            value_loss_per_head = value_losses.mean(dim=0)
+            value_loss = value_loss_per_head.mean()
 
             loss = surrogate_loss + self.value_loss_coef * value_loss - self.entropy_coef * entropy_batch.mean()
-
             self.optimizer.zero_grad()
             loss.backward()
             if self.is_multi_gpu:
@@ -743,47 +950,102 @@ class BonesPopArtPPO(PPO):
             mean_value_loss += value_loss.item()
             mean_surrogate_loss += surrogate_loss.item()
             mean_entropy += entropy_batch.mean().item()
+            per_head_value_loss += value_loss_per_head.detach()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
         mean_surrogate_loss /= num_updates
         mean_entropy /= num_updates
         per_head_value_loss /= num_updates
+        actor_adv_share_sum /= num_updates
+        actor_adv_abs_mean = actor_adv_abs_sum / max(actor_adv_sample_count, 1)
+        actor_adv_mean = actor_adv_sum / max(actor_adv_sample_count, 1)
+        actor_adv_var = actor_adv_sq_sum / max(actor_adv_sample_count, 1) - actor_adv_mean.square()
+        actor_adv_std = actor_adv_var.clamp_min(0.0).sqrt()
+        actor_adv_share_exact = actor_adv_abs_mean / actor_adv_abs_mean.sum().clamp_min(1.0e-8)
         self.storage.clear()
 
-        loss_dict = {
+        self.last_diagnostics.update(
+            {
+                f"loss/value_per_head/{head_name}": per_head_value_loss[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/actor_coeffs/{head_name}": actor_coefficients[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_share/{head_name}": actor_adv_share_sum[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_abs_mean/{head_name}": actor_adv_abs_mean[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_std/{head_name}": actor_adv_std[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+        self.last_diagnostics.update(
+            {
+                f"popart/adv_share_exact/{head_name}": actor_adv_share_exact[index].item()
+                for index, head_name in enumerate(self.head_names)
+            }
+        )
+
+        return {
             "value_function": mean_value_loss,
             "surrogate": mean_surrogate_loss,
             "entropy": mean_entropy,
         }
-        for idx, name in enumerate(self.reward_head_names):
-            loss_dict[f"value_function_{name}"] = per_head_value_loss[idx].item()
-        for key, value in self.latest_popart_stats.items():
-            loss_dict[f"popart_{key}"] = value
-        for key, value in self.latest_advantage_stats.items():
-            loss_dict[f"advantage_{key}"] = value
-        for key, value in self.latest_value_stats.items():
-            loss_dict[f"critic_{key}"] = value
-        return loss_dict
+
+    def broadcast_parameters(self):
+        model_params = [self.policy.state_dict()]
+        torch.distributed.broadcast_object_list(model_params, src=0)
+        self.policy.load_state_dict(model_params[0])
+
+    def reduce_parameters(self):
+        grads = [param.grad.view(-1) for param in self.policy.parameters() if param.grad is not None]
+        all_grads = torch.cat(grads)
+        torch.distributed.all_reduce(all_grads, op=torch.distributed.ReduceOp.SUM)
+        all_grads /= self.gpu_world_size
+
+        offset = 0
+        for param in self.policy.parameters():
+            if param.grad is not None:
+                numel = param.numel()
+                param.grad.data.copy_(all_grads[offset : offset + numel].view_as(param.grad.data))
+                offset += numel
 
 
-class BonesOnPolicyRunner(OnPolicyRunner):
-    def __init__(self, env, train_cfg: dict, log_dir: str | None = None, device="cpu", registry_name: str | None = None):
-        super().__init__(env, train_cfg, log_dir=log_dir, device=device)
+class BonesPopArtOnPolicyRunner(OnPolicyRunner):
+    def __init__(self, env: VecEnv, train_cfg: dict, log_dir: str | None = None, device="cpu", registry_name: str = None):
+        deprecated_model_keys = [
+            "stochastic",
+            "init_noise_std",
+            "noise_std_type",
+            "state_dependent_std",
+            "obs_normalization",
+            "actor_obs_normalization",
+            "critic_obs_normalization",
+        ]
+        for section in ["actor", "critic"]:
+            if section in train_cfg:
+                for key in deprecated_model_keys:
+                    train_cfg[section].pop(key, None)
         self.registry_name = registry_name
+        super().__init__(env, train_cfg, log_dir, device)
 
-    def _construct_algorithm(self, obs):
-        if not should_use_bones_popart_runner(self.cfg):
-            return super()._construct_algorithm(obs)
-
-        self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
-        self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
-
-        if self.alg_cfg.get("rnd_cfg") is not None:
-            raise NotImplementedError("Bones PopArt PPO v1 does not support RND.")
-        if self.alg_cfg.get("symmetry_cfg") is not None:
-            raise NotImplementedError("Bones PopArt PPO v1 does not support symmetry augmentation.")
-
+    def _construct_algorithm(self, obs) -> BonesPopArtPPO:  # type: ignore[override]
         if self.cfg.get("empirical_normalization") is not None:
             warnings.warn(
                 "The `empirical_normalization` parameter is deprecated. Please set `actor_obs_normalization` and "
@@ -795,203 +1057,204 @@ class BonesOnPolicyRunner(OnPolicyRunner):
             if self.policy_cfg.get("critic_obs_normalization") is None:
                 self.policy_cfg["critic_obs_normalization"] = self.cfg["empirical_normalization"]
 
-        bones_cfg = _get_bones_popart_cfg(self.cfg)
-        reward_heads = list(bones_cfg.get("reward_heads", DEFAULT_REWARD_HEADS))
-        policy_cfg = dict(self.policy_cfg)
-        policy_cfg.pop("class_name", None)
-        policy_cfg["value_head_names"] = reward_heads
-        policy_cfg["use_popart"] = bones_cfg.get("use_popart", True)
-        policy_cfg["popart_beta"] = bones_cfg.get("beta", 5.0e-4)
-        policy_cfg["popart_debiased"] = bones_cfg.get("debiased", False)
-        policy_cfg["popart_epsilon"] = bones_cfg.get("epsilon", 1.0e-5)
-        policy_cfg["popart_min_sigma"] = bones_cfg.get("min_sigma", 1.0e-4)
-        policy_cfg["popart_max_sigma"] = bones_cfg.get("max_sigma")
-        policy_cfg["popart_stats_dtype"] = bones_cfg.get("stats_dtype", "float32")
-
-        actor_critic = BonesPopArtActorCritic(
-            obs,
-            self.cfg["obs_groups"],
-            self.env.num_actions,
-            **policy_cfg,
-        ).to(self.device)
-
-        alg_cfg = dict(self.alg_cfg)
-        alg_cfg.pop("class_name", None)
-        alg_cfg.pop("rnd_cfg", None)
-        alg_cfg.pop("symmetry_cfg", None)
-        alg = BonesPopArtPPO(
-            actor_critic,
-            device=self.device,
-            value_head_names=reward_heads,
-            use_popart=bones_cfg.get("use_popart", True),
-            actor_advantage_reduction=bones_cfg.get("actor_advantage_reduction", "sum"),
-            multi_gpu_cfg=self.multi_gpu_cfg,
-            **alg_cfg,
-        )
-        alg.init_storage("rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions])
-        return alg
-
-    def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False):  # noqa: C901
-        if not should_use_bones_popart_runner(self.cfg):
-            return super().learn(num_learning_iterations, init_at_random_ep_len)
-
-        self._prepare_logging_writer()
-
-        if init_at_random_ep_len:
-            self.env.episode_length_buf = torch.randint_like(
-                self.env.episode_length_buf, high=int(self.env.max_episode_length)
+        if not self.alg_cfg.get("use_popart_multihead", False):
+            raise ValueError("BonesPopArtOnPolicyRunner requires use_popart_multihead=True.")
+        head_mode = self.alg_cfg.get("popart_head_mode", "per_term")
+        validate_popart_head_mode(head_mode)
+        actor_advantage_scaling = self.alg_cfg.get("popart_actor_advantage_scaling", "whitened")
+        if actor_advantage_scaling not in BonesPopArtPPO.VALID_ACTOR_ADVANTAGE_SCALINGS:
+            raise ValueError(
+                "Unsupported popart_actor_advantage_scaling="
+                f"{actor_advantage_scaling!r}. Expected one of {BonesPopArtPPO.VALID_ACTOR_ADVANTAGE_SCALINGS}."
             )
 
-        obs = self.env.get_observations().to(self.device)
-        self.train_mode()
+        extras = getattr(self.env.unwrapped, "extras", {})
+        if REWARD_TERM_NAMES_KEY not in extras or REWARD_WEIGHTS_KEY not in extras:
+            raise RuntimeError(
+                "PopArt enabled but env extras do not expose reward metadata. "
+                "Install the bones per-term reward manager before wrapping the environment."
+            )
+        if PER_TERM_REWARDS_RAW_KEY not in extras:
+            raise RuntimeError(
+                f"PopArt enabled but env does not expose extras['{PER_TERM_REWARDS_RAW_KEY}']. "
+                "Install BonesPerTermRewardManager on the env before constructing the runner."
+            )
 
-        ep_infos = []
-        rewbuffer = deque(maxlen=100)
-        lenbuffer = deque(maxlen=100)
-        cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
-        cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        reward_term_names = list(extras[REWARD_TERM_NAMES_KEY])
+        reward_weights = torch.as_tensor(extras[REWARD_WEIGHTS_KEY], dtype=torch.float, device=self.device)
+        per_term_tensor = torch.as_tensor(extras[PER_TERM_REWARDS_RAW_KEY], device=self.device)
+        num_terms = len(reward_term_names)
+        if per_term_tensor.ndim != 2 or per_term_tensor.shape[-1] != num_terms:
+            raise RuntimeError(
+                f"extras['{PER_TERM_REWARDS_RAW_KEY}'] has shape {tuple(per_term_tensor.shape)}, "
+                f"expected (num_envs, {num_terms})."
+            )
+        if reward_weights.shape != (num_terms,):
+            raise RuntimeError(
+                f"extras['{REWARD_WEIGHTS_KEY}'] has shape {tuple(reward_weights.shape)}, "
+                f"expected ({num_terms},)."
+            )
 
-        reward_head_names = list(getattr(self.alg, "reward_head_names", DEFAULT_REWARD_HEADS))
-        head_rewbuffers = {name: deque(maxlen=100) for name in reward_head_names}
-        cur_head_reward_sum = torch.zeros(self.env.num_envs, len(reward_head_names), dtype=torch.float, device=self.device)
-        rollout_head_reward_total = torch.zeros(len(reward_head_names), dtype=torch.float, device=self.device)
-        rollout_head_reward_steps = 0
+        policy_cfg = dict(self.policy_cfg)
+        algorithm_cfg = dict(self.alg_cfg)
+        policy_cfg.pop("class_name", None)
+        algorithm_cfg.pop("class_name", None)
+        algorithm_cfg.pop("use_popart_multihead", None)
+        algorithm_cfg.pop("popart_head_mode", None)
+        algorithm_cfg.pop("popart_groups", None)
+        grouped_actor_weight_mode = algorithm_cfg.pop("popart_grouped_actor_weight_mode", "uniform")
+        group_preset = algorithm_cfg.pop("popart_group_preset", "upper_lower")
+        popart_momentum = algorithm_cfg.pop("popart_momentum", 0.1)
+        popart_epsilon = algorithm_cfg.pop("popart_epsilon", 1.0e-5)
 
-        if self.is_distributed:
-            print(f"Synchronizing parameters for rank {self.gpu_global_rank}...")
-            self.alg.broadcast_parameters()
+        group_names: list[str] | None = None
+        popart_groups: dict[str, list[str]] | None = None
+        group_membership: torch.Tensor | None = None
+        per_head_rewards_key = PER_TERM_REWARDS_RAW_KEY
+        head_names = reward_term_names
+        actor_reward_weights = reward_weights
+        if head_mode == "grouped":
+            if grouped_actor_weight_mode not in VALID_GROUPED_ACTOR_WEIGHT_MODES:
+                raise ValueError(
+                    "Unsupported popart_grouped_actor_weight_mode="
+                    f"{grouped_actor_weight_mode!r}. Expected one of {VALID_GROUPED_ACTOR_WEIGHT_MODES}."
+                )
+            if WEIGHTED_STEP_REWARDS_KEY not in extras:
+                raise RuntimeError(
+                    "Grouped PopArt enabled but env does not expose weighted per-term rewards under "
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}']."
+                )
+            weighted_step_rewards = torch.as_tensor(extras[WEIGHTED_STEP_REWARDS_KEY], device=self.device)
+            if weighted_step_rewards.ndim != 2 or weighted_step_rewards.shape[-1] != num_terms:
+                raise RuntimeError(
+                    f"extras['{WEIGHTED_STEP_REWARDS_KEY}'] has shape {tuple(weighted_step_rewards.shape)}, "
+                    f"expected (num_envs, {num_terms})."
+                )
+            group_names, popart_groups, group_membership = resolve_popart_groups(
+                reward_term_names,
+                self.alg_cfg.get("popart_groups"),
+                group_preset,
+            )
+            head_names = group_names
+            actor_reward_weights = compute_grouped_actor_weights(
+                reward_weights,
+                group_membership.to(self.device),
+                len(group_names),
+                grouped_actor_weight_mode,
+            )
+            extras[PER_HEAD_REWARDS_KEY] = build_grouped_head_rewards(
+                weighted_step_rewards,
+                group_membership.to(self.device),
+                len(group_names),
+            )
+            extras[PER_TERM_REWARDS_RAW_KEY] = extras[PER_HEAD_REWARDS_KEY]
+            per_head_rewards_key = PER_HEAD_REWARDS_KEY
+        value_dim = len(head_names)
 
-        start_iter = self.current_learning_iteration
-        tot_iter = start_iter + num_learning_iterations
-        for it in range(start_iter, tot_iter):
-            start = time.time()
-            with torch.inference_mode():
-                for _ in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs)
-                    obs, rewards, dones, extras = self.env.step(actions.to(self.env.device))
-                    obs, rewards, dones = (obs.to(self.device), rewards.to(self.device), dones.to(self.device))
-                    self.alg.process_env_step(obs, rewards, dones, extras)
+        actor_critic = BonesPopArtActorCritic(
+            obs=obs,
+            obs_groups=self.cfg["obs_groups"],
+            num_actions=self.env.num_actions,
+            value_dim=value_dim,
+            popart_momentum=popart_momentum,
+            popart_epsilon=popart_epsilon,
+            **policy_cfg,
+        ).to(self.device)
+        alg = BonesPopArtPPO(
+            actor_critic,
+            reward_weights=actor_reward_weights,
+            reward_term_names=head_names,
+            head_mode=head_mode,
+            per_head_rewards_key=per_head_rewards_key,
+            group_membership=group_membership,
+            device=self.device,
+            multi_gpu_cfg=self.multi_gpu_cfg,
+            **algorithm_cfg,
+        )
+        alg.init_storage("rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions])
 
-                    reward_vector = extras["reward_vector"].to(self.device)
-                    rollout_head_reward_total += reward_vector.mean(dim=0)
-                    rollout_head_reward_steps += 1
+        self.cfg["popart_head_mode"] = head_mode
+        self.cfg["popart_head_names"] = head_names
+        self.cfg["popart_reward_term_names"] = reward_term_names
+        self.cfg["popart_reward_weights"] = actor_reward_weights.detach().cpu().tolist()
+        self.cfg["popart_value_dim"] = value_dim
+        self.cfg["popart_groups"] = popart_groups
+        self.cfg["popart_group_preset"] = group_preset if head_mode == "grouped" else None
+        self.cfg["popart_grouped_actor_weight_mode"] = grouped_actor_weight_mode if head_mode == "grouped" else None
+        self.cfg["popart_terminate_reward_injection"] = False
+        if wandb.run is not None:
+            wandb.config.update(
+                {
+                    "popart_head_mode": head_mode,
+                    "popart_head_names": head_names,
+                    "popart_groups": popart_groups,
+                    "popart_group_preset": group_preset if head_mode == "grouped" else None,
+                    "popart_grouped_actor_weight_mode": (
+                        grouped_actor_weight_mode if head_mode == "grouped" else None
+                    ),
+                    "popart_reward_weights": actor_reward_weights.detach().cpu().tolist(),
+                    "popart_value_dim": value_dim,
+                },
+                allow_val_change=True,
+            )
 
-                    if self.log_dir is not None:
-                        if "episode" in extras:
-                            ep_infos.append(extras["episode"])
-                        elif "log" in extras:
-                            ep_infos.append(extras["log"])
-
-                        cur_reward_sum += rewards
-                        cur_head_reward_sum += reward_vector
-                        cur_episode_length += 1
-
-                        new_ids = (dones > 0).nonzero(as_tuple=False)
-                        done_ids = new_ids[:, 0]
-                        rewbuffer.extend(cur_reward_sum[done_ids].cpu().numpy().tolist())
-                        lenbuffer.extend(cur_episode_length[done_ids].cpu().numpy().tolist())
-                        for head_idx, head_name in enumerate(reward_head_names):
-                            head_rewbuffers[head_name].extend(
-                                cur_head_reward_sum[done_ids, head_idx].cpu().numpy().tolist()
-                            )
-                        cur_reward_sum[done_ids] = 0
-                        cur_head_reward_sum[done_ids] = 0
-                        cur_episode_length[done_ids] = 0
-
-                stop = time.time()
-                collection_time = stop - start
-                start = stop
-                self.alg.compute_returns(obs)
-
-            loss_dict = self.alg.update()
-
-            stop = time.time()
-            learn_time = stop - start
-            self.current_learning_iteration = it
-
-            if rollout_head_reward_steps > 0:
-                rollout_head_reward_mean = rollout_head_reward_total / rollout_head_reward_steps
-            else:
-                rollout_head_reward_mean = torch.zeros(len(reward_head_names), device=self.device)
-
-            if self.log_dir is not None and not self.disable_logs:
-                self.log(locals())
-                if it % self.save_interval == 0:
-                    self.save(os.path.join(self.log_dir, f"model_{it}.pt"))
-
-            ep_infos.clear()
-            rollout_head_reward_total.zero_()
-            rollout_head_reward_steps = 0
-
-            if it == start_iter and not self.disable_logs:
-                git_file_paths = []
-                try:
-                    from rsl_rl.utils import store_code_state
-
-                    git_file_paths = store_code_state(self.log_dir, self.git_status_repos)
-                except Exception:
-                    git_file_paths = []
-                if self.logger_type in ["wandb", "neptune"] and git_file_paths:
-                    for path in git_file_paths:
-                        self.writer.save_file(path)
-
-        if self.log_dir is not None and not self.disable_logs:
-            self.save(os.path.join(self.log_dir, f"model_{self.current_learning_iteration}.pt"))
+        print("=" * 80)
+        print("[BonesPopArtOnPolicyRunner] PopArt configuration:")
+        print(f"  value_dim: {value_dim}")
+        print(f"  head_mode: {head_mode}")
+        if head_mode == "grouped":
+            print("  grouped head definitions:")
+            for index, group_name in enumerate(head_names):
+                print(
+                    f"    [{index:2d}] {group_name:28s} terms={popart_groups[group_name]} "
+                    f"actor_weight={actor_reward_weights[index].item():+.4f}"
+                )
+            print(f"  grouped_preset: {group_preset}")
+            print(f"  grouped_actor_weight_mode: {grouped_actor_weight_mode}")
+        else:
+            print("  reward term names (in head order):")
+            for index, name in enumerate(head_names):
+                print(f"    [{index:2d}] {name:40s} weight={actor_reward_weights[index].item():+.4f}")
+        print(f"  popart_normalize_actor_weights: {alg.popart_normalize_actor_weights}")
+        print(f"  popart_actor_advantage_scaling: {alg.actor_advantage_scaling}")
+        print(f"  popart_momentum: {popart_momentum}")
+        print(f"  popart_epsilon: {popart_epsilon}")
+        print("  terminate_reward_injection: False (v1 deviation from CompositeMotion)")
+        print("=" * 80)
+        return alg
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         super().log(locs, width=width, pad=pad)
-        if not should_use_bones_popart_runner(self.cfg):
+        if self.writer is None:
             return
-
-        reward_head_names = list(getattr(self.alg, "reward_head_names", DEFAULT_REWARD_HEADS))
-        rollout_head_reward_mean = locs.get("rollout_head_reward_mean")
-        if rollout_head_reward_mean is not None:
-            for idx, head_name in enumerate(reward_head_names):
-                self.writer.add_scalar(f"Train/reward_head_rollout/{head_name}", rollout_head_reward_mean[idx].item(), locs["it"])
-
-        head_rewbuffers = locs.get("head_rewbuffers", {})
-        for head_name, buffer in head_rewbuffers.items():
-            if len(buffer) > 0:
-                self.writer.add_scalar(f"Train/reward_head_episode/{head_name}", statistics.mean(buffer), locs["it"])
-
-        popart = getattr(self.alg.policy, "popart", None)
-        if popart is not None:
-            for idx, head_name in enumerate(reward_head_names):
-                self.writer.add_scalar(f"PopArt/mu/{head_name}", popart.mu[idx].item(), locs["it"])
-                self.writer.add_scalar(f"PopArt/sigma/{head_name}", popart.sigma[idx].item(), locs["it"])
-
-        loss_dict = locs.get("loss_dict", {})
-        for idx, head_name in enumerate(reward_head_names):
-            adv_mean = loss_dict.get(f"advantage_adv_mean_{head_name}")
-            adv_std = loss_dict.get(f"advantage_adv_std_{head_name}")
-            adv_share = loss_dict.get(f"advantage_adv_share_{head_name}")
-            value_loss = loss_dict.get(f"value_function_{head_name}")
-            if adv_mean is not None:
-                self.writer.add_scalar(f"Advantage/mean/{head_name}", adv_mean, locs["it"])
-            if adv_std is not None:
-                self.writer.add_scalar(f"Advantage/std/{head_name}", adv_std, locs["it"])
-            if adv_share is not None:
-                self.writer.add_scalar(f"Advantage/share/{head_name}", adv_share, locs["it"])
-            if value_loss is not None:
-                self.writer.add_scalar(f"Loss/value_per_head/{head_name}", value_loss, locs["it"])
-
-        critic_value_loss = loss_dict.get("value_function")
-        if critic_value_loss is not None:
-            self.writer.add_scalar("Loss/value", critic_value_loss, locs["it"])
-        critic_residual = loss_dict.get("critic_value_residual_mean_abs")
-        if critic_residual is not None:
-            self.writer.add_scalar("Critic/value_residual_mean_abs", critic_residual, locs["it"])
-        critic_residual_max = loss_dict.get("critic_value_residual_max_abs")
-        if critic_residual_max is not None:
-            self.writer.add_scalar("Critic/value_residual_max_abs", critic_residual_max, locs["it"])
+        if locs["it"] == locs["start_iter"]:
+            self.writer.add_text(
+                "popart/config",
+                json.dumps(
+                    {
+                        "head_mode": self.cfg["popart_head_mode"],
+                        "head_names": self.cfg["popart_head_names"],
+                        "value_dim": self.cfg["popart_value_dim"],
+                        "reward_term_names": self.cfg["popart_reward_term_names"],
+                        "groups": self.cfg["popart_groups"],
+                        "group_preset": self.cfg["popart_group_preset"],
+                        "grouped_actor_weight_mode": self.cfg["popart_grouped_actor_weight_mode"],
+                        "reward_weights": self.cfg["popart_reward_weights"],
+                        "normalize_actor_weights": self.alg.popart_normalize_actor_weights,
+                        "actor_advantage_scaling": self.alg.actor_advantage_scaling,
+                        "terminate_reward_injection": False,
+                    },
+                    indent=2,
+                ),
+                0,
+            )
+        for key, value in self.alg.last_diagnostics.items():
+            self.writer.add_scalar(key, value, locs["it"])
 
     def save(self, path: str, infos=None):
         super().save(path, infos)
         if getattr(self, "logger_type", getattr(self, "_logger_type", None)) in ["wandb"]:
-            import wandb
-
             from isaaclab_rl.rsl_rl import export_policy_as_onnx
-
             from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
 
             cmd = self.env.unwrapped.command_manager.get_term("motion")
@@ -1006,10 +1269,8 @@ class BonesOnPolicyRunner(OnPolicyRunner):
                 export_motion_policy_as_onnx(
                     self.env.unwrapped, policy, normalizer=normalizer, path=policy_path, filename=filename
                 )
-
             attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
             wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
-
-            if getattr(self, "registry_name", None) is not None and not self.registry_name.startswith("zarr:"):
+            if self.registry_name is not None and not self.registry_name.startswith("zarr:"):
                 wandb.run.use_artifact(self.registry_name)
                 self.registry_name = None

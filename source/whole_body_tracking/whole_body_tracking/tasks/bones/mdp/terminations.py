@@ -12,7 +12,7 @@ from isaaclab.assets import Articulation, RigidObject
 from isaaclab.managers import SceneEntityCfg
 
 from whole_body_tracking.tasks.bones.mdp.commands import MotionCommand
-from whole_body_tracking.tasks.bones.mdp.rewards import _get_body_indexes
+from whole_body_tracking.tasks.bones.mdp.rewards import FOOT_BODY_NAMES, _get_body_indexes
 
 
 def motion_ended(env: ManagerBasedRLEnv, command_name: str) -> torch.Tensor:
@@ -107,3 +107,14 @@ def bad_motion_body_pos_z_only(
     body_indexes = _get_body_indexes(command, body_names)
     error = torch.abs(command.body_pos_relative_w[:, body_indexes, -1] - command.robot_body_pos_w[:, body_indexes, -1])
     return torch.any(error > threshold, dim=-1)
+
+
+def bad_motion_feet_z_pos(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    threshold: float,
+    body_names: list[str] | None = None,
+) -> torch.Tensor:
+    """Terminate when any foot's vertical position deviates beyond threshold from the reference motion."""
+    feet = body_names or FOOT_BODY_NAMES
+    return bad_motion_body_pos_z_only(env, command_name, threshold, body_names=feet)

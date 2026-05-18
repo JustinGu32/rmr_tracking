@@ -3,6 +3,19 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
+class BonesPopArtPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
+    use_popart_multihead: bool = False
+    popart_head_mode: str = "per_term"
+    popart_groups: dict[str, list[str]] | None = None
+    popart_group_preset: str = "actual_individual"
+    popart_grouped_actor_weight_mode: str = "uniform"
+    popart_momentum: float = 0.1
+    popart_epsilon: float = 1.0e-5
+    popart_normalize_actor_weights: bool = False
+    popart_actor_advantage_scaling: str = "whitened"
+
+
+@configclass
 class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 30000
@@ -14,9 +27,8 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         actor_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
         critic_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
         activation="elu",
-        # activation="swish",
     )
-    algorithm = RslRlPpoAlgorithmCfg(
+    algorithm = BonesPopArtPpoAlgorithmCfg(
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
         clip_param=0.2,

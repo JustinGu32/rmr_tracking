@@ -18,7 +18,7 @@ from isaaclab.app import AppLauncher
 # add argparse arguments
 parser = argparse.ArgumentParser(description="Replay motion from csv file and output to npz file.")
 parser.add_argument("--input_file", type=str, required=True, help="The path to the input motion csv file.")
-parser.add_argument("--input_fps", type=int, default=30, help="The fps of the input motion.")
+parser.add_argument("--input_fps", type=int, default=50, help="The fps of the input motion.")
 parser.add_argument(
     "--frame_range",
     nargs=2,
@@ -60,6 +60,14 @@ from isaaclab.utils.math import axis_angle_from_quat, quat_conjugate, quat_mul, 
 ##
 from whole_body_tracking.robots.g1 import G1_CYLINDER_CFG
 from whole_body_tracking.tasks.chair_step.chair_step_env_cfg import BOX_SIZE, BOX_POSITION
+
+STAIRCASE_URDF_PATH = (
+    "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_down_karen_stairs/multi_boxes.urdf"
+)
+STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/walk_down_karen_stairs_usd")
+STAIRCASE_POS = (3.7, 0.5, 0.0)
+# Quaternion is in (w, x, y, z); this is a +94 degree yaw.
+STAIRCASE_ROT = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
 
 
 
@@ -373,11 +381,12 @@ def run_simulator(sim: sim_utils.SimulationContext, scene: InteractiveScene, joi
             os.makedirs(tmp_dir, exist_ok=True)
             tmp_motion_path = os.path.join(tmp_dir, "motion.npz")
             np.savez(tmp_motion_path, **log)
+            print(f"[INFO]: Motion saved to {tmp_motion_path}")
 
             import wandb
             
             # added to debug
-            exit() 
+            # exit() 
 
             # # added to debug
             # exit()
@@ -421,8 +430,8 @@ def main():
         scene_cfg.object = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Staircase",
             spawn=sim_utils.UrdfFileCfg(
-                asset_path="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase/multi_boxes_scaled_0.84_0.84_0.84.urdf",
-                usd_dir=os.path.expanduser("~/tmp/IsaacLab/staircase_usd"),
+                asset_path=STAIRCASE_URDF_PATH,
+                usd_dir=STAIRCASE_USD_DIR,
                 fix_base=True,
                 collision_props=sim_utils.CollisionPropertiesCfg(),
                 joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
@@ -431,7 +440,7 @@ def main():
                 articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             ),
-            init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, -0.025, 0.0)),
+            init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POS, rot=STAIRCASE_ROT),
         )
     scene = InteractiveScene(scene_cfg)
     # Play the simulator

@@ -37,15 +37,19 @@ export WANDB_ENTITY=robot-mcrobotface
 #    --video_length 500 \
 #    --video_interval 10000
 
+# walk up: 3.2, -0.2
+# walk down: 3.2, 1.95
+# up: 3.7, 0.55
+# down: 3.65, 0.47
+
 python scripts/rsl_rl/train.py \
    --task=Staircase-G1-v0 \
-   --registry_name robot-mcrobotface/csv_to_npz/staircase_final_v3:latest \
+   --registry_name robot-mcrobotface/csv_to_npz/walk_up_33.npz:latest \
+   --depth_obs \
    --headless \
    --logger wandb \
-   --log_project_name staircase \
-   --run_name staircase_ignore \
+   --log_project_name new_staircase \
+   --run_name walk_up_karen_staircase_33hz_depth \
    --video \
    --video_length 500 \
-   --video_interval 10000 \
-   --assist_mode gravity_only \
-   --curriculum
+   --video_interval 10000

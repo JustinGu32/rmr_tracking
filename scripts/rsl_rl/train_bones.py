@@ -77,10 +77,35 @@ parser.add_argument(
     help="Precision for PopArt running statistics.",
 )
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
+parser.add_argument("--crane", action="store_true", default=False, help="Enable crane-mode foot contact penalty for support/contact mismatch.")
+parser.add_argument("--contact_feasibility", action="store_true", default=False, help="Enable contact-feasibility reward shaping, including foot z tracking reward/termination.")
+parser.add_argument("--feet_z_pos_reward", action="store_true", default=False, help="Enable foot z-position tracking reward and termination.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
 parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
+parser.add_argument("--popart_multihead", action="store_true", default=False, help="Enable the opt-in multi-head PopArt bones training path.")
+parser.add_argument(
+    "--popart_head_mode",
+    type=str,
+    default="per_term",
+    choices=["per_term", "grouped"],
+    help="PopArt critic head layout when --popart_multihead is enabled.",
+)
+parser.add_argument(
+    "--popart_group_preset",
+    type=str,
+    default="actual_individual",
+    choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual"],
+    help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.",
+)
+parser.add_argument(
+    "--popart_actor_advantage_scaling",
+    type=str,
+    default="whitened",
+    choices=["whitened", "sigma_rescaled", "raw"],
+    help="Actor advantage scaling mode when --popart_multihead is enabled.",
+)
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -105,6 +130,12 @@ if args_cli.crane:
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 # if args_cli.assist_mode is not None:
 #     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
+if args_cli.crane:
+    os.environ["BONES_CRANE"] = "1"
+if args_cli.contact_feasibility:
+    os.environ["BONES_CONTACT_FEASIBILITY"] = "1"
+if args_cli.feet_z_pos_reward:
+    os.environ["BONES_FEET_Z_POS_REWARD"] = "1"
 if args_cli.gravity_curriculum:
     os.environ["BONES_GRAVITY_CURRICULUM"] = "1"
     os.environ["BONES_START_GRAVITY"] = str(args_cli.start_gravity)
@@ -284,44 +315,11 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
     with open(filename, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=sort_keys)
 
-
-
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
-from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner as OnPolicyRunner
-
-try:
-    from whole_body_tracking.utils.bones_popart import (
-        BALANCED_REWARD_HEADS,
-        BonesOnPolicyRunner,
-        BonesRewardVectorWrapper,
-        DEFAULT_REWARD_HEADS,
-        INDIVIDUAL_REWARD_HEADS,
-        should_use_bones_popart_runner,
-    )
-except ModuleNotFoundError:
-    import importlib.util
-
-    _bones_popart_path = (
-        Path(__file__).resolve().parents[2]
-        / 'source'
-        / 'whole_body_tracking'
-        / 'whole_body_tracking'
-        / 'utils'
-        / 'bones_popart.py'
-    )
-    _bones_popart_spec = importlib.util.spec_from_file_location('bones_popart_local', _bones_popart_path)
-    if _bones_popart_spec is None or _bones_popart_spec.loader is None:
-        raise
-    _bones_popart = importlib.util.module_from_spec(_bones_popart_spec)
-    _bones_popart_spec.loader.exec_module(_bones_popart)
-
-    BALANCED_REWARD_HEADS = _bones_popart.BALANCED_REWARD_HEADS
-    BonesOnPolicyRunner = _bones_popart.BonesOnPolicyRunner
-    BonesRewardVectorWrapper = _bones_popart.BonesRewardVectorWrapper
-    DEFAULT_REWARD_HEADS = _bones_popart.DEFAULT_REWARD_HEADS
-    INDIVIDUAL_REWARD_HEADS = _bones_popart.INDIVIDUAL_REWARD_HEADS
-    should_use_bones_popart_runner = _bones_popart.should_use_bones_popart_runner
+from whole_body_tracking.tasks.bones.popart_reward_manager import install_bones_per_term_reward_manager
+from whole_body_tracking.utils.bones_popart import BonesPopArtOnPolicyRunner
+from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -335,44 +333,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
     agent_cfg.policy.activation = args_cli.activation
-    if args_cli.bones_popart_balanced and args_cli.bones_popart_individual:
-        raise ValueError("--bones_popart_balanced and --bones_popart_individual are mutually exclusive.")
-    if hasattr(agent_cfg, "bones_popart"):
-        agent_cfg.bones_popart = dict(agent_cfg.bones_popart)
-        if args_cli.bones_popart or args_cli.bones_popart_balanced or args_cli.bones_popart_individual or args_cli.bones_no_popart_stats:
-            agent_cfg.bones_popart["enabled"] = True
-        if args_cli.bones_no_popart_stats:
-            agent_cfg.bones_popart["use_popart"] = False
-        if args_cli.bones_popart_beta is not None:
-            agent_cfg.bones_popart["beta"] = args_cli.bones_popart_beta
-        if args_cli.bones_popart_debiased_ema is not None:
-            agent_cfg.bones_popart["debiased"] = args_cli.bones_popart_debiased_ema
-        if args_cli.bones_popart_stats_dtype is not None:
-            agent_cfg.bones_popart["stats_dtype"] = args_cli.bones_popart_stats_dtype
+    if args_cli.popart_multihead:
+        agent_cfg.algorithm.use_popart_multihead = True
+        agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
+        agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
+        agent_cfg.algorithm.popart_actor_advantage_scaling = args_cli.popart_actor_advantage_scaling
 
-    # Auto-generate run name suffix from CLI flags
-    flag_suffix = f"{args_cli.ppo_output}_act-{args_cli.activation}"
-    if args_cli.bones_popart_balanced:
-        flag_suffix += "_popart-balanced"
-    if args_cli.bones_popart_individual:
-        flag_suffix += "_popart-individual"
-    if args_cli.bones_popart_debiased_ema:
-        flag_suffix += "_popart-debiased"
-    if args_cli.bones_popart_stats_dtype == "float64":
-        flag_suffix += "_popart-f64"
-    if args_cli.double_step:
-        flag_suffix += "_dstep"
-    if args_cli.crane:
-        flag_suffix += "_crane"
-    if args_cli.curriculum:
-        flag_suffix += "_curriculum"
-    if agent_cfg.run_name:
-        agent_cfg.run_name = f"{agent_cfg.run_name}_{flag_suffix}"
-    else:
-        agent_cfg.run_name = flag_suffix
     # Append sampling suffix to run name
     if args_cli.sampling == "uniform" and agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_uniform"
+    if args_cli.popart_multihead and agent_cfg.run_name:
+        agent_cfg.run_name = f"{agent_cfg.run_name}_popart"
 
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -423,7 +394,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         import wandb
         api = wandb.Api()
         artifact = api.artifact(registry_name)
-        env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
+        motion_path = str(pathlib.Path(artifact.download()) / "motion.npz")
+        if hasattr(env_cfg.commands.motion, "motion_files"):
+            env_cfg.commands.motion.motion_files = [motion_path]
+        else:
+            env_cfg.commands.motion.motion_file = motion_path
     else:
         raise ValueError("Either --zarr_path or --registry_name must be provided.")
 
@@ -474,9 +449,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    use_bones_popart = should_use_bones_popart_runner(agent_cfg)
-    if use_bones_popart:
-        env = BonesRewardVectorWrapper(env, reward_heads=agent_cfg.bones_popart.get("reward_heads"))
+    if args_cli.popart_multihead:
+        install_bones_per_term_reward_manager(env)
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
@@ -498,7 +472,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
 
     # create runner from rsl-rl
-    runner_cls = BonesOnPolicyRunner if use_bones_popart else OnPolicyRunner
+    runner_cls = BonesPopArtOnPolicyRunner if args_cli.popart_multihead else MotionOnPolicyRunner
     runner = runner_cls(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )

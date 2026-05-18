@@ -217,6 +217,8 @@ def spawn_terrain_from_urdf(
         translation=translation,
         orientation=orientation,
     )
+    if cfg.collision_props is not None:
+        sim_utils.define_collision_properties(f"{prim_path}/mesh", cfg.collision_props)
     
     # Apply rigid body properties if specified
     # Note: create_prim_from_mesh creates a mesh at {prim_path}/mesh, but we apply

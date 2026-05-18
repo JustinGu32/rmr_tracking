@@ -12,6 +12,8 @@ from whole_body_tracking.tasks.bones.mdp.commands import MotionCommand
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+FOOT_BODY_NAMES = ["left_ankle_roll_link", "right_ankle_roll_link"]
+
 
 def _get_body_indexes(command: MotionCommand, body_names: list[str] | None) -> list[int]:
     return [i for i, name in enumerate(command.cfg.body_names) if (body_names is None) or (name in body_names)]
@@ -116,6 +118,19 @@ def vr_orientation_relative_error_exp(
     )
     return torch.exp(-error.mean(-1) / std**2)
 
+def motion_feet_z_pos_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    std: float,
+    body_names: list[str] | None = None,
+) -> torch.Tensor:
+    """Dense reward for matching ankle/foot vertical (z) positions against the reference motion."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    feet = body_names or FOOT_BODY_NAMES
+    body_indexes = _get_body_indexes(command, feet)
+    z_error_sq = torch.square(command.body_pos_relative_w[:, body_indexes, 2] - command.robot_body_pos_w[:, body_indexes, 2])
+    return torch.exp(-z_error_sq.mean(-1) / std**2)
+
 def feet_contact_time(env: ManagerBasedRLEnv, sensor_cfg: SceneEntityCfg, threshold: float) -> torch.Tensor:
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
     first_air = contact_sensor.compute_first_air(env.step_dt, env.physics_dt)[:, sensor_cfg.body_ids]
@@ -135,7 +150,7 @@ def foot_contact_state_penalty(
     contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
 
     # Reference ankle world z-heights
-    ankle_indexes = _get_body_indexes(command, ["left_ankle_roll_link", "right_ankle_roll_link"])
+    ankle_indexes = _get_body_indexes(command, FOOT_BODY_NAMES)
     ref_ankle_z = command.body_pos_relative_w[:, ankle_indexes, 2]  # (N, 2)
 
     # Foot should be in the air if reference ankle z is above ground + threshold

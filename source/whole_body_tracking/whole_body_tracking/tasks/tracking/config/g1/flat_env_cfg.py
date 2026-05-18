@@ -7,11 +7,43 @@ from whole_body_tracking.tasks.tracking.tracking_collect_cfg import TrackingColl
 from whole_body_tracking.tasks.tracking.tracking_sim_cfg import TrackingSimCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationTermCfg as ObsTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
+from isaaclab.sensors import RayCasterCfg, patterns
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 import whole_body_tracking.tasks.tracking.mdp as mdp
 from whole_body_tracking.tasks.tracking.mdp.commands import MultiClipMotionCommandCfg
 import os
+
+
+def _add_videomimic_heightmap(self, *, policy: bool, critic: bool, diffusion_collect: bool):
+    self.scene.height_scanner = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/torso_link",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
+        attach_yaw_only=True,
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.1, size=(1.0, 1.0)),
+        debug_vis=False,
+        mesh_prim_paths=["/World/ground"],
+    )
+    if policy:
+        self.observations.policy.height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            clip=(-1.0, 1.0),
+        )
+    if critic:
+        self.observations.critic.height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
+        )
+    if diffusion_collect and getattr(self.observations, "diffusion_collect", None) is not None:
+        self.observations.diffusion_collect.height_scan = ObsTerm(
+            func=mdp.height_scan,
+            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
+            clip=(-1.0, 1.0),
+        )
 
 
 @configclass
@@ -96,6 +128,8 @@ class G1FlatCollectEnvCfg(TrackingCollectCfg):
             "right_elbow_link",
             "right_wrist_yaw_link",
         ]
+
+        _add_videomimic_heightmap(self, policy=False, critic=False, diffusion_collect=True)
 
 
 
@@ -244,6 +278,7 @@ class G1FlatMultiClipEnvCfg(G1FlatEnvCfg):
         self.observations.critic.clip_phase = ObsTerm(
             func=mdp.clip_phase, params={"command_name": "motion"}
         )
+        _add_videomimic_heightmap(self, policy=True, critic=True, diffusion_collect=False)
 
 
 @configclass
@@ -258,5 +293,4 @@ class G1FlatMultiClipPlayEnvCfg(G1FlatMultiClipEnvCfg):
         self.events.push_robot = None
         self.events.force_push_robot = None
         self.terminations.bad_anchor_pos_xy = None
-
 

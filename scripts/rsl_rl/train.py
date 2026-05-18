@@ -36,6 +36,11 @@ parser.add_argument("--future_steps", type=str, default=None, help="Comma-separa
 parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
 parser.add_argument("--num_steps_per_env", type=int, default=None, help="Override num rollout steps per env per iteration.")
 parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
+parser.add_argument("--heightmap", action="store_true", default=False, help="Enable task-configured height-map observations during training.")
+parser.add_argument("--heightmap_debug_vis", action="store_true", default=False, help="Show height-map raycaster debug visualization.")
+parser.add_argument("--depth_obs", action="store_true", default=False, help="Enable optional RGB-D camera depth observations.")
+parser.add_argument("--depth_debug_save_frames", action="store_true", default=False, help="Save a few normalized depth frames during rollout.")
+parser.add_argument("--depth_debug_max_frames", type=int, default=4, help="Maximum number of depth debug frames to save.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
@@ -53,7 +58,7 @@ AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
 # always enable cameras to record video
-if args_cli.video:
+if args_cli.video or args_cli.depth_obs:
     args_cli.enable_cameras = True
 
 # Export CLI flags as env vars so __post_init__ in env configs can read them
@@ -64,6 +69,11 @@ if args_cli.double_step:
     os.environ["BONES_DOUBLE_STEP"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
+if args_cli.depth_obs:
+    os.environ["WBT_USE_DEPTH_OBS"] = "1"
+if args_cli.depth_debug_save_frames:
+    os.environ["WBT_DEPTH_SAVE_FRAMES"] = "1"
+os.environ["WBT_DEPTH_DEBUG_MAX_FRAMES"] = str(args_cli.depth_debug_max_frames)
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 # if args_cli.assist_mode is not None:
 #     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
@@ -246,6 +256,84 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
         yaml.dump(data, f, default_flow_style=False, sort_keys=sort_keys)
 
 
+def print_height_map_obs_debug(env, env_cfg):
+    """Print enough state to verify height-map observations reached the built env."""
+    height_scanner_cfg = getattr(env_cfg.scene, "height_scanner", None)
+    print(f"[HEIGHT_MAP_DEBUG] scene.height_scanner configured: {height_scanner_cfg is not None}")
+    if height_scanner_cfg is not None:
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner prim_path: {height_scanner_cfg.prim_path}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner pattern: {height_scanner_cfg.pattern_cfg}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner mesh_prim_paths: {height_scanner_cfg.mesh_prim_paths}")
+        print(f"[HEIGHT_MAP_DEBUG] height_scanner update_period: {height_scanner_cfg.update_period}")
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        has_term = group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None
+        print(f"[HEIGHT_MAP_DEBUG] cfg observations.{group_name}.height_scan: {has_term}")
+
+    unwrapped = env.unwrapped
+    sensor_names = sorted(getattr(unwrapped.scene, "sensors", {}).keys())
+    print(f"[HEIGHT_MAP_DEBUG] built scene sensors: {sensor_names}")
+    obs_space = getattr(unwrapped, "observation_space", None)
+    if hasattr(obs_space, "spaces"):
+        for group_name, space in obs_space.spaces.items():
+            print(f"[HEIGHT_MAP_DEBUG] observation_space[{group_name}]: {space}")
+    else:
+        print(f"[HEIGHT_MAP_DEBUG] observation_space: {obs_space}")
+
+
+def print_depth_obs_debug(env, env_cfg):
+    """Print enough state to verify depth observations reached the built env."""
+    depth_cfg = getattr(env_cfg.scene, "depth_camera", None)
+    depth_term = getattr(getattr(env_cfg.observations, "policy", None), "depth_image", None)
+    print(f"[DEPTH_OBS_DEBUG] scene.depth_camera configured: {depth_cfg is not None}")
+    if depth_cfg is not None:
+        print(f"[DEPTH_OBS_DEBUG] depth_camera prim_path: {depth_cfg.prim_path}")
+        print(f"[DEPTH_OBS_DEBUG] depth_camera resolution: ({depth_cfg.height}, {depth_cfg.width})")
+        print(f"[DEPTH_OBS_DEBUG] depth_camera data_types: {depth_cfg.data_types}")
+    print(f"[DEPTH_OBS_DEBUG] cfg observations.policy.depth_image: {depth_term is not None}")
+
+    unwrapped = env.unwrapped
+    sensor_names = sorted(getattr(unwrapped.scene, "sensors", {}).keys())
+    print(f"[DEPTH_OBS_DEBUG] built scene sensors: {sensor_names}")
+    obs_manager = getattr(unwrapped, "observation_manager", None)
+    if obs_manager is not None:
+        print(f"[DEPTH_OBS_DEBUG] active observation terms: {obs_manager.active_terms}")
+        print(f"[DEPTH_OBS_DEBUG] observation term dims: {obs_manager.group_obs_term_dim}")
+    obs_space = getattr(unwrapped, "observation_space", None)
+    if hasattr(obs_space, "spaces"):
+        for group_name, space in obs_space.spaces.items():
+            print(f"[DEPTH_OBS_DEBUG] observation_space[{group_name}]: {space}")
+    else:
+        print(f"[DEPTH_OBS_DEBUG] observation_space: {obs_space}")
+
+
+def configure_height_map_obs(env_cfg, enabled: bool):
+    """Enable or remove task-provided height-map sensor and observation terms."""
+    height_scanner_cfg = getattr(env_cfg.scene, "height_scanner", None)
+    has_height_scan_term = False
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        if group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None:
+            has_height_scan_term = True
+
+    if enabled:
+        if height_scanner_cfg is None or not has_height_scan_term:
+            raise ValueError(
+                "--heightmap was passed, but this task does not define both scene.height_scanner "
+                "and observations.*.height_scan."
+            )
+        print("[HEIGHT_MAP_DEBUG] Enabled task-configured height-map observations.")
+        return
+
+    if height_scanner_cfg is not None:
+        env_cfg.scene.height_scanner = None
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        if group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None:
+            group_cfg.height_scan = None
+    if height_scanner_cfg is not None or has_height_scan_term:
+        print("[HEIGHT_MAP_DEBUG] Disabled task-configured height-map observations. Pass --heightmap to train with them.")
+
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
@@ -283,6 +371,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # Override decimation if provided
     if args_cli.decimation is not None:
         env_cfg.decimation = args_cli.decimation
+    configure_height_map_obs(env_cfg, args_cli.heightmap)
+    if getattr(env_cfg.scene, "height_scanner", None) is not None and args_cli.heightmap_debug_vis:
+        env_cfg.scene.height_scanner.debug_vis = True
+        print("[HEIGHT_MAP_DEBUG] Enabled height_scanner debug visualization.")
+    elif args_cli.heightmap_debug_vis:
+        print("[HEIGHT_MAP_DEBUG] Ignoring --heightmap_debug_vis because height-map observations are disabled.")
 
     # Override num_steps_per_env if provided
     if args_cli.num_steps_per_env is not None:
@@ -343,6 +437,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
+
+    print_height_map_obs_debug(env, env_cfg)
+    if args_cli.depth_obs:
+        print_depth_obs_debug(env, env_cfg)
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)

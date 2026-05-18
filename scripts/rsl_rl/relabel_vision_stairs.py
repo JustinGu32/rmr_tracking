@@ -2,6 +2,10 @@
 by replaying kinematic states in an Isaac Lab scene with a staircase,
 re-rendering camera views, and recomputing vision embeddings.
 
+Saves both original and horizontally-flipped embeddings for each frame to
+support symmetry-based data augmentation at training time
+(see https://arxiv.org/abs/2403.04359).
+
 Example command:
     python scripts/rsl_rl/relabel_vision_stairs.py \
         --task Tracking-Flat-G1-Collect-v0 \
@@ -168,6 +172,43 @@ def body_collides_with_staircase(
     return False
 
 
+def encode_rgb_pair(rgb_np: np.ndarray, processor, siglip_model, device):
+    """Encode original and horizontally-flipped RGB image in one batched forward pass.
+
+    Args:
+        rgb_np: (H, W, 3) uint8 array.
+    Returns:
+        (orig_embed, flip_embed): two (1, embed_dim) numpy arrays.
+    """
+    rgb_np_flip = rgb_np[:, ::-1, :].copy()  # left-right mirror
+    images = [Image.fromarray(rgb_np), Image.fromarray(rgb_np_flip)]
+    inputs = processor(images=images, return_tensors="pt").to(device)
+    inputs["pixel_values"] = inputs["pixel_values"].to(dtype=torch.float16)
+    outputs = siglip_model.vision_model(**inputs)
+    pooled = outputs.pooler_output.cpu().numpy()  # (2, embed_dim)
+    return pooled[0:1], pooled[1:2], rgb_np_flip
+
+
+def encode_depth_pair(depth_np: np.ndarray, defm_model, device):
+    """Encode original and horizontally-flipped depth image in one batched forward pass.
+
+    Args:
+        depth_np: (H, W) float array.
+    Returns:
+        (orig_embed, flip_embed): two (1, 1024) numpy arrays.
+    """
+    depth_np_flip = depth_np[:, ::-1].copy()  # left-right mirror
+    batch = np.stack([depth_np, depth_np_flip], axis=0)  # (2, H, W)
+    norm_depth = preprocess_depth_batch(
+        batch, target_size=518, patch_size=14, device=device,
+    ).float()
+    out = defm_model.get_intermediate_layers(
+        norm_depth, n=1, reshape=True, return_class_token=True,
+    )
+    class_tokens = out[0][1].cpu().numpy()  # (2, 1024)
+    return class_tokens[0:1], class_tokens[1:2]
+
+
 def main():
     device = args_cli.device if hasattr(args_cli, 'device') and args_cli.device else ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -210,12 +251,9 @@ def main():
     scene_cfg = env_cfg.scene
     scene_cfg.num_envs = 1
     if scene_cfg.depth_camera is not None:
-        # Replay writes one kinematic state per loop iteration, so force a fresh
-        # camera render every iteration instead of reusing the 10 Hz task default.
         scene_cfg.depth_camera.update_period = env_cfg.sim.dt
 
     if args_cli.with_stairs:
-        # ADD THE STAIRCASE to the scene
         scene_cfg.staircase = RigidObjectCfg(
             prim_path="{ENV_REGEX_NS}/Staircase",
             spawn=sim_utils.UrdfFileCfg(
@@ -230,9 +268,7 @@ def main():
                 rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             ),
             init_state=RigidObjectCfg.InitialStateCfg(
-                pos=(0.0, 0.0, 0.0),  # repositioned per-episode
-                # Rotate -90° around Z so staircase steps ascend along +X
-                # (URDF steps ascend along +Y; robot approaches along +X)
+                pos=(0.0, 0.0, 0.0),
                 rot=(0.7071068, 0.0, 0.0, -0.7071068),  # (w, x, y, z)
             ),
         )
@@ -246,7 +282,7 @@ def main():
     sim_dt = sim.get_physics_dt()
     robot = scene["robot"]
     camera = scene["depth_camera"]
-    env_origin = scene.env_origins[0]  # (3,) offset for env 0
+    env_origin = scene.env_origins[0]
     print(f"[INFO] env_origin = {env_origin}")
 
     # ---------------------------------------------------------
@@ -277,7 +313,7 @@ def main():
         pretrained=True,
         trust_repo=True,
     ).eval().to(device=device)
-    depth_embed_dim = 1024  # DeFM ViT-L14 class token size
+    depth_embed_dim = 1024
 
     # ---------------------------------------------------------
     # 4. INITIALIZE NEW REPLAY BUFFER
@@ -287,7 +323,6 @@ def main():
         storage=zarr.DirectoryStore(args_cli.new_zarr_path)
     )
 
-    # Copy metadata from old buffer and add relabeling info
     metadata = {
         'source_zarr': str(args_cli.old_zarr_path),
         'with_stairs': args_cli.with_stairs,
@@ -297,6 +332,7 @@ def main():
         'first_step_face_offset_m': FIRST_STEP_FACE_OFFSET_M,
         'cutoff_margin': DISTANCE_THRESHOLD,
         'relabeled': True,
+        'has_flip_embeds': True,  # NEW: signal to downstream consumers
     }
     new_buff.update_meta(metadata)
 
@@ -308,11 +344,9 @@ def main():
     skipped_episodes = 0
     collision_episodes = 0
 
-    # Directory for debug frames (first episode only)
     debug_dir = Path(args_cli.new_zarr_path).parent / "debug_frames"
     debug_dir.mkdir(parents=True, exist_ok=True)
 
-    # Video output directory
     if args_cli.save_video:
         video_dir = Path(args_cli.new_zarr_path).parent / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
@@ -320,32 +354,28 @@ def main():
         print(f"[INFO] Video recording enabled: saving to {video_dir} at {video_fps} fps")
 
     for ep in tqdm(range(num_episodes), desc="Relabeling episodes"):
-        # Get episode data from old buffer
         ep_data = old_buff.get_episode(ep)
 
-        ep_root_pos = torch.tensor(ep_data['root_pos'], device=device, dtype=torch.float32)   # (T, 3)
-        ep_root_rot = torch.tensor(ep_data['root_rot'], device=device, dtype=torch.float32)   # (T, 4)
-        ep_joint_pos = torch.tensor(ep_data['joint_pos'], device=device, dtype=torch.float32) # (T, 29)
-        ep_joint_vel = torch.tensor(ep_data['joint_vel'], device=device, dtype=torch.float32) # (T, 29)
+        ep_root_pos = torch.tensor(ep_data['root_pos'], device=device, dtype=torch.float32)
+        ep_root_rot = torch.tensor(ep_data['root_rot'], device=device, dtype=torch.float32)
+        ep_joint_pos = torch.tensor(ep_data['joint_pos'], device=device, dtype=torch.float32)
+        ep_joint_vel = torch.tensor(ep_data['joint_vel'], device=device, dtype=torch.float32)
 
         ep_steps = ep_root_pos.shape[0]
 
         # --- PER-EPISODE STAIRCASE PLACEMENT ---
-        # Use the robot's final heading so the lowest stair faces the robot head-on.
         end_pos_xy = ep_root_pos[-1, :2].cpu().numpy()
         final_root_quat = ep_root_rot[-1].cpu().numpy()
         facing_yaw = yaw_from_quat_wxyz(final_root_quat)
         facing_dir = np.array([np.cos(facing_yaw), np.sin(facing_yaw)], dtype=np.float32)
 
-        # Keep the trajectory direction as a fallback/debug signal.
-        k = min(10, ep_steps - 1)  # use last 10 points for stable direction
+        k = min(10, ep_steps - 1)
         start_window = ep_root_pos[-(k+1), :2].cpu().numpy()
         walk_dir = end_pos_xy - start_window
         walk_dist = np.linalg.norm(walk_dir)
         if walk_dist > 1e-3:
             walk_dir = walk_dir / walk_dist
         else:
-            # Fallback: use full trajectory direction
             walk_dir = end_pos_xy - ep_root_pos[0, :2].cpu().numpy()
             d = np.linalg.norm(walk_dir)
             walk_dir = walk_dir / d if d > 1e-3 else np.array([1.0, 0.0])
@@ -358,8 +388,6 @@ def main():
             facing_dir = facing_dir / facing_norm
 
         if args_cli.with_stairs:
-            # Place the first-step face ahead of the robot, then shift the staircase
-            # root farther along the ascent direction by the mesh offset.
             first_step_xy = end_pos_xy + facing_dir * STAIRCASE_AHEAD_M
             staircase_xy = first_step_xy + facing_dir * FIRST_STEP_FACE_OFFSET_M
             staircase_pos_world = torch.tensor(
@@ -369,17 +397,13 @@ def main():
                 device=device, dtype=torch.float32,
             )
 
-            # Orient staircase so the staircase ascent points along the robot's forward
-            # direction. That makes the lowest step face the robot head-on.
-            # The URDF steps ascend in +Y. After a -90° base rotation, they ascend in +X.
             total_yaw = facing_yaw - np.pi / 2.0 + STAIRCASE_YAW_BIAS_RAD
             half = total_yaw / 2.0
             stair_quat = torch.tensor(
-                [np.cos(half), 0.0, 0.0, np.sin(half)],  # (w, x, y, z) around Z
+                [np.cos(half), 0.0, 0.0, np.sin(half)],
                 device=device, dtype=torch.float32,
             )
 
-            # Reposition staircase rigid body in sim
             staircase_asset = scene["staircase"]
             stair_state = staircase_asset.data.root_state_w[0:1].clone()
             stair_state[0, 0:3] = staircase_pos_world
@@ -407,9 +431,12 @@ def main():
                       f"traj_yaw={np.degrees(traj_yaw):.0f}°, "
                       f"facing_yaw={np.degrees(facing_yaw):.0f}°, no stairs")
 
+        # Per-episode embedding accumulators (originals + flips)
         ep_rgb_embeds = []
+        ep_rgb_embeds_flip = []
         ep_depth_embeds = []
-        ep_video_frames = []  # for video recording
+        ep_depth_embeds_flip = []
+        ep_video_frames = []
         valid_steps = 0
         collision_detected = False
         collision_step = None
@@ -417,7 +444,6 @@ def main():
         for step in range(ep_steps):
           with torch.inference_mode():
             if args_cli.with_stairs:
-                # --- CUTOFF: 2D distance to the first step face ---
                 pos_xy = ep_root_pos[step, :2].cpu().numpy()
                 dist_to_first_step = float(np.linalg.norm(pos_xy - first_step_xy))
                 if dist_to_first_step < DISTANCE_THRESHOLD:
@@ -434,13 +460,11 @@ def main():
                     collision_step = step
                     break
 
-            # --- OVERRIDE SIMULATOR STATE (full 13-dim root state) ---
+            # --- OVERRIDE SIMULATOR STATE ---
             root_state = torch.zeros(1, 13, device=device)
             root_state[0, 0:3] = ep_root_pos[step] + env_origin
             root_state[0, 3:7] = ep_root_rot[step]
-            # Use stored velocities if available, otherwise leave as zeros
             if 'body_lin_vel' in ep_data:
-                # body_lin_vel is flattened (T, num_bodies*3), root is body 0
                 num_bodies = ep_data['body_lin_vel'].shape[-1] // 3
                 root_lin_vel = ep_data['body_lin_vel'][step].reshape(num_bodies, 3)[0]
                 root_state[0, 7:10] = torch.tensor(root_lin_vel, device=device, dtype=torch.float32)
@@ -456,44 +480,36 @@ def main():
                 env_ids=torch.tensor([0], device=device),
             )
 
-            # --- Step sim with render to guarantee camera sensor refresh ---
             sim.step(render=True)
             scene.update(dt=sim.get_physics_dt())
 
-            # --- EXTRACT AND PROCESS IMAGES ---
-            rgb_image = camera.data.output["rgb"][0]     # (H, W, 4) or (H, W, 3)
-            depth_image = camera.data.output["depth"][0] # (H, W, 1)
+            # --- EXTRACT IMAGES ---
+            rgb_image = camera.data.output["rgb"][0]
+            depth_image = camera.data.output["depth"][0]
 
-            # Process RGB → Siglip2 embedding
             rgb_np = rgb_image[..., :3].cpu().numpy().astype(np.uint8)
+            depth_np = depth_image.squeeze(-1).cpu().numpy()
 
-            # Save debug frames for first episode
+            # --- ENCODE RGB (original + horizontal flip in one batched pass) ---
+            rgb_orig_emb, rgb_flip_emb, rgb_np_flip = encode_rgb_pair(
+                rgb_np, processor, siglip_model, device,
+            )
+            ep_rgb_embeds.append(rgb_orig_emb)
+            ep_rgb_embeds_flip.append(rgb_flip_emb)
+
+            # --- ENCODE DEPTH (original + horizontal flip in one batched pass) ---
+            depth_orig_emb, depth_flip_emb = encode_depth_pair(depth_np, defm_model, device)
+            ep_depth_embeds.append(depth_orig_emb)
+            ep_depth_embeds_flip.append(depth_flip_emb)
+
+            # Save debug frames for first episode (both original and flipped)
             if ep == 0 and step % 10 == 0:
                 Image.fromarray(rgb_np).save(str(debug_dir / f"ep0_step{step:04d}.png"))
+                Image.fromarray(rgb_np_flip).save(str(debug_dir / f"ep0_step{step:04d}_flip.png"))
 
-            # Accumulate frames for video
+            # Accumulate frames for video (only originals; videos are sanity checks)
             if args_cli.save_video and saved_episodes < args_cli.max_video_episodes:
                 ep_video_frames.append(rgb_np.copy())
-
-            inputs_rgb = processor(images=[Image.fromarray(rgb_np)], return_tensors="pt").to(device)
-            inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
-            outputs_rgb = siglip_model.vision_model(**inputs_rgb)
-            ep_rgb_embeds.append(outputs_rgb.pooler_output.cpu().numpy())  # (1, embed_dim)
-            del inputs_rgb, outputs_rgb
-
-            # Process Depth → DeFM embedding
-            depth_np = depth_image.squeeze(-1).cpu().numpy()  # (H, W)
-            norm_depth = preprocess_depth_batch(
-                np.expand_dims(depth_np, 0),  # (1, H, W)
-                target_size=518,
-                patch_size=14,
-                device=device,
-            ).float()
-            output_depth = defm_model.get_intermediate_layers(
-                norm_depth, n=1, reshape=True, return_class_token=True
-            )
-            ep_depth_embeds.append(output_depth[0][1].cpu().numpy())  # (1, 1024)
-            del norm_depth, output_depth
 
             valid_steps += 1
 
@@ -509,7 +525,6 @@ def main():
             collision_episodes += 1
             print(f"[INFO] Skipping ep {ep}: staircase collision detected at step {collision_step}.")
         elif valid_steps > 0:
-            # Build episode dict: copy non-vision fields from old data, sliced to valid_steps
             episode_data = {
                 "body_pos": np.array(ep_data['body_pos'][:valid_steps]),
                 "body_rot": np.array(ep_data['body_rot'][:valid_steps]),
@@ -518,12 +533,12 @@ def main():
                 "root_pos": np.array(ep_data['root_pos'][:valid_steps]),
                 "root_rot": np.array(ep_data['root_rot'][:valid_steps]),
                 "act": np.array(ep_data['act'][:valid_steps]),
-                # New vision embeddings
-                "rgb_embed": np.concatenate(ep_rgb_embeds, axis=0),    # (valid_steps, embed_dim)
-                "depth_embed": np.concatenate(ep_depth_embeds, axis=0), # (valid_steps, 1024)
+                "rgb_embed":           np.concatenate(ep_rgb_embeds, axis=0),
+                "rgb_embed_flipped":   np.concatenate(ep_rgb_embeds_flip, axis=0),
+                "depth_embed":         np.concatenate(ep_depth_embeds, axis=0),
+                "depth_embed_flipped": np.concatenate(ep_depth_embeds_flip, axis=0),
             }
 
-            # Copy body_lin_vel and body_ang_vel if they exist in old data
             if 'body_lin_vel' in ep_data:
                 episode_data["body_lin_vel"] = np.array(ep_data['body_lin_vel'][:valid_steps])
             if 'body_ang_vel' in ep_data:
@@ -532,7 +547,6 @@ def main():
             new_buff.add_episode(episode_data)
             saved_episodes += 1
 
-            # Save video for this episode
             if args_cli.save_video and len(ep_video_frames) > 0 and saved_episodes <= args_cli.max_video_episodes:
                 vid_path = str(video_dir / f"ep{ep:04d}.mp4")
                 imageio.mimwrite(vid_path, ep_video_frames, fps=video_fps, quality=8)

@@ -74,6 +74,18 @@ parser.add_argument("--num_eps_collect", type=int, default=500, help="num of epi
 
 parser.add_argument("--motion_file", type=str, default=None, help="Motion File")
 parser.add_argument("--save_folder", type=str, default=None, help="save folder")
+parser.add_argument(
+    "--dump_raw_depth_dir",
+    type=str,
+    default=None,
+    help="Optional directory to save raw pre-encoding depth frames as .npy files.",
+)
+parser.add_argument(
+    "--dump_raw_depth_limit",
+    type=int,
+    default=1,
+    help="Maximum number of raw depth frames to dump when --dump_raw_depth_dir is set.",
+)
 
 parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
@@ -136,6 +148,59 @@ from whole_body_tracking.utils.defm_utils import preprocess_depth_batch
 from PIL import Image
 
 
+def _parse_model_checkpoint_iteration(filename: str) -> int | None:
+    """Return the numeric step from `model_<step>.pt`, or None if it does not match."""
+    if not filename.startswith("model_") or not filename.endswith(".pt"):
+        return None
+    try:
+        return int(filename.split("_", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return None
+
+
+def _resolve_wandb_checkpoint(api, wandb_path: str):
+    """Resolve a wandb path to a run, checkpoint filename, and downloadable file."""
+    requested_file = None
+    run_path = wandb_path
+    maybe_file = wandb_path.rsplit("/", 1)[-1]
+    if _parse_model_checkpoint_iteration(maybe_file) is not None:
+        requested_file = maybe_file
+        run_path = wandb_path.rsplit("/", 1)[0]
+
+    wandb_run = api.run(run_path)
+
+    if requested_file is not None:
+        wandb_file = wandb_run.file(requested_file)
+        if wandb_file is None:
+            raise RuntimeError(
+                f"Requested wandb checkpoint '{requested_file}' was not found in run '{run_path}'."
+            )
+        return wandb_run, run_path, requested_file, wandb_file
+
+    try:
+        run_files = list(wandb_run.files())
+    except TypeError as exc:
+        raise RuntimeError(
+            f"W&B returned an empty file listing for run '{run_path}'. "
+            "Pass an explicit checkpoint path like 'entity/project/run_id/model_500.pt', "
+            "or verify that the run uploaded checkpoint files."
+        ) from exc
+
+    model_files = []
+    for wandb_file in run_files:
+        step = _parse_model_checkpoint_iteration(wandb_file.name)
+        if step is not None:
+            model_files.append((step, wandb_file))
+
+    if not model_files:
+        raise RuntimeError(
+            f"No uploaded checkpoint files matching 'model_<step>.pt' were found in run '{run_path}'."
+        )
+
+    _, latest_file = max(model_files, key=lambda item: item[0])
+    return wandb_run, run_path, latest_file.name, latest_file
+
+
 def main():
     """Play with RSL-RL agent."""
     # parse configuration
@@ -170,22 +235,10 @@ def main():
 
     if args_cli.wandb_path:
         import wandb
-        run_path = args_cli.wandb_path
 
         api = wandb.Api()
-        if 'model' in args_cli.wandb_path:
-            run_path = '/'.join(args_cli.wandb_path.split('/')[:-1])
-        wandb_run = api.run(run_path)
-        # loop over files in the run
-        files = [file.name for file in wandb_run.files() if 'model' in file.name]
-        # files are all model_xxx.pt find the largest filename
-        
-        if 'model' in args_cli.wandb_path:
-            file = args_cli.wandb_path.split('/')[-1]
-        else:
-            file = max(files, key=lambda x: int(x.split('_')[1].split('.')[0]))
+        wandb_run, run_path, file, wandb_file = _resolve_wandb_checkpoint(api, args_cli.wandb_path)
 
-        wandb_file = wandb_run.file(str(file))
         wandb_file.download(f"./logs/rsl_rl/temp", replace=True)
 
         print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
@@ -350,6 +403,7 @@ def main():
     # Get hidden size from the vision component properly
     rgb_embed_dim = siglip_model.vision_model.config.hidden_size
     recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+    recorded_rgb_embed_flipped_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
 
     # DeFM Embeddings Storage
     # Initialize DeFM Model
@@ -364,6 +418,13 @@ def main():
     defm_model = defm_model.eval().to(device=args_cli.device)
     depth_embed_dim = 1024 # DeFM ViT-L14 class token size
     recorded_depth_embed_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
+    recorded_depth_embed_flipped_episode = np.zeros((num_envs, 2000, depth_embed_dim), dtype=np.float32)
+    raw_depth_dump_dir = None
+    dumped_raw_depth_count = 0
+    if args_cli.dump_raw_depth_dir is not None:
+        raw_depth_dump_dir = Path(args_cli.dump_raw_depth_dir)
+        raw_depth_dump_dir.mkdir(parents=True, exist_ok=True)
+        print(f"[INFO] Dumping up to {args_cli.dump_raw_depth_limit} raw depth frames to: {raw_depth_dump_dir}")
 
     # OU parameters
     theta = .8 # 0 #0.4  # mean reversion rate
@@ -494,9 +555,21 @@ def main():
             # rgb_to_save: (B, H, W, 3) 
             rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
             rgb_images = [Image.fromarray(img) for img in rgb_np]
+            rgb_np_flipped = np.flip(rgb_np, axis=2).copy()
+            rgb_images_flipped = [Image.fromarray(img) for img in rgb_np_flipped]
 
             # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
             depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
+            depth_np_flipped = np.flip(depth_np, axis=2).copy()
+            if raw_depth_dump_dir is not None and dumped_raw_depth_count < args_cli.dump_raw_depth_limit:
+                dump_count = min(num_envs, args_cli.dump_raw_depth_limit - dumped_raw_depth_count)
+                for env_offset in range(dump_count):
+                    dump_path = raw_depth_dump_dir / f"depth_ep{int(num_epi[env_offset]):05d}_step{curr_idx:04d}_env{env_offset}.npy"
+                    np.save(dump_path, depth_np[env_offset].astype(np.float32))
+                    print(f"[INFO] Saved raw depth frame to {dump_path}")
+                    dumped_raw_depth_count += 1
+                    if dumped_raw_depth_count >= args_cli.dump_raw_depth_limit:
+                        break
             # Normalize depth for visualization-like input if needed, or just replicate channels
             # Here we replicate channels to make it (H, W, 3) grayscale-like
             # depth_images = []
@@ -509,6 +582,7 @@ def main():
                     
                     # --- Process RGB in batches ---
                     rgb_embeds_list = []
+                    rgb_embeds_flipped_list = []
                     for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
                         batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
                         inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
@@ -516,12 +590,20 @@ def main():
                         
                         outputs_rgb = siglip_model.vision_model(**inputs_rgb)
                         rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
+
+                        batch_imgs_flipped = rgb_images_flipped[i : i + VISION_BATCH_SIZE]
+                        inputs_rgb_flipped = processor(images=batch_imgs_flipped, return_tensors="pt").to(device)
+                        inputs_rgb_flipped["pixel_values"] = inputs_rgb_flipped["pixel_values"].to(dtype=torch.float16)
+
+                        outputs_rgb_flipped = siglip_model.vision_model(**inputs_rgb_flipped)
+                        rgb_embeds_flipped_list.append(outputs_rgb_flipped.pooler_output.cpu())
                         
                         # Cleanup
-                        del inputs_rgb, outputs_rgb
+                        del inputs_rgb, outputs_rgb, inputs_rgb_flipped, outputs_rgb_flipped
                         # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
                     
                     rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
+                    rgb_embeds_flipped = torch.cat(rgb_embeds_flipped_list, dim=0)
                     
                     # For saving, we want numpy anyway, so keeping on CPU is perfect.
                     # But the code below expects `rgb_embeds` to have a .cpu() method or be a tensor.
@@ -534,9 +616,11 @@ def main():
                     batch_depth_np = batch_depth.cpu().numpy()
                     
                     depth_embeds_list = []
+                    depth_embeds_flipped_list = []
                     for i in range(0, len(batch_depth_np), VISION_BATCH_SIZE):
                         # 1. Get chunk of raw depth (numpy, CPU)
                         batch_depth_chunk_np = batch_depth_np[i : i + VISION_BATCH_SIZE]
+                        batch_depth_chunk_flipped_np = depth_np_flipped[i : i + VISION_BATCH_SIZE]
                         
                         # 2. Preprocess just this chunk (moves to GPU inside function)
                         normalized_depth_chunk = preprocess_depth_batch(
@@ -546,21 +630,35 @@ def main():
                             device=device
                         )
                         normalized_depth_chunk = normalized_depth_chunk.float()
+                        normalized_depth_chunk_flipped = preprocess_depth_batch(
+                            batch_depth_chunk_flipped_np,
+                            target_size=518,
+                            patch_size=14,
+                            device=device
+                        )
+                        normalized_depth_chunk_flipped = normalized_depth_chunk_flipped.float()
 
                         # 3. Run Inference
                         output = defm_model.get_intermediate_layers(
                             normalized_depth_chunk, n=1, reshape=True, return_class_token=True
                         )
                         depth_embeds_list.append(output[0][1].cpu()) # Move result to CPU immediately
+                        output_flipped = defm_model.get_intermediate_layers(
+                            normalized_depth_chunk_flipped, n=1, reshape=True, return_class_token=True
+                        )
+                        depth_embeds_flipped_list.append(output_flipped[0][1].cpu())
                         
                         # 4. Cleanup GPU tensors for this chunk
-                        del normalized_depth_chunk, output
+                        del normalized_depth_chunk, output, normalized_depth_chunk_flipped, output_flipped
                         
                     depth_embeds = torch.cat(depth_embeds_list, dim=0)
+                    depth_embeds_flipped = torch.cat(depth_embeds_flipped_list, dim=0)
                 
                 # Arrays are already on CPU if we used .cpu() above, but .cpu() is safe to call on CPU tensors too.
                 recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
+                recorded_rgb_embed_flipped_episode[np.arange(num_envs), curr_idx] = rgb_embeds_flipped.cpu().numpy()
                 recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
+                recorded_depth_embed_flipped_episode[np.arange(num_envs), curr_idx] = depth_embeds_flipped.cpu().numpy()
             except Exception as e:
                 print(f"Error in Siglip2 embedding: {e}")
                 traceback.print_exc()
@@ -612,6 +710,9 @@ def main():
             
             step += 1
 
+            if step % 10 == 0:
+                print("[DEBUG] sim step", step, "saved_epi", saved_epi, flush=True)
+
             if len(done_indices) > 0:
                 env_ids = done_indices.to("cpu").detach().numpy()
                 # import ipdb; ipdb.set_trace()
@@ -640,11 +741,12 @@ def main():
                             ep_obs = np.copy(recorded_obs_episode[env_ids[i], :epi_len])
                             ep_acs = np.copy(recorded_acs_episode[env_ids[i], :epi_len])
                             ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
+                            ep_rgb_embed_flipped = np.copy(recorded_rgb_embed_flipped_episode[env_ids[i], :epi_len])
                             ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
-
+                            ep_depth_embed_flipped = np.copy(recorded_depth_embed_flipped_episode[env_ids[i], :epi_len])
                             # Save to Zarr immediately
                             print(f"[INFO] Saving episode for env {env_ids[i]} to ReplayBuffer...")
-                            buff.add_episode({
+                            episode_data = {
                                 "body_pos": ep_obs[:,: num_bodies * 3],
                                 "body_rot": ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4],
                                 "body_lin_vel": ep_obs[:, num_bodies * 7 : num_bodies * 10],
@@ -655,8 +757,11 @@ def main():
                                 "root_rot": (ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
                                 "act": ep_acs[:],
                                 "rgb_embed": ep_rgb_embed,
+                                "rgb_embed_flipped": ep_rgb_embed_flipped,
                                 "depth_embed": ep_depth_embed,
-                            })
+                                "depth_embed_flipped": ep_depth_embed_flipped,
+                            }
+                            buff.add_episode(episode_data)
 
                             saved_idx += epi_len
                             saved_epi += 1
@@ -672,7 +777,9 @@ def main():
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
                     recorded_rgb_embed_episode[env_ids[i]] = 0
+                    recorded_rgb_embed_flipped_episode[env_ids[i]] = 0
                     recorded_depth_embed_episode[env_ids[i]] = 0
+                    recorded_depth_embed_flipped_episode[env_ids[i]] = 0
 
                     if saved_epi >= NUM_EPISODE:
                         print(f"Collected {saved_epi} episodes. Usage limit reached.")

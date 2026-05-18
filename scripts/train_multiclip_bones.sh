@@ -12,7 +12,9 @@
 mkdir -p logs/slurm
 
 cd /move/u/karenvo/Projects/rmr_tracking/
+cd /move/u/karenvo/Projects/rmr_tracking/
 
+source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 

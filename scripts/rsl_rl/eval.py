@@ -24,6 +24,7 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
 parser.add_argument("--push", action="store_true", default=False, help="Enable push perturbations during evaluation.")
 parser.add_argument("--push_feet", action="store_true", default=False, help="Enable force push perturbations on feet/pelvis during evaluation.")
+parser.add_argument("--depth_obs", action="store_true", default=False, help="Enable optional RGB-D camera depth observations.")
 parser.add_argument("--results_dir", type=str, default="eval_results", help="Directory to save result JSON files.")
 parser.add_argument("--results_name", type=str, default=None, help="Filename for the result JSON (without .json extension).")
 # append RSL-RL cli arguments
@@ -36,6 +37,9 @@ if args_cli.push:
     os.environ["WBT_PUSH"] = "1"
 if args_cli.push_feet:
     os.environ["WBT_PUSH_FEET"] = "1"
+if args_cli.depth_obs:
+    os.environ["WBT_USE_DEPTH_OBS"] = "1"
+    args_cli.enable_cameras = True
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args

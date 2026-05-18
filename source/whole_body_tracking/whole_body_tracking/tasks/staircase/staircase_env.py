@@ -42,6 +42,11 @@ class StaircaseEnv(ManagerBasedRLEnv):
         self.extras["log"]["contact/total_foot_force"] = float(
             (torch.norm(forces[:, left_idx], dim=-1) + torch.norm(forces[:, right_idx], dim=-1)).mean()
         )
+        if hasattr(self, "_last_depth_obs_mean"):
+            self.extras["log"]["depth/mean"] = float(self._last_depth_obs_mean)
+            self.extras["log"]["depth/std"] = float(getattr(self, "_last_depth_obs_std", 0.0))
+            self.extras["log"]["depth/batch_mean_std"] = float(getattr(self, "_last_depth_obs_batch_std", 0.0))
+            self.extras["log"]["depth/nonfinite_count"] = float(getattr(self, "_last_depth_obs_nonfinite_count", 0))
 
         return result
 
