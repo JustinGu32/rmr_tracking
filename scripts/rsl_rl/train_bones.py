@@ -31,6 +31,7 @@ parser.add_argument("--motion_file", type=str, default=None, help="Path to a loc
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
+parser.add_argument("--terrain_noise", action="store_true", default=False, help="Enable ~0.5-1 cm random-bump terrain to discourage foot dragging / double steps.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
@@ -49,6 +50,12 @@ parser.add_argument("--sampling", type=str, default="adaptive", choices=["adapti
 parser.add_argument("--include_motion_types", type=str, default=None,
                     help="Comma-separated keywords to restrict training clips by clip_name (case-insensitive substring, OR semantics). "
                          "E.g., 'walk,jog' keeps any clip whose name contains 'walk' or 'jog'. Applied after object-scene exclusion.")
+parser.add_argument("--include_clip_names_file", type=str, default=None,
+                    help="Path to a JSON file containing a list of EXACT clip names to keep "
+                         "(case-sensitive, set-membership). Applied AFTER --include_motion_types "
+                         "(intersection — a clip must pass both filters). Used for specialist training "
+                         "and DAgger on a precomputed failed-clip subset. The JSON must be a flat list, "
+                         "e.g. [\"clip_name_a\", \"clip_name_b\", ...].")
 # Popart-task-only override: drives include filter, number of categories, and the
 # categorizer itself from one comma-separated list. Ignored by non-popart tasks.
 # Order matters — a clip matching multiple keywords is bucketed by the first match
@@ -108,6 +115,8 @@ if args_cli.curriculum:
 if args_cli.double_step:
     os.environ["WBT_DOUBLE_STEP"] = "1"
     os.environ["BONES_DOUBLE_STEP"] = "1"
+if args_cli.terrain_noise:
+    os.environ["WBT_TERRAIN_NOISE"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
@@ -378,6 +387,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             kws = [s.strip() for s in args_cli.include_motion_types.split(",") if s.strip()]
             env_cfg.commands.motion.include_motion_types = kws
             print(f"[INFO] Restricting clips by motion-type keywords: {kws}")
+        # Exact-name filter (used by specialist training & DAgger). Applied via the
+        # popart cfg field `include_clip_names`, intersected with `include_motion_types`
+        # inside the ZarrMotionLoader. JSON file must contain a flat list of names.
+        if args_cli.include_clip_names_file is not None and hasattr(env_cfg.commands.motion, "include_clip_names"):
+            import json as _json
+            with open(args_cli.include_clip_names_file, "r") as _f:
+                _clip_names = _json.load(_f)
+            if not isinstance(_clip_names, list) or not all(isinstance(n, str) for n in _clip_names):
+                raise ValueError(
+                    f"--include_clip_names_file must contain a flat JSON list of strings; "
+                    f"got type={type(_clip_names).__name__} from {args_cli.include_clip_names_file}"
+                )
+            env_cfg.commands.motion.include_clip_names = _clip_names
+            print(f"[INFO] Restricting clips by exact names: {len(_clip_names)} clip(s) "
+                  f"from {args_cli.include_clip_names_file}")
         # Popart-task `categories` override (single source of truth — drives
         # num_categories, the categorizer, and the include filter all at once).
         if args_cli.categories is not None and hasattr(env_cfg.commands.motion, "categories"):
@@ -534,12 +558,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "ppo_output": args_cli.ppo_output,
                         "activation": args_cli.activation,
                         "double_step": args_cli.double_step,
+                        "terrain_noise": args_cli.terrain_noise,
                         "include_objects": args_cli.include_objects,
                         "layer_norm": args_cli.layer_norm,
                         "decimation": args_cli.decimation,
                         "future_steps": args_cli.future_steps,
                         "wandb_resume": args_cli.wandb_resume,
                         "include_motion_types": args_cli.include_motion_types,
+                        "include_clip_names_file": args_cli.include_clip_names_file,
                         "categories": args_cli.categories,
                         "popart": args_cli.popart,
                         "sampling_mode": args_cli.sampling_mode,

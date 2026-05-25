@@ -14,6 +14,8 @@ from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.terrains import TerrainImporterCfg
+import isaaclab.terrains as terrain_gen
+from isaaclab.terrains.terrain_generator_cfg import TerrainGeneratorCfg
 import os
 
 ##
@@ -74,6 +76,29 @@ VELOCITY_RANGE_COLLECT2= {
     "pitch": (-0.02, 0.02),
     "yaw": (-0.02, 0.02),
 }
+
+
+# Small-bump terrain used to discourage foot dragging / double-stepping. The
+# noise range is sized to roughly one foot-clearance (avg human clearance while
+# walking ~1 cm), so a dragged/extra step is likely to stub a bump and stumble.
+# Opt-in via WBT_TERRAIN_NOISE=1 (see PopartEnvCfg.__post_init__). noise_step is
+# the quantization of the height samples, so bumps land on {0.5 cm, 1.0 cm}.
+FOOT_CLEARANCE_TERRAINS_CFG = TerrainGeneratorCfg(
+    size=(8.0, 8.0),
+    border_width=20.0,
+    num_rows=10,
+    num_cols=20,
+    horizontal_scale=0.1,
+    vertical_scale=0.005,
+    slope_threshold=0.75,
+    use_cache=False,
+    sub_terrains={
+        "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
+            proportion=1.0, noise_range=(0.000, 0.01), noise_step=0.005, border_width=0.25
+        ),
+    },
+)
+"""Random-uniform rough terrain with ~0.5-1 cm bumps for foot-clearance training."""
 
 
 @configclass
@@ -485,6 +510,22 @@ class PopartEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        # Terrain randomization: off by default (flat plane), enabled via
+        # WBT_TERRAIN_NOISE=1. Swaps the flat plane for a random-uniform rough
+        # field with ~0.5-1 cm bumps to discourage foot dragging / double steps.
+        if os.environ.get("WBT_TERRAIN_NOISE") == "1":
+            self.scene.terrain = TerrainImporterCfg(
+                prim_path="/World/ground",
+                terrain_type="generator",
+                terrain_generator=FOOT_CLEARANCE_TERRAINS_CFG,
+                max_init_terrain_level=None,
+                collision_group=-1,
+                physics_material=self.scene.terrain.physics_material,
+                visual_material=self.scene.terrain.visual_material,
+                debug_vis=False,
+            )
+            self.sim.physics_material = self.scene.terrain.physics_material
 
         # PPO output mode: delta uses ReferenceJointPositionAction (x_ref + raw_action),
         # target uses standard JointPositionAction (default_pos + scale * raw_action)

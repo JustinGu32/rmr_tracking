@@ -284,7 +284,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         """Loads a single clip at local frames [0, L), rebasing clip_start/end_idx."""
 
         def __init__(self, zarr_path, body_indexes, device="cpu",
-                     exclude_props=None, max_clips=None, include_keywords=None):
+                     exclude_props=None, max_clips=None, include_keywords=None,
+                     include_clip_names=None):
+            # `include_clip_names` is plumbed by MultiClipMotionCommand for the
+            # train/eval path's exact-name filter. Ignored here because we're
+            # already pinning to a single resolved clip via _target_clip_id.
             # Skip super().__init__() deliberately — it eagerly loads the full zarr.
             store = _zarr.open(zarr_path, mode="r")
             self.fps = int(store["fps"][0])
@@ -409,7 +413,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         _RunnerCls = MotionOnPolicyRunner
     ppo_runner = _RunnerCls(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    ppo_runner.load(resume_path)
+    # # OLD: ppo_runner.load(resume_path)
+    # # Mirror eval_specialist_pool.py: DAgger-saved .pt files may be missing
+    # # `infos` / `optimizer_state_dict`. Inject empty `infos` if absent and
+    # # skip optimizer loading — both are inference-irrelevant.
+    _loaded = torch.load(resume_path, weights_only=False, map_location="cpu")
+    if "infos" not in _loaded:
+        _loaded["infos"] = {}
+        torch.save(_loaded, resume_path)
+        print(f"[INFO] injected missing 'infos' key into {resume_path}")
+    ppo_runner.load(resume_path, load_optimizer=False)
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
     raw_env = env.unwrapped

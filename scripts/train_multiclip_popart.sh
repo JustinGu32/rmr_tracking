@@ -166,17 +166,17 @@ conda activate env_isaaclab
 #     --sampling_mode balanced \
 #     --popart off
 
-# (3) clip_adaptive — clipped-adaptive over all clips, ignoring cats; uniform frame.
-python scripts/rsl_rl/train_bones.py \
-    --task=Popart-Flat-G1-v0 \
-    --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_standup_walk_jump_all.zarr \
-    --num_envs 4096 --headless \
-    --logger wandb --log_project_name balanced_sampling \
-    --run_name clip_adaptive_standup_walk_jump \
-    --decimation 6 --sampling uniform --activation swish \
-    --categories stand_up,walk,jump \
-    --sampling_mode clip_adaptive \
-    --popart off
+# # (3) clip_adaptive — clipped-adaptive over all clips, ignoring cats; uniform frame.
+# python scripts/rsl_rl/train_bones.py \
+#     --task=Popart-Flat-G1-v0 \
+#     --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_standup_walk_jump_all.zarr \
+#     --num_envs 4096 --headless \
+#     --logger wandb --log_project_name balanced_sampling \
+#     --run_name clip_adaptive_standup_walk_jump \
+#     --decimation 6 --sampling uniform --activation swish \
+#     --categories stand_up,walk,jump \
+#     --sampling_mode clip_adaptive \
+#     --popart off
 
 # (4) cat_uniform_clip_adaptive — uniform cat → adaptive clip in cat → uniform frame.
 # python scripts/rsl_rl/train_bones.py \
@@ -201,3 +201,16 @@ python scripts/rsl_rl/train_bones.py \
 #     --categories stand_up,walk,jump \
 #     --sampling_mode cat_adaptive_clip_uniform \
 #     --popart off \
+
+# balanced + terrain noise
+python scripts/rsl_rl/train_bones.py \
+    --task=Popart-Flat-G1-v0 \
+    --zarr_path=/move/u/justingu/rmr_tracking/motions/locomotion_33hz_standup_walk_jump_all.zarr \
+    --num_envs 4096 --headless \
+    --logger wandb --log_project_name balanced_sampling \
+    --run_name balanced_standup_walk_jump_terrainNoise \
+    --decimation 6 --sampling uniform --activation swish \
+    --categories stand_up,walk,jump \
+    --sampling_mode balanced \
+    --popart off \
+    --terrain_noise

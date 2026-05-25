@@ -523,7 +523,8 @@ class ZarrMotionLoader:
 
     def __init__(self, zarr_path: str, body_indexes: Sequence[int], device: str = "cpu",
                  exclude_props: list[str] | None = None, max_clips: int | None = None,
-                 include_keywords: list[str] | None = None):
+                 include_keywords: list[str] | None = None,
+                 include_clip_names: list[str] | None = None):
         import zarr as _zarr
 
         assert os.path.isdir(zarr_path), f"Invalid zarr path: {zarr_path}"
@@ -563,6 +564,27 @@ class ZarrMotionLoader:
             ]
             print(f"[ZarrMotionLoader] Kept {len(valid_indices)}/{before} clips "
                   f"matching keywords: {include_keywords}")
+
+        # Filter clips by exact clip name list if requested (case-sensitive, set-membership).
+        # Applied AFTER `include_keywords` so it's an intersection — a clip must pass both
+        # the keyword filter and the exact-name filter. Used for specialist training and
+        # DAgger on a precomputed failed-clip subset.
+        if include_clip_names and all_names is not None:
+            name_set = set(include_clip_names)
+            before = len(valid_indices)
+            before_sample = [str(all_names[i]) for i in valid_indices[:10]]
+            valid_indices = [
+                i for i in valid_indices
+                if str(all_names[i]) in name_set
+            ]
+            print(f"[ZarrMotionLoader] Kept {len(valid_indices)}/{before} clips "
+                  f"matching exact names from list of {len(name_set)}")
+            if len(valid_indices) == 0:
+                raise RuntimeError(
+                    f"include_clip_names filter produced 0 clips. "
+                    f"Filter sample: {list(name_set)[:5]}. "
+                    f"Zarr sample (post-keyword-filter): {before_sample}"
+                )
 
         # Limit number of clips if requested
         if max_clips is not None and max_clips < len(valid_indices):
@@ -655,7 +677,8 @@ class MultiClipMotionCommand(MotionCommand):
         self.motion = ZarrMotionLoader(self.cfg.zarr_path, self.body_indexes, device=self.device,
                                        exclude_props=exclude_props,
                                        max_clips=self.cfg.max_clips,
-                                       include_keywords=self.cfg.include_motion_types)
+                                       include_keywords=self.cfg.include_motion_types,
+                                       include_clip_names=self.cfg.include_clip_names)
 
         # Per-env state: which clip each env is tracking and the absolute time step
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
@@ -1064,6 +1087,13 @@ class MultiClipMotionCommandCfg(MotionCommandCfg):
     `exclude_objects`. None = no name-based filtering. Examples: ["walk", "jog"],
     ["jump"]. Multi-label by construction — a clip named "Turn_Start_Walk" matches
     both "turn" and "walk"."""
+
+    include_clip_names: list[str] | None = None
+    """Optional list of EXACT clip names to keep (case-sensitive, set-membership).
+    Applied AFTER `include_motion_types` (intersection — a clip must pass both filters).
+    None = no exact-name filtering. Used by specialist training and DAgger to restrict
+    the env to a precomputed failed-clip subset. Plumbed via the CLI flag
+    `--include_clip_names_file <path-to-json-list>` in train_bones.py / dagger.py."""
 
     future_steps: list[int] = []
     """Future timestep offsets to include in observations (e.g., [5, 10, 15]).
