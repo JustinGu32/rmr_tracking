@@ -527,6 +527,54 @@ class PopartEnvCfg(ManagerBasedRLEnvCfg):
             )
             self.sim.physics_material = self.scene.terrain.physics_material
 
+        # Jump-method techniques (foot-clearance shaping / terminations), opt-in
+        # via WBT_JUMP_* env vars set by train_bones.py flags. All off by default
+        # so existing runs are unaffected. The sampling-side (cat_blend) and RSI
+        # knobs live on the command cfg and are forwarded in flat_env_cfg.py.
+        # See mdp/jumps.py. The "below_z" / "foot_z" terms are NOT self-gating, so
+        # they are scoped to the "jump" category; the rest self-gate on flight.
+        _feet = SceneEntityCfg("contact_forces", body_names=mdp.ANKLE_NAMES)
+        if os.environ.get("WBT_JUMP_AIRBORNE") == "1":
+            self.rewards.airborne_contact_penalty = RewTerm(
+                func=mdp.airborne_contact_penalty, weight=0.5,
+                params={"command_name": "motion", "sensor_cfg": _feet},
+            )
+        if os.environ.get("WBT_JUMP_FLIGHT_BONUS") == "1":
+            self.rewards.airborne_flight_bonus = RewTerm(
+                func=mdp.airborne_flight_bonus, weight=0.5,
+                params={"command_name": "motion", "sensor_cfg": _feet},
+            )
+        if os.environ.get("WBT_JUMP_BELOW_Z") == "1":
+            self.rewards.below_reference_anchor_z = RewTerm(
+                func=mdp.below_reference_anchor_z_penalty, weight=0.5,
+                params={"command_name": "motion", "category_names": ["jump"]},
+            )
+        if os.environ.get("WBT_JUMP_FOOT_Z") == "1":
+            self.rewards.foot_below_threshold = RewTerm(
+                func=mdp.foot_below_threshold_penalty, weight=0.3,
+                params={"command_name": "motion", "category_names": ["jump"]},
+            )
+        if os.environ.get("WBT_JUMP_CONTACT_PHASE") == "1":
+            self.rewards.contact_phase_match = RewTerm(
+                func=mdp.contact_phase_match_reward, weight=0.5,
+                params={"command_name": "motion", "sensor_cfg": _feet},
+            )
+        if os.environ.get("WBT_JUMP_TERM_FLIGHT") == "1":
+            self.terminations.grounded_during_flight = DoneTerm(
+                func=mdp.grounded_during_flight,
+                params={"command_name": "motion", "sensor_cfg": _feet},
+            )
+        if os.environ.get("WBT_JUMP_TERM_GRACE") == "1":
+            self.terminations.grounded_during_flight_grace = DoneTerm(
+                func=mdp.grounded_during_flight_grace,
+                params={"command_name": "motion", "sensor_cfg": _feet, "grace_s": 0.2},
+            )
+        if os.environ.get("WBT_JUMP_TIGHTEN_Z") == "1":
+            self.terminations.bad_anchor_pos_z_flight = DoneTerm(
+                func=mdp.bad_anchor_pos_z_flight,
+                params={"command_name": "motion", "threshold": 0.12},
+            )
+
         # PPO output mode: delta uses ReferenceJointPositionAction (x_ref + raw_action),
         # target uses standard JointPositionAction (default_pos + scale * raw_action)
         ppo_output = os.environ.get("WBT_PPO_OUTPUT")

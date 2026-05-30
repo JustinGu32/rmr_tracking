@@ -75,6 +75,14 @@ class G1FlatEnvCfgPopArt(PopartEnvCfg):
             unmatched="raise",
         )
 
+        # Jump-exploration sampling/RSI knobs, forwarded from the WBT_* env vars
+        # set by train_bones.py flags (--error_blend_beta / --flight_rsi_ratio).
+        # Set here (after the command cfg is rebuilt) so they aren't lost when the
+        # parent's command cfg is replaced above. Default 0.0 = inert.
+        import os as _os
+        self.commands.motion.error_blend_beta = float(_os.environ.get("WBT_ERROR_BLEND_BETA", "0.0"))
+        self.commands.motion.flight_rsi_ratio = float(_os.environ.get("WBT_FLIGHT_RSI_RATIO", "0.0"))
+
 
 @configclass
 class G1FlatEnvCfgPopArt_PLAY(G1FlatEnvCfgPopArt):

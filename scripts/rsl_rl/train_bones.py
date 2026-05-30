@@ -32,6 +32,17 @@ parser.add_argument("--include_objects", action="store_true", default=False, hel
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--terrain_noise", action="store_true", default=False, help="Enable ~0.5-1 cm random-bump terrain to discourage foot dragging / double steps.")
+# ── Jump-exploration techniques (popart task; see mdp/jumps.py). All off by default. ──
+parser.add_argument("--jump_airborne_penalty", action="store_true", default=False, help="(R1) Penalize foot-ground contact while the reference is in flight (both feet airborne).")
+parser.add_argument("--jump_flight_bonus", action="store_true", default=False, help="(R2) Reward both feet leaving the ground during reference flight.")
+parser.add_argument("--jump_below_z_penalty", action="store_true", default=False, help="(R3) Asymmetric penalty for pelvis below reference height (jump category only).")
+parser.add_argument("--jump_foot_z_penalty", action="store_true", default=False, help="(R4) Penalize feet lagging far below reference foot height (jump category only).")
+parser.add_argument("--jump_contact_phase", action="store_true", default=False, help="(R5) Reward matching the reference foot contact/swing pattern (all motions).")
+parser.add_argument("--jump_terminate_flight", action="store_true", default=False, help="(T1) Terminate on ground contact during reference flight.")
+parser.add_argument("--jump_terminate_grace", action="store_true", default=False, help="(T2) Terminate on SUSTAINED ground contact (>0.2s) during reference flight.")
+parser.add_argument("--jump_tighten_anchor_z", action="store_true", default=False, help="(T3) Terminate when pelvis is far below reference during flight (feeds adaptive sampling).")
+parser.add_argument("--flight_rsi_ratio", type=float, default=0.0, help="(E1) Fraction of resets (clips with a flight phase) that start airborne mid-flight.")
+parser.add_argument("--error_blend_beta", type=float, default=0.0, help="cat_blend_clip_uniform sampling mix: 0=failure-only, 1=tracking-error-only, 0.5=blend.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
@@ -82,7 +93,8 @@ parser.add_argument("--popart", type=str, default="off", choices=["on", "off"],
 # markdowns/popart_implementation.md (Post-mortem).
 parser.add_argument("--sampling_mode", type=str, default=None,
                     choices=["frame_uniform", "balanced", "clip_adaptive",
-                             "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform"],
+                             "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform",
+                             "cat_blend_clip_uniform"],
                     help="Multi-clip clip selection strategy. 'frame_uniform' samples "
                          "uniformly over the global frame timeline (clip-length-weighted, "
                          "current default). 'balanced' samples category uniformly, then "
@@ -117,6 +129,25 @@ if args_cli.double_step:
     os.environ["BONES_DOUBLE_STEP"] = "1"
 if args_cli.terrain_noise:
     os.environ["WBT_TERRAIN_NOISE"] = "1"
+# Jump-exploration flags → env vars read by popart's env cfg / command cfg.
+if args_cli.jump_airborne_penalty:
+    os.environ["WBT_JUMP_AIRBORNE"] = "1"
+if args_cli.jump_flight_bonus:
+    os.environ["WBT_JUMP_FLIGHT_BONUS"] = "1"
+if args_cli.jump_below_z_penalty:
+    os.environ["WBT_JUMP_BELOW_Z"] = "1"
+if args_cli.jump_foot_z_penalty:
+    os.environ["WBT_JUMP_FOOT_Z"] = "1"
+if args_cli.jump_contact_phase:
+    os.environ["WBT_JUMP_CONTACT_PHASE"] = "1"
+if args_cli.jump_terminate_flight:
+    os.environ["WBT_JUMP_TERM_FLIGHT"] = "1"
+if args_cli.jump_terminate_grace:
+    os.environ["WBT_JUMP_TERM_GRACE"] = "1"
+if args_cli.jump_tighten_anchor_z:
+    os.environ["WBT_JUMP_TIGHTEN_Z"] = "1"
+os.environ["WBT_FLIGHT_RSI_RATIO"] = str(args_cli.flight_rsi_ratio)
+os.environ["WBT_ERROR_BLEND_BETA"] = str(args_cli.error_blend_beta)
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
@@ -559,6 +590,16 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                         "activation": args_cli.activation,
                         "double_step": args_cli.double_step,
                         "terrain_noise": args_cli.terrain_noise,
+                        "jump_airborne_penalty": args_cli.jump_airborne_penalty,
+                        "jump_flight_bonus": args_cli.jump_flight_bonus,
+                        "jump_below_z_penalty": args_cli.jump_below_z_penalty,
+                        "jump_foot_z_penalty": args_cli.jump_foot_z_penalty,
+                        "jump_contact_phase": args_cli.jump_contact_phase,
+                        "jump_terminate_flight": args_cli.jump_terminate_flight,
+                        "jump_terminate_grace": args_cli.jump_terminate_grace,
+                        "jump_tighten_anchor_z": args_cli.jump_tighten_anchor_z,
+                        "flight_rsi_ratio": args_cli.flight_rsi_ratio,
+                        "error_blend_beta": args_cli.error_blend_beta,
                         "include_objects": args_cli.include_objects,
                         "layer_norm": args_cli.layer_norm,
                         "decimation": args_cli.decimation,

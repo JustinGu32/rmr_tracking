@@ -26,6 +26,9 @@ from isaaclab.utils.math import (
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedRLEnv
 
+# G1 foot bodies, used for flight detection / foot-clearance jump terms.
+ANKLE_NAMES = ["left_ankle_roll_link", "right_ankle_roll_link"]
+
 
 class MotionLoader:
     def __init__(self, motion_file: str, body_indexes: Sequence[int], device: str = "cpu"):
@@ -1238,6 +1241,25 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
         self.clip_failure_rate = torch.zeros(self.motion.num_clips, dtype=torch.float, device=self.device)
         self._current_clip_failed = torch.zeros(self.motion.num_clips, dtype=torch.float, device=self.device)
 
+        # ── Per-category failure + error trackers (for cat_blend_clip_uniform) ──
+        # Direct per-category EMAs (denser/stabler than averaging per-clip rates
+        # when there are many clips). `cat_error_rate` is a per-step mean of
+        # `error_body_pos` per category (catches "bobbing" that never terminates);
+        # `cat_failure_rate` is the termination-driven analogue. Blended by
+        # `error_blend_beta` in the sampler. Folded each step in _update_command.
+        self.error_blend_beta = float(getattr(cfg, "error_blend_beta", 0.0))
+        self.cat_failure_rate = torch.zeros(K, dtype=torch.float, device=self.device)
+        self.cat_error_rate = torch.zeros(K, dtype=torch.float, device=self.device)
+        self._current_cat_failed = torch.zeros(K, dtype=torch.float, device=self.device)
+        self._cat_err_sum = torch.zeros(K, dtype=torch.float, device=self.device)
+        self._cat_err_cnt = torch.zeros(K, dtype=torch.float, device=self.device)
+
+        # ── Flight tables (per-clip stance baseline + flight-frame index, for
+        # foot-clearance rewards/terminations in mdp/jumps.py and flight-biased RSI).
+        self.flight_margin = float(getattr(cfg, "flight_margin", 0.07))
+        self.flight_rsi_ratio = float(getattr(cfg, "flight_rsi_ratio", 0.0))
+        self._build_flight_tables()
+
         # Re-balance the initial clip assignment if in balanced mode. Parent's
         # __init__ called _assign_random_clips(all_envs) BEFORE clips_by_cat_*
         # existed, so that call fell through to frame-uniform sampling. Re-do
@@ -1258,6 +1280,9 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
             self.category_idx[:] = self.clip_to_category[self.clip_ids]
         elif getattr(cfg, "sampling_mode", "frame_uniform") == "cat_adaptive_clip_uniform":
             self._cat_adaptive_clip_uniform_sampling(torch.arange(self.num_envs, device=self.device))
+            self.category_idx[:] = self.clip_to_category[self.clip_ids]
+        elif getattr(cfg, "sampling_mode", "frame_uniform") == "cat_blend_clip_uniform":
+            self._cat_blend_clip_uniform_sampling(torch.arange(self.num_envs, device=self.device))
             self.category_idx[:] = self.clip_to_category[self.clip_ids]
 
     # ── Balanced sampling ─────────────────────────────────────────────────
@@ -1497,6 +1522,133 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
         self.metrics["sampling_top1_prob"][:] = pmax
         self.metrics["sampling_top1_bin"][:] = imax.float() / float(K)
 
+    # ── cat_blend_clip_uniform sampling ───────────────────────────────────
+    # Stage 1 adaptive over cats using a DIRECT per-category EMA blended from
+    # failure and tracking-error signals (`error_blend_beta`: 0=failure-only,
+    # 1=error-only), stage 2 uniform clip within cat, stage 3 uniform frame.
+
+    def _cat_blend_clip_uniform_sampling(self, env_ids: torch.Tensor):
+        n = env_ids.numel()
+        device = self.device
+        K = self.num_categories
+
+        # Attribute failures to OLD categories before clip_ids is overwritten.
+        # Guarded so the init re-balance (no termination_manager yet) is uniform.
+        if hasattr(self._env, "termination_manager"):
+            episode_failed = self._env.termination_manager.terminated[env_ids]
+            if episode_failed.any():
+                failed_cats = self.category_idx[env_ids][episode_failed]
+                self._current_cat_failed[:] = torch.bincount(failed_cats, minlength=K).float()
+
+        # Stage 1: per-cat score = blend of normalized failure + error EMAs.
+        # Each signal is normalized by its own mean so the two (counts vs metres)
+        # are comparable before mixing; then an additive uniform floor.
+        beta = self.error_blend_beta
+        fail_n = self.cat_failure_rate / self.cat_failure_rate.mean().clamp(min=1e-8)
+        err_n = self.cat_error_rate / self.cat_error_rate.mean().clamp(min=1e-8)
+        cat_score = (1.0 - beta) * fail_n + beta * err_n
+        cat_probs = cat_score + self.cfg.cat_adaptive_uniform_ratio / float(K)
+        cat_probs = cat_probs / cat_probs.sum()
+        cats = torch.multinomial(cat_probs, n, replacement=True)
+
+        # Stage 2: uniform clip within cat (mirrors _cat_adaptive_clip_uniform).
+        sizes = self.clips_by_cat_sizes[cats]
+        offsets = self.clips_by_cat_offsets[cats]
+        local_idx = torch.minimum((torch.rand(n, device=device) * sizes.float()).long(), sizes - 1)
+        clip_ids = self.clips_by_cat_flat[offsets + local_idx]
+
+        # Stage 3: uniform frame within clip.
+        clip_starts = self.motion.clip_start_idx[clip_ids]
+        clip_ends = self.motion.clip_end_idx[clip_ids]
+        lens = (clip_ends - clip_starts).clamp(min=1)
+        local_frame = torch.minimum((torch.rand(n, device=device) * lens.float()).long(), lens - 1)
+        time_steps = clip_starts + local_frame
+
+        self.clip_ids[env_ids] = clip_ids
+        self.clip_start[env_ids] = clip_starts
+        self.clip_end[env_ids] = clip_ends
+        self.time_steps[env_ids] = time_steps
+        self._cache_current_frames()
+
+        # Cat-level sampling metrics.
+        H = -(cat_probs * (cat_probs + 1e-12).log()).sum()
+        self.metrics["sampling_entropy"][:] = H / torch.log(torch.tensor(float(K), device=device))
+        pmax, imax = cat_probs.max(dim=0)
+        self.metrics["sampling_top1_prob"][:] = pmax
+        self.metrics["sampling_top1_bin"][:] = imax.float() / float(K)
+
+    # ── Flight calibration + flight-biased RSI ────────────────────────────
+
+    def _build_flight_tables(self):
+        """Precompute, from the reference motion, the per-clip stance baseline
+        and a flat list of flight-frame indices grouped by clip. A frame is a
+        flight frame when BOTH feet are above the clip's stance baseline by
+        `flight_margin`. Used by the foot-clearance terms (jumps.py) and RSI."""
+        foot_local = [i for i, name in enumerate(self.cfg.body_names) if name in ANKLE_NAMES]
+        device = self.device
+        F = self.motion.time_step_total
+        nclips = self.motion.num_clips
+        if len(foot_local) < 2:
+            # Feet not tracked → no flight info; tables stay empty/zero.
+            self.clip_foot_baseline = torch.zeros(nclips, device=device)
+            self._flight_counts = torch.zeros(nclips, dtype=torch.long, device=device)
+            self._flight_offsets = torch.zeros(nclips + 1, dtype=torch.long, device=device)
+            self._flight_frames_flat = torch.zeros(0, dtype=torch.long, device=device)
+            return
+
+        foot_z = self.motion.body_pos_w[:, foot_local, 2]  # (F, 2) height above motion ground
+        min_foot_z = foot_z.min(dim=-1).values  # (F,)
+
+        # frame → clip id, marking frames outside any kept clip as invalid.
+        frames = torch.arange(F, device=device)
+        fc = torch.searchsorted(self.motion.clip_end_idx, frames, right=True).clamp(max=nclips - 1)
+        valid = (frames >= self.motion.clip_start_idx[fc]) & (frames < self.motion.clip_end_idx[fc])
+
+        # Per-clip stance baseline = min foot height over the clip's frames.
+        baseline = torch.full((nclips,), float("inf"), device=device)
+        baseline.scatter_reduce_(0, fc[valid], min_foot_z[valid], reduce="amin", include_self=True)
+        baseline[torch.isinf(baseline)] = 0.0
+        self.clip_foot_baseline = baseline
+
+        # Flight frames (global ids, ascending → grouped by clip since clips are
+        # contiguous ascending ranges), with per-clip counts/offsets (CSR).
+        flight = valid & (min_foot_z > baseline[fc] + self.flight_margin)
+        flight_idx = flight.nonzero(as_tuple=True)[0]
+        counts = torch.bincount(fc[flight_idx], minlength=nclips)
+        self._flight_counts = counts
+        self._flight_offsets = torch.cat(
+            [torch.zeros(1, dtype=torch.long, device=device), counts.cumsum(0)]
+        )
+        self._flight_frames_flat = flight_idx
+        print(
+            f"[PopArt][jumps] flight tables: {int(flight.sum())}/{F} flight frames across "
+            f"{int((counts > 0).sum())}/{nclips} clips (margin={self.flight_margin} m)"
+        )
+
+    def _apply_flight_rsi(self, env_ids: torch.Tensor):
+        """Flight-biased Reference State Init: with prob `flight_rsi_ratio`, move
+        a reset's start frame to a random flight frame of its clip (clips with a
+        flight phase only). RSI writes the reference pose+velocity at that frame,
+        so the robot spawns airborne with the reference COM velocity."""
+        # `_flight_counts` and `flight_rsi_ratio` are both set late in __init__
+        # (after super()'s initial clip assignment), so check existence first to
+        # avoid touching `flight_rsi_ratio` during that early call.
+        if not hasattr(self, "_flight_counts") or self.flight_rsi_ratio <= 0.0:
+            return
+        if not hasattr(self._env, "termination_manager"):  # skip init-time assignment
+            return
+        cnt = self._flight_counts[self.clip_ids[env_ids]]
+        pick = (torch.rand(env_ids.numel(), device=self.device) < self.flight_rsi_ratio) & (cnt > 0)
+        if not pick.any():
+            return
+        sel = env_ids[pick]
+        csel = self.clip_ids[sel]
+        cnts = self._flight_counts[csel]
+        offs = self._flight_offsets[csel]
+        j = torch.minimum((torch.rand(sel.numel(), device=self.device) * cnts.float()).long(), cnts - 1)
+        self.time_steps[sel] = self._flight_frames_flat[offs + j]
+        self._cache_current_frames()
+
     def _assign_random_clips(self, env_ids: torch.Tensor):
         mode = getattr(self.cfg, "sampling_mode", "frame_uniform")
         if mode == "balanced" and hasattr(self, "clips_by_cat_flat"):
@@ -1507,10 +1659,13 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
             self._cat_uniform_clip_adaptive_sampling(env_ids)
         elif mode == "cat_adaptive_clip_uniform" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
             self._cat_adaptive_clip_uniform_sampling(env_ids)
+        elif mode == "cat_blend_clip_uniform" and hasattr(self, "cat_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_blend_clip_uniform_sampling(env_ids)
         else:
             super()._assign_random_clips(env_ids)
         if hasattr(self, "category_idx"):
             self.category_idx[env_ids] = self.clip_to_category[self.clip_ids[env_ids]]
+        self._apply_flight_rsi(env_ids)
 
     def _adaptive_sampling(self, env_ids: torch.Tensor):
         mode = getattr(self.cfg, "sampling_mode", "frame_uniform")
@@ -1522,21 +1677,39 @@ class MultiClipMotionCommandPopArt(MultiClipMotionCommand):
             self._cat_uniform_clip_adaptive_sampling(env_ids)
         elif mode == "cat_adaptive_clip_uniform" and hasattr(self, "clip_failure_rate") and hasattr(self, "clips_by_cat_flat"):
             self._cat_adaptive_clip_uniform_sampling(env_ids)
+        elif mode == "cat_blend_clip_uniform" and hasattr(self, "cat_failure_rate") and hasattr(self, "clips_by_cat_flat"):
+            self._cat_blend_clip_uniform_sampling(env_ids)
         else:
             super()._adaptive_sampling(env_ids)
         if hasattr(self, "category_idx"):
             self.category_idx[env_ids] = self.clip_to_category[self.clip_ids[env_ids]]
+        self._apply_flight_rsi(env_ids)
 
     def _update_command(self):
+        # Accumulate per-category tracking error BEFORE super() advances time /
+        # resamples, so error_body_pos (fresh from this step's _update_metrics)
+        # and category_idx refer to the same frame. Drives error-adaptive sampling.
+        if hasattr(self, "_cat_err_sum"):
+            err = self.metrics["error_body_pos"]
+            self._cat_err_sum.scatter_add_(0, self.category_idx, err)
+            self._cat_err_cnt.scatter_add_(0, self.category_idx, torch.ones_like(err))
+
         # Parent does the time_steps tick, reset dispatch, cache refresh, and
         # the bin-based EMA. We piggyback the per-clip EMA update with the
         # exact same alpha so the two curriculum signals stay in lockstep.
         super()._update_command()
-        self.clip_failure_rate = (
-            self.cfg.adaptive_alpha * self._current_clip_failed
-            + (1 - self.cfg.adaptive_alpha) * self.clip_failure_rate
-        )
+        a = self.cfg.adaptive_alpha
+        self.clip_failure_rate = a * self._current_clip_failed + (1 - a) * self.clip_failure_rate
         self._current_clip_failed.zero_()
+
+        # Per-category failure + error EMAs (same alpha) for cat_blend sampling.
+        if hasattr(self, "cat_failure_rate"):
+            cat_mean_err = self._cat_err_sum / self._cat_err_cnt.clamp(min=1.0)
+            self.cat_failure_rate = a * self._current_cat_failed + (1 - a) * self.cat_failure_rate
+            self.cat_error_rate = a * cat_mean_err + (1 - a) * self.cat_error_rate
+            self._current_cat_failed.zero_()
+            self._cat_err_sum.zero_()
+            self._cat_err_cnt.zero_()
 
 
 @configclass
@@ -1597,7 +1770,32 @@ class MultiClipMotionCommandPopArtCfg(MultiClipMotionCommandCfg):
     - 'cat_adaptive_clip_uniform': adaptive over categories (per-cat score =
       mean of `clip_failure_rate` over that cat's clips, with additive
       `cat_adaptive_uniform_ratio` floor), then uniform clip within the cat,
-      then uniform frame."""
+      then uniform frame.
+    - 'cat_blend_clip_uniform': adaptive over categories using DIRECT per-cat
+      EMAs blended from termination failures and mean tracking error
+      (`error_blend_beta`: 0=failure-only, 1=error-only), with the same
+      `cat_adaptive_uniform_ratio` floor, then uniform clip, then uniform
+      frame. Use beta=1 to upsample categories the policy tracks poorly even
+      when they don't terminate (e.g. a jump that bobs in place)."""
+
+    error_blend_beta: float = 0.0
+    """Mixing weight for `cat_blend_clip_uniform`: per-cat score =
+    (1-beta)*norm(cat_failure_rate) + beta*norm(cat_error_rate). 0 = pure
+    termination-failure sampling (matches the existing failure curriculum),
+    1 = pure tracking-error sampling, 0.5 = blend. Ignored by other modes."""
+
+    flight_rsi_ratio: float = 0.0
+    """Flight-biased Reference State Init. Fraction of resets whose clip has a
+    flight phase that start mid-flight (airborne, with the reference COM
+    velocity) instead of from a uniform frame. 0 = off. Self-gates: clips with
+    no flight frames are unaffected."""
+
+    flight_margin: float = 0.07
+    """Height (m) a foot must clear its per-clip stance baseline to count as
+    airborne. With the both-feet 'flight' test, this mainly rejects normal
+    walking swing-foot lift; jumps clear it easily. ~0.07 sits above typical
+    swing-foot height so flight is only flagged during genuine double-support-
+    free phases."""
 
     clip_adaptive_uniform_ratio: float = 0.5
     """Total uniform mass added to the per-clip distribution before
