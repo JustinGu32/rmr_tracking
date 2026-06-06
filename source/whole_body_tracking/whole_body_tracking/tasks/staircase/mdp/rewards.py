@@ -142,18 +142,173 @@ def motion_joint_position_error_exp(env: ManagerBasedRLEnv, command_name: str, s
     return torch.exp(-error.mean(-1) / std**2)
 
 def double_step_penalty(
-    env: ManagerBasedRLEnv, command_name: str, threshold: float, body_names: list[str] | None = None
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    moving_threshold: float,
+    stance_vel_threshold: float = 0.3,
+    body_names: list[str] | None = None,
 ) -> torch.Tensor:
-    """Penalize when foot velocity error exceeds a threshold (indicates double-stepping).
+    """Penalize when the robot moves a foot that the reference motion has planted.
 
-    Returns -1 for each foot whose squared velocity error exceeds the threshold, averaged across feet.
-    With two feet, returns: 0 (both fine), -0.5 (one double-stepping), -1 (both double-stepping).
+    A double step is when reference foot speed < stance_vel_threshold (foot should be planted)
+    but robot foot speed > moving_threshold (robot lifts it anyway).
+    Returns -1 per offending foot, averaged across feet.
     """
     command: MotionCommand = env.command_manager.get_term(command_name)
     body_indexes = _get_body_indexes(command, body_names)
-    # Per-foot squared velocity error: (num_envs, num_feet)
-    error = torch.sum(
-        torch.square(command.body_lin_vel_w[:, body_indexes] - command.robot_body_lin_vel_w[:, body_indexes]), dim=-1
-    )
-    # -1 for each foot above threshold, 0 otherwise, averaged across feet
-    return -(error > threshold).float().mean(dim=-1)
+    # (num_envs, num_feet)
+    ref_foot_speed = torch.norm(command.body_lin_vel_w[:, body_indexes], dim=-1)
+    robot_foot_speed = torch.norm(command.robot_body_lin_vel_w[:, body_indexes], dim=-1)
+    ref_in_stance = ref_foot_speed < stance_vel_threshold
+    robot_moving = robot_foot_speed > moving_threshold
+    return -(ref_in_stance & robot_moving).float().mean(dim=-1)
+
+
+def _log_to_extras(env, key: str, value: float) -> None:
+    """Write a scalar into env.extras['log'] so the runner logs it to wandb each step."""
+    env.extras.setdefault("log", {})[key] = value
+
+
+def _ref_stance_mask(
+    command: MotionCommand,
+    body_indexes: list[int],
+    stance_vel_threshold: float,
+) -> torch.Tensor:
+    """Return (num_envs, num_feet) bool: reference foot is planted."""
+    ref_foot_speed = torch.norm(command.body_lin_vel_w[:, body_indexes], dim=-1)
+    return ref_foot_speed < stance_vel_threshold
+
+
+def _robot_contact_mask(
+    contact_sensor,
+    foot_body_ids,
+    contact_force_threshold: float,
+) -> torch.Tensor:
+    """Return (num_envs, num_feet) bool: robot foot has ground contact."""
+    # net_forces_w_history: (num_envs, history, num_bodies, 3)
+    forces = contact_sensor.data.net_forces_w_history[:, :, foot_body_ids, :]
+    force_mag = torch.norm(forces, dim=-1)               # (num_envs, history, num_feet)
+    return force_mag.max(dim=1).values > contact_force_threshold  # (num_envs, num_feet)
+
+
+def stance_contact_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    body_names: list[str] | None = None,
+    stance_vel_threshold: float = 0.25,
+    contact_force_threshold: float = 10.0,
+) -> torch.Tensor:
+    """Penalize when the reference foot is planted but the robot foot has no contact.
+
+    Directly captures "robot lifted a foot that should be on the ground",
+    which is more reliable than the velocity-only check in double_step_penalty.
+    Returns -1 per offending foot, summed across feet.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    body_indexes = _get_body_indexes(command, body_names)
+
+    ref_stance = _ref_stance_mask(command, body_indexes, stance_vel_threshold)
+    robot_contact = _robot_contact_mask(contact_sensor, sensor_cfg.body_ids, contact_force_threshold)
+    missing_contact = ref_stance & ~robot_contact
+
+    _log_to_extras(env, "stance/ref_stance_frac", float(ref_stance.float().mean().item()))
+    _log_to_extras(env, "stance/contact_penalty_active_frac", float(missing_contact.float().mean().item()))
+    return -missing_contact.float().sum(dim=-1)
+
+
+def stance_slide_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    body_names: list[str] | None = None,
+    stance_vel_threshold: float = 0.25,
+    contact_force_threshold: float = 10.0,
+    slide_vel_threshold: float = 0.15,
+) -> torch.Tensor:
+    """Penalize when the robot foot is contacting but sliding during reference stance.
+
+    Catches the case where the foot is on the ground but still moving laterally —
+    a common precursor to or symptom of a double step.
+    Returns -1 per offending foot, summed across feet.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    body_indexes = _get_body_indexes(command, body_names)
+
+    ref_stance = _ref_stance_mask(command, body_indexes, stance_vel_threshold)
+    robot_contact = _robot_contact_mask(contact_sensor, sensor_cfg.body_ids, contact_force_threshold)
+
+    # XY speed only — vertical settling motion during contact is fine
+    robot_foot_speed_xy = torch.norm(command.robot_body_lin_vel_w[:, body_indexes, :2], dim=-1)
+    sliding = ref_stance & robot_contact & (robot_foot_speed_xy > slide_vel_threshold)
+
+    _log_to_extras(env, "stance/slide_penalty_active_frac", float(sliding.float().mean().item()))
+    return -sliding.float().sum(dim=-1)
+
+
+def stance_drift_penalty(
+    env: ManagerBasedRLEnv,
+    command_name: str,
+    sensor_cfg: SceneEntityCfg,
+    body_names: list[str] | None = None,
+    stance_vel_threshold: float = 0.25,
+    contact_force_threshold: float = 10.0,
+    drift_threshold: float = 0.05,
+) -> torch.Tensor:
+    """Penalize when a stance foot drifts from where it first made contact.
+
+    On each reference stance entry, the current robot foot XY position is saved.
+    While reference stance continues, any XY drift beyond drift_threshold is penalized.
+    This directly attacks double-stepping: even without a full foot lift, repositioning
+    the planted foot is caught and penalized.
+
+    Persistent per-env buffers are stored on env:
+        env._stance_prev_ref_stance  (num_envs, num_feet)  bool
+        env._stance_saved_pos        (num_envs, num_feet, 3) float
+    Both are reset for any env whose episode_length_buf <= 1.
+
+    Returns -1 per offending foot, summed across feet.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    contact_sensor: ContactSensor = env.scene.sensors[sensor_cfg.name]
+    body_indexes = _get_body_indexes(command, body_names)
+    num_feet = len(body_indexes)
+
+    ref_stance = _ref_stance_mask(command, body_indexes, stance_vel_threshold)
+    robot_contact = _robot_contact_mask(contact_sensor, sensor_cfg.body_ids, contact_force_threshold)
+    robot_foot_pos = command.robot_body_pos_w[:, body_indexes, :3]  # (N, num_feet, 3)
+
+    # ── lazy-init persistent buffers ──────────────────────────────────────
+    if not hasattr(env, "_stance_prev_ref_stance"):
+        env._stance_prev_ref_stance = torch.zeros(
+            env.num_envs, num_feet, dtype=torch.bool, device=env.device
+        )
+        env._stance_saved_pos = robot_foot_pos.detach().clone()
+
+    # ── reset buffers for envs that just started a new episode ────────────
+    just_reset = (env.episode_length_buf <= 1)  # (num_envs,)
+    if just_reset.any():
+        env._stance_prev_ref_stance[just_reset] = False
+        env._stance_saved_pos[just_reset] = robot_foot_pos[just_reset].detach()
+
+    # ── save foot position at the moment each foot enters stance ──────────
+    stance_start = ref_stance & ~env._stance_prev_ref_stance  # (N, num_feet)
+    if stance_start.any():
+        env._stance_saved_pos[stance_start] = robot_foot_pos[stance_start].detach()
+
+    # ── penalize XY drift from saved contact point ────────────────────────
+    drift_xy = torch.norm(
+        robot_foot_pos[:, :, :2] - env._stance_saved_pos[:, :, :2], dim=-1
+    )  # (N, num_feet)
+
+    bad_drift = ref_stance & robot_contact & (drift_xy > drift_threshold)
+
+    _log_to_extras(env, "stance/drift_penalty_active_frac", float(bad_drift.float().mean().item()))
+    _log_to_extras(env, "stance/mean_drift_xy_m", float(drift_xy[ref_stance].mean().item() if ref_stance.any() else 0.0))
+
+    # ── advance buffers ───────────────────────────────────────────────────
+    env._stance_prev_ref_stance.copy_(ref_stance)
+
+    return -bad_drift.float().sum(dim=-1)

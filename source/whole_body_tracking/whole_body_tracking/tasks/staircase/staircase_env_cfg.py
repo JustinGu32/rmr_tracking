@@ -74,6 +74,8 @@ STAIRCASE_RAYCAST_URDF_PATH = (
 STAIRCASE_POSITION = [3.2, -0.2, 0.0]
 # Quaternion is in (w, x, y, z); this is a +94 degree yaw.
 STAIRCASE_ROTATION = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
+STAIRCASE_HIDDEN_POSITION = [0.0, 0.0, -50.0]
+STAIRCASE_HIDDEN_QUAT = (1.0, 0.0, 0.0, 0.0)
 
 DEPTH_CAMERA_WIDTH = 64
 DEPTH_CAMERA_HEIGHT = 48
@@ -152,22 +154,75 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         init_state=AssetBaseCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
     )
 
-    depth_camera: TiledCameraCfg | None = TiledCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-        update_period=0.0,
-        height=DEPTH_CAMERA_HEIGHT,
-        width=DEPTH_CAMERA_WIDTH,
-        data_types=["distance_to_camera"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=8.0,
-            clipping_range=(0.1, 5.0),
-        ),
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(0.9848078, 0.0, -0.1736482, 0.0),
-            convention="world",
-        ),
+    # Depth camera mounted on the D435 link (head)
+    # Only included when --use_depth is passed (WBT_USE_DEPTH_OBS=1)
+    depth_camera: TiledCameraCfg | None = (
+        TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            update_period=0.0,
+            height=DEPTH_CAMERA_HEIGHT,
+            width=DEPTH_CAMERA_WIDTH,
+            data_types=["distance_to_camera"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=1.93,  # D435i: ~87° HFOV
+                horizontal_aperture=3.6,
+                clipping_range=(0.1, 5.0),
+            ),
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.0, 0.0, 0.0),  # Already positioned by d435_link in URDF
+                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                convention="ros",
+            ),
+        )
+        if os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
+        else None
     )
+
+
+def make_staircase_variant_cfg(asset_path: str, usd_dir: str, prim_suffix: str) -> RigidObjectCfg:
+    """Create a kinematic staircase rigid object variant for multiclip mode."""
+    return RigidObjectCfg(
+        prim_path=f"{{ENV_REGEX_NS}}/{prim_suffix}",
+        spawn=sim_utils.UrdfFileCfg(
+            asset_path=asset_path,
+            usd_dir=usd_dir,
+            force_usd_conversion=True,
+            fix_base=True,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            joint_drive=sim_utils.UrdfConverterCfg.JointDriveCfg(
+                gains=sim_utils.UrdfConverterCfg.JointDriveCfg.PDGainsCfg(stiffness=0.0, damping=0.0)
+            ),
+            articulation_props=sim_utils.ArticulationRootPropertiesCfg(articulation_enabled=False),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
+        ),
+        init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_HIDDEN_POSITION, rot=STAIRCASE_HIDDEN_QUAT),
+    )
+
+
+def configure_multiclip_staircase_scene(scene_cfg: StaircaseSceneCfg, staircase_variants: list[dict]) -> dict[int, str]:
+    """Replace the single staircase scene with one rigid-object variant per staircase asset."""
+    if not staircase_variants:
+        raise ValueError("staircase_variants must be non-empty for multiclip staircase configuration.")
+
+    variant_names: dict[int, str] = {}
+    scene_cfg.staircase = None
+    scene_cfg.staircase_raycast = None
+
+    mesh_prim_paths: list[str] = []
+    for variant in staircase_variants:
+        staircase_id = int(variant["staircase_id"])
+        asset_path = variant["asset_path"]
+        usd_dir = variant["usd_dir"]
+        prim_suffix = f"StaircaseVariant_{staircase_id}"
+        attr_name = f"staircase_variant_{staircase_id}"
+        setattr(scene_cfg, attr_name, make_staircase_variant_cfg(asset_path=asset_path, usd_dir=usd_dir, prim_suffix=prim_suffix))
+        variant_names[staircase_id] = attr_name
+        mesh_prim_paths.append(f"/World/envs/env_0/{prim_suffix}")
+
+    if getattr(scene_cfg, "height_scanner", None) is not None:
+        scene_cfg.height_scanner.mesh_prim_paths = mesh_prim_paths
+
+    return variant_names
 
 
 ##
@@ -485,7 +540,7 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     """Configuration for the staircase environment."""
 
     # Scene settings
-    scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
+    scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=8.0)
     # Basic settings
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
@@ -500,7 +555,7 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 4
+        self.decimation = 6
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005
@@ -511,6 +566,14 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.eye = (1.5, 1.5, 1.5)
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
+
+        if os.environ.get("WBT_GLOBAL_CRITIC_OBS", "0") == "1":
+            self.observations.critic.body_pos = ObsTerm(
+                func=mdp.robot_body_pos_w_rootrel, params={"command_name": "motion"}
+            )
+            self.observations.critic.ref_body_pos = ObsTerm(
+                func=mdp.motion_body_pos_w_rootrel, params={"command_name": "motion"}
+            )
 
         self.depth_observation.enabled = os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
         self.depth_observation.save_debug_frames = os.environ.get("WBT_DEPTH_SAVE_FRAMES", "0") == "1"

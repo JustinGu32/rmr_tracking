@@ -17,18 +17,22 @@ source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
 python scripts/rsl_rl/train_bones.py \
-  --task=Bones-Flat-chip-G1-v0 \
+  --task=Bones-Flat-G1-v0 \
   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane_new:v0 \
   --headless \
   --logger wandb \
   --log_project_name multiclip_bones_popart \
-  --run_name crane_new_limb_tracking_ULI \
+  --run_name crane_upperlower_raw_uniform_mom0.0005_v2 \
   --video \
   --video_length 500 \
   --video_interval 10000 \
   --popart_multihead \
   --popart_head_mode grouped \
-  --popart_group_preset limb_tracking_ul_individual
+  --popart_group_preset upper_lower \
+  --popart_actor_advantage_scaling raw \
+  --popart_grouped_actor_weight_mode uniform \
+  --popart_momentum 0.0005 \
+  --seed 1
 
 # python scripts/rsl_rl/train_bones.py \
 #   --task=Tracking-Flat-G1-v0 \

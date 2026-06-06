@@ -1,0 +1,32 @@
+{
+  "variants": [
+    {
+      "staircase_id": 0,
+      "asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes.urdf",
+      "raycast_asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes_combined.urdf",
+      "usd_dir": "/tmp/isaaclab_staircase_usd/walk_up_karen_stairs",
+      "metadata_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/staircase_metadata.json"
+    },
+    {
+      "staircase_id": 1,
+      "asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_down_karen_stairs/multi_boxes.urdf",
+      "raycast_asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_down_karen_stairs/multi_boxes_combined.urdf",
+      "usd_dir": "/tmp/isaaclab_staircase_usd/walk_down_karen_stairs",
+      "metadata_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_down_karen_stairs/staircase_metadata.json"
+    },
+    {
+      "staircase_id": 2,
+      "asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/up_continuous_v2_karen_stairs/multi_boxes.urdf",
+      "raycast_asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/up_continuous_v2_karen_stairs/multi_boxes_combined.urdf",
+      "usd_dir": "/tmp/isaaclab_staircase_usd/up_continuous_v2_karen_stairs",
+      "metadata_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/up_continuous_v2_karen_stairs/staircase_metadata.json"
+    },
+    {
+      "staircase_id": 3,
+      "asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/down_continuous_v2_karen_stairs/multi_boxes.urdf",
+      "raycast_asset_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/down_continuous_v2_karen_stairs/multi_boxes_combined.urdf",
+      "usd_dir": "/tmp/isaaclab_staircase_usd/down_continuous_v2_karen_stairs",
+      "metadata_path": "/move/u/karenvo/Projects/rmr_tracking/artifacts/down_continuous_v2_karen_stairs/staircase_metadata.json"
+    }
+  ]
+}

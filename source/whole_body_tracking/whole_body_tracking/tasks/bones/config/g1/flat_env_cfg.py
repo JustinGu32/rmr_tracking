@@ -47,6 +47,30 @@ def _g1_post_init(self):
     self.commands.motion.body_names = G1_BODY_NAMES
 
 
+def _add_category_obs_group(self):
+    """Attach a standalone 'category' observation group exposing the per-env
+    motion category index, for hierarchical (category x reward-head) PopArt.
+
+    Gated by the BONES_POPART_HIERARCHICAL env var (set by train_bones.py from
+    --popart_hierarchical) so non-hierarchical runs keep their observation
+    layout unchanged. The group is NOT added to obs_groups['policy'/'critic'],
+    so it never feeds the actor/critic MLPs — it is read directly by the
+    hierarchical critic via obs['category'] and stored in the rollout buffer."""
+    if os.environ.get("BONES_POPART_HIERARCHICAL") != "1":
+        return
+    from isaaclab.managers import ObservationGroupCfg as ObsGroup
+
+    @configclass
+    class _CategoryCfg(ObsGroup):
+        category = ObsTerm(func=mdp.category_idx_obs, params={"command_name": "motion"})
+
+        def __post_init__(self):
+            self.enable_corruption = False
+            self.concatenate_terms = True
+
+    self.observations.category = _CategoryCfg()
+
+
 def _add_videomimic_heightmap(self):
     self.scene.height_scanner = RayCasterCfg(
         prim_path="{ENV_REGEX_NS}/Robot/torso_link",
@@ -96,6 +120,20 @@ class G1BonesEnvCfg(BonesEnvCfg):
         super().__post_init__()
         _g1_post_init(self)
         _add_upper_lower_vr_rewards(self)
+
+@configclass
+class G1BonesPlayCfg(G1BonesEnvCfg):
+    """G1 bones play config: start at t=0, full episode, no push."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.events.push_robot = None
+        self.events.force_push_robot = None
+        self.commands.motion.motion_files = []
+        self.commands.motion.min_sample_idx = 0
+        self.commands.motion.max_sample_idx = 0
+        self.episode_length_s = 25.0
+
 
 @configclass
 class G1BonesRoughEnvCfg(BonesEnvCfg):
@@ -435,6 +473,7 @@ class G1BonesMultiClipEnvCfg(Bones3ptEnvCfg):
         self.commands.motion.anchor_body_name = "pelvis"
         self.commands.motion.body_names = G1_BODY_NAMES
         _add_videomimic_heightmap(self)
+        _add_category_obs_group(self)
 
 
 @configclass
@@ -531,3 +570,48 @@ class G1BonesMultiClipComplianceEnvCfg(G1BonesMultiClipEnvCfg):
         #                                                  "std": 0.1,
         #                                                  "body_indices": [5],
         #                                           })
+
+
+@configclass
+class G1BonesMultiClipFlatEnvCfg(G1BonesEnvCfg):
+    """G1 bones multi-clip training from a Zarr store, with the FLAT observation
+    set — no CHIP compliance, no VR-3point observations, no heightmap.
+
+    Same flat obs/rewards as ``Bones-Flat-G1-v0`` (``G1BonesEnvCfg``, which the
+    PopArt ablations already use with ``--popart_group_preset upper_lower``),
+    but samples many clips from a Zarr store so ``clip_names`` -> motion
+    categories are available for hierarchical (category x reward-head) PopArt.
+    The CHIP multi-clip command is reused only for clip sampling / categories;
+    its compliance/VR observations are intentionally not surfaced here.
+    """
+
+    def __post_init__(self):
+        super().__post_init__()
+        # Swap the single-clip command for the Zarr multi-clip command.
+        self.commands.motion = mdp.CHIPMultiClipMotionCommandCfg(
+            asset_name="robot",
+            resampling_time_range=(1.0e9, 1.0e9),
+            adaptive_uniform_ratio=0.25,
+            debug_vis=True,
+            zarr_path="",  # Set at runtime via train script (--zarr_path)
+            pose_range={
+                "x": (-0.05, 0.05),
+                "y": (-0.05, 0.05),
+                "z": (-0.01, 0.01),
+                "roll": (-0.1, 0.1),
+                "pitch": (-0.1, 0.1),
+                "yaw": (-0.2, 0.2),
+            },
+            velocity_range={
+                "x": (-0.5, 0.5),
+                "y": (-0.5, 0.5),
+                "z": (-0.2, 0.2),
+                "roll": (-0.52, 0.52),
+                "pitch": (-0.52, 0.52),
+                "yaw": (-0.78, 0.78),
+            },
+            joint_position_range=(-0.1, 0.1),
+        )
+        self.commands.motion.anchor_body_name = "pelvis"
+        self.commands.motion.body_names = G1_BODY_NAMES
+        _add_category_obs_group(self)

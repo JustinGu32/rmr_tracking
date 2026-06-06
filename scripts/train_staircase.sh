@@ -3,9 +3,10 @@
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=20G
-#SBATCH --gres=gpu:a5000:1
-#SBATCH --job-name=staircase
+#SBATCH --mem=40G
+#SBATCH --gres=gpu:l40s:1
+#SBATCH --job-name=staircase_multiclip
+#SBATCH --output=logs/slurm/staircase_multiclip_%j.out
 
 set -euo pipefail
 
@@ -42,14 +43,28 @@ export WANDB_ENTITY=robot-mcrobotface
 # up: 3.7, 0.55
 # down: 3.65, 0.47
 
-python scripts/rsl_rl/train.py \
+python scripts/rsl_rl/train_stairs.py \
    --task=Staircase-G1-v0 \
    --registry_name robot-mcrobotface/csv_to_npz/walk_up_33.npz:latest \
    --depth_obs \
+   --depth_cnn \
    --headless \
    --logger wandb \
    --log_project_name new_staircase \
-   --run_name walk_up_karen_staircase_33hz_depth \
+   --run_name walk_up_karen_staircase_33hz_depth_headcam_delay3_depcnn \
    --video \
    --video_length 500 \
    --video_interval 10000
+
+# python scripts/rsl_rl/train_stairs.py \
+#    --task=Staircase-MultiClip-G1-v0 \
+#    --zarr_path=data/staircase_multiclip_33hz.zarr \
+#    --sampling uniform \
+#    --use_depth \
+#    --headless \
+#    --logger wandb \
+#    --log_project_name staircase_multiclip \
+#    --run_name staircase_multiclip_depth_uniform_decimation6_headcam_nodelay \
+#    --video \
+#    --video_length 500 \
+#    --video_interval 10000

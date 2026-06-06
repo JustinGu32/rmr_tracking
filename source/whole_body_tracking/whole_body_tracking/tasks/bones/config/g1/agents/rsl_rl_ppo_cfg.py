@@ -13,6 +13,12 @@ class BonesPopArtPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     popart_epsilon: float = 1.0e-5
     popart_normalize_actor_weights: bool = False
     popart_actor_advantage_scaling: str = "whitened"
+    # Hierarchical (motion-category x reward-head) PopArt. When True, the runner
+    # builds a critic with C x H normalized outputs and reads obs['category'].
+    popart_hierarchical: bool = False
+    popart_num_categories: int | None = None
+    popart_min_samples: int = 2
+    popart_category_obs_group: str = "category"
 
 
 @configclass

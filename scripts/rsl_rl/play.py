@@ -26,6 +26,7 @@ parser.add_argument("--num_envs", type=int, default=None, help="Number of enviro
 parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
+parser.add_argument("--clip_index", type=int, default=None, help="Force a specific clip index for multi-clip playback.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
 parser.add_argument("--heightmap", action="store_true", default=False,
@@ -33,6 +34,10 @@ parser.add_argument("--heightmap", action="store_true", default=False,
 parser.add_argument("--heightmap_debug_vis", action="store_true", default=False,
                     help="Show height-map raycaster debug visualization.")
 parser.add_argument("--depth_obs", action="store_true", default=False, help="Enable optional RGB-D camera depth observations.")
+parser.add_argument("--depth_encoder", action="store_true", default=False, help="Use DepthEncoderActorCritic (MLP depth encoder); requires --depth_obs.")
+parser.add_argument("--depth_cnn", action="store_true", default=False, help="Use DepthCNNActorCritic (CNN depth encoder); requires --depth_obs.")
+parser.add_argument("--body_pos_w_obs", action="store_true", default=False,
+                    help="Enable robot_body_pos_w and motion_body_pos_w policy observations (for checkpoints trained with global body pos terms).")
 parser.add_argument("--depth_debug_save_frames", action="store_true", default=False, help="Save a few normalized depth frames during rollout.")
 parser.add_argument("--depth_debug_max_frames", type=int, default=4, help="Maximum number of depth debug frames to save.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
@@ -51,6 +56,10 @@ if args_cli.video or args_cli.depth_obs:
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 if args_cli.depth_obs:
     os.environ["WBT_USE_DEPTH_OBS"] = "1"
+if args_cli.depth_encoder:
+    os.environ["WBT_USE_DEPTH_ENCODER"] = "1"
+if args_cli.depth_cnn:
+    os.environ["WBT_USE_DEPTH_CNN"] = "1"
 if args_cli.depth_debug_save_frames:
     os.environ["WBT_DEPTH_SAVE_FRAMES"] = "1"
 os.environ["WBT_DEPTH_DEBUG_MAX_FRAMES"] = str(args_cli.depth_debug_max_frames)
@@ -106,6 +115,17 @@ def configure_height_map_obs(env_cfg, enabled: bool):
         group_cfg = getattr(env_cfg.observations, group_name, None)
         if group_cfg is not None and getattr(group_cfg, "height_scan", None) is not None:
             group_cfg.height_scan = None
+
+
+def disable_body_pos_w_obs(env_cfg):
+    """Remove robot_body_pos_w and motion_body_pos_w from all policy obs groups."""
+    for group_name in ("policy", "critic", "diffusion_collect"):
+        group_cfg = getattr(env_cfg.observations, group_name, None)
+        if group_cfg is None:
+            continue
+        for term_name in ("robot_body_pos_w", "motion_body_pos_w"):
+            if getattr(group_cfg, term_name, None) is not None:
+                setattr(group_cfg, term_name, None)
 
 
 def print_height_map_obs_debug(env, env_cfg):
@@ -207,6 +227,12 @@ def validate_checkpoint_obs_shape(ppo_runner: MotionOnPolicyRunner, resume_path:
             "The checkpoint expects 768 extra observation features, which matches the default flattened depth term. "
             "Re-run play with --depth_obs."
         )
+    elif args_cli.body_pos_w_obs and any(current_in - checkpoint_in > 0 for _, checkpoint_in, current_in in mismatches):
+        lines.append(
+            "The play env has more observations than the checkpoint. "
+            "The checkpoint was likely trained without robot_body_pos_w / motion_body_pos_w. "
+            "Re-run play without --body_pos_w_obs (it is disabled by default)."
+        )
     else:
         lines.append("Use the same observation-affecting flags for play that were used during training.")
     raise RuntimeError("\n".join(lines))
@@ -215,6 +241,51 @@ def validate_checkpoint_obs_shape(ppo_runner: MotionOnPolicyRunner, resume_path:
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
+
+
+def _decode_zarr_strings(values) -> list[str]:
+    decoded: list[str] = []
+    for value in values:
+        if isinstance(value, bytes):
+            decoded.append(value.decode("utf-8"))
+        else:
+            decoded.append(str(value))
+    return decoded
+
+
+def load_staircase_multiclip_scene_specs(zarr_path: str) -> list[dict]:
+    import zarr
+
+    store = zarr.open(zarr_path, mode="r")
+    required = ["staircase_id", "staircase_asset_path", "staircase_usd_dir"]
+    missing = [key for key in required if key not in store]
+    if missing:
+        raise KeyError(
+            f"Staircase multiclip zarr requires datasets {required}. Missing {missing} in {zarr_path}."
+        )
+
+    staircase_ids = store["staircase_id"][:]
+    asset_paths = _decode_zarr_strings(store["staircase_asset_path"][:])
+    usd_dirs = _decode_zarr_strings(store["staircase_usd_dir"][:])
+    if not (len(staircase_ids) == len(asset_paths) == len(usd_dirs)):
+        raise ValueError(
+            "staircase_id, staircase_asset_path, and staircase_usd_dir must have one value per clip."
+        )
+
+    specs_by_id: dict[int, dict] = {}
+    for staircase_id_raw, asset_path, usd_dir in zip(staircase_ids, asset_paths, usd_dirs):
+        staircase_id = int(staircase_id_raw)
+        spec = {"staircase_id": staircase_id, "asset_path": asset_path, "usd_dir": usd_dir}
+        if staircase_id in specs_by_id:
+            prev = specs_by_id[staircase_id]
+            if prev["asset_path"] != asset_path or prev["usd_dir"] != usd_dir:
+                raise ValueError(
+                    f"Inconsistent asset mapping for staircase_id={staircase_id}: "
+                    f"{prev} vs {spec}"
+                )
+        else:
+            specs_by_id[staircase_id] = spec
+    return [specs_by_id[key] for key in sorted(specs_by_id)]
 
 
 @hydra_task_config(args_cli.task, "rsl_rl_cfg_entry_point")
@@ -236,19 +307,51 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if "model" in args_cli.wandb_path:
             run_path = "/".join(args_cli.wandb_path.split("/")[:-1])
         wandb_run = api.run(run_path)
-        # loop over files in the run
-        files = [file.name for file in wandb_run.files() if "model" in file.name]
-        # files are all model_xxx.pt find the largest filename
+        run_id = wandb_run.id
+
+        # Resolve which checkpoint file to load
         if "model" in args_cli.wandb_path:
             file = args_cli.wandb_path.split("/")[-1]
         else:
-            file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
+            try:
+                files = [f.name for f in wandb_run.files() if "model" in f.name]
+                if not files:
+                    raise ValueError("No model files found in wandb run.")
+                file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))
+            except (TypeError, ValueError):
+                files = None
+                file = None
 
-        wandb_file = wandb_run.file(str(file))
-        wandb_file.download("./logs/rsl_rl/temp", replace=True)
+        # Try local wandb cache first, then fall back to cloud download
+        local_wandb_dirs = sorted(pathlib.Path("./wandb").glob(f"run-*-{run_id}")) if pathlib.Path("./wandb").exists() else []
+        local_run_dir = local_wandb_dirs[-1] / "files" if local_wandb_dirs else None
 
-        print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
-        resume_path = f"./logs/rsl_rl/temp/{file}"
+        if local_run_dir is not None and local_run_dir.exists():
+            local_models = sorted(
+                local_run_dir.glob("model_*.pt"),
+                key=lambda p: int(p.stem.split("_")[1]),
+            )
+            if local_models:
+                if file is None:
+                    local_path = local_models[-1]
+                else:
+                    local_path = local_run_dir / file
+                    if not local_path.exists():
+                        local_path = local_models[-1]
+                print(f"[INFO]: Loading model checkpoint from local wandb cache: {local_path}")
+                resume_path = str(local_path)
+            else:
+                local_run_dir = None  # fall through to cloud
+
+        if local_run_dir is None or not pathlib.Path(resume_path).exists():
+            if file is None:
+                raise RuntimeError(
+                    f"No model files found in wandb run {run_id} and no local cache found in ./wandb/."
+                )
+            wandb_file = wandb_run.file(str(file))
+            wandb_file.download("./logs/rsl_rl/temp", replace=True)
+            print(f"[INFO]: Loading model checkpoint from: {run_path}/{file}")
+            resume_path = f"./logs/rsl_rl/temp/{file}"
 
         if args_cli.motion_file is not None:
             print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
@@ -265,11 +368,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
+        if args_cli.motion_file is not None:
+            print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
+            env_cfg.commands.motion.motion_file = args_cli.motion_file
+
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
         if not hasattr(env_cfg.commands.motion, "zarr_path"):
             raise ValueError("--zarr_path was provided, but this task does not use a zarr motion command.")
+        if "Staircase-MultiClip" in (args_cli.task or ""):
+            from whole_body_tracking.tasks.staircase.staircase_env_cfg import configure_multiclip_staircase_scene
+
+            staircase_specs = load_staircase_multiclip_scene_specs(args_cli.zarr_path)
+            staircase_variant_names = configure_multiclip_staircase_scene(env_cfg.scene, staircase_specs)
+            env_cfg.commands.motion.staircase_variant_names = staircase_variant_names
+            print(
+                "[INFO] Configured staircase multiclip variants: "
+                + ", ".join(
+                    f"id={spec['staircase_id']}:{pathlib.Path(spec['asset_path']).name}"
+                    for spec in staircase_specs
+                )
+            )
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
+
+    if args_cli.clip_index is not None:
+        if not hasattr(env_cfg.commands.motion, "fixed_clip_index"):
+            raise ValueError("--clip_index was provided, but this task does not support fixed clip playback.")
+        env_cfg.commands.motion.fixed_clip_index = args_cli.clip_index
+        print(f"[INFO] Fixed multiclip playback clip_index={args_cli.clip_index}")
 
     # Override decimation if provided
     if args_cli.decimation is not None:
@@ -280,6 +406,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.commands.motion.max_clips = args_cli.max_clips
 
     configure_height_map_obs(env_cfg, args_cli.heightmap)
+    if not args_cli.body_pos_w_obs:
+        disable_body_pos_w_obs(env_cfg)
     if getattr(env_cfg.scene, "height_scanner", None) is not None and args_cli.heightmap_debug_vis:
         env_cfg.scene.height_scanner.debug_vis = True
 

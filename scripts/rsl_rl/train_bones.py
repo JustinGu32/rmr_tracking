@@ -60,7 +60,7 @@ parser.add_argument(
     "--popart_group_preset",
     type=str,
     default="actual_individual",
-    choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual"],
+    choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual", "all_rewards"],
     help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.",
 )
 parser.add_argument(
@@ -69,6 +69,41 @@ parser.add_argument(
     default="whitened",
     choices=["whitened", "sigma_rescaled", "raw"],
     help="Actor advantage scaling mode when --popart_multihead is enabled.",
+)
+parser.add_argument(
+    "--popart_grouped_actor_weight_mode",
+    type=str,
+    default="uniform",
+    choices=["uniform", "sum_user_weights"],
+    help="How to weight grouped PopArt heads in the actor advantage aggregation.",
+)
+parser.add_argument(
+    "--popart_momentum",
+    type=float,
+    default=None,
+    help="Override PopArt EMA momentum when --popart_multihead is enabled.",
+)
+parser.add_argument(
+    "--popart_hierarchical",
+    action="store_true",
+    default=False,
+    help="Enable hierarchical (motion-category x reward-head) PopArt. PopArt stats "
+    "indexed by (category, head). Implies grouped reward heads + the bones per-term "
+    "reward manager + a 'category' observation group.",
+)
+parser.add_argument(
+    "--popart_categorizer",
+    type=str,
+    default="balanced",
+    choices=["balanced", "mid", "fine"],
+    help="Motion categorizer preset for hierarchical PopArt (see bones.mdp.categorizers).",
+)
+parser.add_argument(
+    "--popart_balanced_sampling",
+    action="store_true",
+    default=False,
+    help="With --popart_hierarchical: sample category uniformly -> clip -> frame, so "
+    "rare motion categories get an equal env share (recommended for the B-vs-E comparison).",
 )
 
 # append RSL-RL cli arguments
@@ -92,6 +127,10 @@ if args_cli.motion_joint_pos:
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 # if args_cli.assist_mode is not None:
 #     os.environ["WBT_ASSIST_MODE"] = args_cli.assist_mode
+# Set BEFORE hydra instantiates the env cfg, so the env cfg __post_init__ can
+# attach the 'category' observation group used by hierarchical PopArt.
+if args_cli.popart_hierarchical:
+    os.environ["BONES_POPART_HIERARCHICAL"] = "1"
 if args_cli.crane:
     os.environ["BONES_CRANE"] = "1"
 if args_cli.contact_feasibility:
@@ -280,6 +319,7 @@ def dump_yaml(filename: str, data: dict | object, sort_keys: bool = False):
 import whole_body_tracking.tasks  # noqa: F401
 from whole_body_tracking.tasks.bones.popart_reward_manager import install_bones_per_term_reward_manager
 from whole_body_tracking.utils.bones_popart import BonesPopArtOnPolicyRunner
+from whole_body_tracking.utils.hierarchical_popart import BonesCategoryRewardOnPolicyRunner
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -299,12 +339,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
         agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
         agent_cfg.algorithm.popart_actor_advantage_scaling = args_cli.popart_actor_advantage_scaling
+        agent_cfg.algorithm.popart_grouped_actor_weight_mode = args_cli.popart_grouped_actor_weight_mode
+        if args_cli.popart_momentum is not None:
+            agent_cfg.algorithm.popart_momentum = args_cli.popart_momentum
+
+    if args_cli.popart_hierarchical:
+        # Hierarchical PopArt: grouped reward heads + per-(category,head) stats.
+        agent_cfg.algorithm.popart_hierarchical = True
+        agent_cfg.algorithm.popart_head_mode = "grouped"
+        agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
+        agent_cfg.algorithm.popart_actor_advantage_scaling = args_cli.popart_actor_advantage_scaling
+        agent_cfg.algorithm.popart_grouped_actor_weight_mode = args_cli.popart_grouped_actor_weight_mode
+        if args_cli.popart_momentum is not None:
+            agent_cfg.algorithm.popart_momentum = args_cli.popart_momentum
+        # Category assignment + (optionally) balanced sampling on the motion command.
+        env_cfg.commands.motion.categorizer = args_cli.popart_categorizer
+        env_cfg.commands.motion.balanced_category_sampling = args_cli.popart_balanced_sampling
+        print(
+            f"[INFO] Hierarchical PopArt: categorizer={args_cli.popart_categorizer} "
+            f"group_preset={args_cli.popart_group_preset} "
+            f"balanced_sampling={args_cli.popart_balanced_sampling} "
+            f"actor_adv_scaling={args_cli.popart_actor_advantage_scaling}"
+        )
 
     # Append sampling suffix to run name
     if args_cli.sampling == "uniform" and agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_uniform"
     if args_cli.popart_multihead and agent_cfg.run_name:
         agent_cfg.run_name = f"{agent_cfg.run_name}_popart"
+    if args_cli.popart_hierarchical and agent_cfg.run_name:
+        suffix = "_hierpopart" + ("_bal" if args_cli.popart_balanced_sampling else "")
+        agent_cfg.run_name = f"{agent_cfg.run_name}{suffix}"
 
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -391,7 +456,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
-    if args_cli.popart_multihead:
+    if args_cli.popart_multihead or args_cli.popart_hierarchical:
         install_bones_per_term_reward_manager(env)
 
     # wrap around environment for rsl-rl
@@ -414,7 +479,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO]: Resuming from wandb run {wandb_run.id}, checkpoint: {latest_file.name}")
 
     # create runner from rsl-rl
-    runner_cls = BonesPopArtOnPolicyRunner if args_cli.popart_multihead else MotionOnPolicyRunner
+    if args_cli.popart_hierarchical:
+        runner_cls = BonesCategoryRewardOnPolicyRunner
+    elif args_cli.popart_multihead:
+        runner_cls = BonesPopArtOnPolicyRunner
+    else:
+        runner_cls = MotionOnPolicyRunner
     runner = runner_cls(
         env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device, registry_name=registry_name
     )
