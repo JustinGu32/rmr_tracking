@@ -45,3 +45,6 @@ _build
 
 **/assets/
 artifacts/
+
+# Collected datasets (large, never commit)
+STAIRCASE_DATA_*/

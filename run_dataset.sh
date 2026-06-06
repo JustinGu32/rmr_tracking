@@ -29,7 +29,7 @@ echo "working directory = "$SLURM_SUBMIT_DIR
 source /nlp/scr/chrzhang/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab
 
-python scripts/multi_collect.py --seed 0
+python scripts/multi_collect.py --seed 0 --disable_rgb
 
 # done
 echo "Done"

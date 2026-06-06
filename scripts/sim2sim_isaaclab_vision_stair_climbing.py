@@ -9,9 +9,17 @@ env and manually attached a staircase ahead of each trajectory. Here we just
 use the Staircase task directly, so the stairs render exactly as they did
 during data collection.
 
+IMPORTANT — match the data-collection vision setup. run_dataset.sh collected
+with `--disable_rgb`, so the dataset stores only DeFM depth embeddings (1024-dim)
+and the model expects depth-only vision. Pass `--disable_rgb` here too; otherwise
+this script feeds the RGB+depth concat (2176-dim) the model was never trained on
+(and the dim check will abort).
+
 Usage:
+  # depth-only, matching run_dataset.sh (recommended for this dataset):
   python scripts/sim2sim_isaaclab_vision_stair_climbing.py \
       --checkpoint /path/to/ckpt.pt \
+      --disable_rgb \
       --headless --video
 
   # pick a different staircase motion clip:
@@ -24,6 +32,7 @@ Usage:
 import argparse
 import os
 import sys
+from collections import deque
 from pathlib import Path
 from threading import Lock
 
@@ -31,7 +40,11 @@ import numpy as np
 import torch
 
 # Depth camera must be configured before any isaaclab imports.
+# ENABLE_CAMERAS alone is NOT enough for the staircase task: StaircaseEnvCfg.__post_init__
+# nulls scene.depth_camera unless WBT_USE_DEPTH_OBS=1 (see staircase_env_cfg.py), which
+# would crash at scene["depth_camera"] below. This vision script always needs the camera.
 os.environ["ENABLE_CAMERAS"] = "1"
+os.environ["WBT_USE_DEPTH_OBS"] = "1"
 
 TML_ROOT = Path(__file__).resolve().parent.parent
 RMR_TRACKING_ROOT = TML_ROOT.parent / "rmr_tracking"
@@ -60,17 +73,46 @@ parser.add_argument("--task", type=str, default="Staircase-G1-Collect-v0",
                     help="Isaac Lab task (Staircase-G1-Collect-v0, Staircase-G1-Play-v0, ...)")
 parser.add_argument("--num_envs", type=int, default=1, help="Number of environments")
 parser.add_argument("--motion_file", type=str,
-                    default="/move/u/karenvo/Projects/rmr_tracking/artifacts/staircase_final_v3:v0/motion.npz",
+                    default="/move/u/chrzhang/rmr_tracking/artifacts/walk_up_33.npz:v0/motion.npz",
                     help="Path to motion file. Must match the staircase MotionLoader format "
                          "(keys: fps, joint_pos, joint_vel, body_pos_w, body_quat_w, "
                          "body_lin_vel_w, body_ang_vel_w; optional object_pos_w).")
 parser.add_argument("--video", action="store_true", help="Record simulation to a video file")
 parser.add_argument("--video_folder", type=str, default="videos/vision_stair_climbing", help="Folder to save video")
 parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record")
+parser.add_argument("--video_name", type=str, default=None, help="Video name prefix (overrides the auto-generated name)")
 parser.add_argument("--debug_vision", action="store_true", help="Print and save robot vision (RGB/depth) for debugging")
+parser.add_argument("--debug_policy", type=int, default=0,
+                    help="Print policy action diagnostics (normalized vs unnormalized action range, "
+                         "normalizer stats) for the first N control steps. Use this to tell whether the "
+                         "robot falls because the policy emits garbage actions (huge/normalized-looking "
+                         "values, or a missing normalizer) vs. a fine policy with a bad init/dynamics. "
+                         "Try --debug_policy 5.")
+# --- Closed-loop stabilizers (DiffusionAgentIsaac supports these but the script
+# left them off, which is the jitter-prone config). When the policy reproduces
+# training actions open-loop (see teacher_forcing_check.py) but the robot still
+# diverges in sim, these reduce compounding error. action_inpainting is the most
+# important for the DiffuseCLoC co-diffusion model: it anchors each step's
+# diffusion on the committed past actions so the trajectory stays continuous. ---
+parser.add_argument("--action_inpainting", action="store_true",
+                    help="Condition each step's diffusion on the previous steps' committed actions "
+                         "(temporal continuity). Strongly recommended for closed-loop stability.")
+parser.add_argument("--temporal_ensemble_size", type=int, default=1,
+                    help="Average overlapping action predictions from the last K inferences (à la ACT/"
+                         "Diffusion Policy action chunking). 4-8 markedly smooths the closed loop. Default 1 (off).")
+parser.add_argument("--ensemble_size", type=int, default=1,
+                    help="Average N diffusion samples per step to cut per-step sampling noise. Default 1 (off).")
+parser.add_argument("--enable_rolling", action="store_true",
+                    help="Rolling trajectory optimization (warm-start denoising from the previous step).")
 parser.add_argument("--no_vision", action="store_true",
                     help="Skip vision encoding and pass vision_embeds=None to the policy. "
                          "Use this when running checkpoints that were trained without vision.")
+parser.add_argument("--disable_rgb", action="store_true",
+                    help="Depth-only vision: skip the SigLIP RGB encoder and pass only the DeFM "
+                         "depth embedding (1024-dim) to the policy. MUST match data collection — "
+                         "run_dataset.sh collected with --disable_rgb, so the dataset has no "
+                         "rgb_embed and the model expects depth-only (1024) vision, NOT the "
+                         "RGB+depth (2176) concat this script uses by default.")
 parser.add_argument("--forward_speed", type=float, default=0.0, help="Forward speed")
 parser.add_argument("--lateral_speed", type=float, default=0.0, help="Lateral speed")
 parser.add_argument("--spin_speed", type=float, default=0.0, help="Spin speed")
@@ -79,7 +121,52 @@ parser.add_argument("--spin_speed", type=float, default=0.0, help="Spin speed")
 # the dataset). Set to e.g. 50.0 if your dataset was actually 50 Hz.
 parser.add_argument("--control_hz", type=float, default=None,
                     help="Override control-loop frequency in Hz. Default: use the env's native rate "
-                         "(Staircase-Collect = decimation 6 * sim.dt 0.005 -> ~33.33 Hz).")
+                         "(Staircase-Collect = decimation 6 * sim.dt 0.005 -> 33.3 Hz, matching 33 Hz "
+                         "collection). Pass --control_hz 50 to eval a model trained on the OLD 50 Hz data.")
+parser.add_argument("--action_shift", type=int, default=0,
+                    help="Inference-latency compensation. Delay the APPLIED action by N control "
+                         "steps: the action computed from state s_t is held and applied N steps "
+                         "later, at s_{t+N}. MUST match the dataset's action_shift used at training "
+                         "(use_shifted_action=true, action_shift=1 in the dit_backbone_vision_root "
+                         "config). This sim otherwise applies a_t at s_t (zero latency), whereas "
+                         "holosoma/real apply it ~25 ms later at s_{t+1}; the shifted policy predicts "
+                         "the t+1 action, so delaying it here makes sim match real. Default 0 (off, "
+                         "for checkpoints trained without the shift).")
+# --- Knobs that control how closely eval matches the data-collection conditions ---
+# Defaults are chosen to MATCH run_dataset.sh / multi_collect.py so evaluation
+# reproduces the training-time scene and initial-state distribution.
+parser.add_argument("--min_sample_idx", type=int, default=110,
+                    help="Min reference-motion frame the robot is reset to. Collection uses 140 "
+                         "(~20 frames before the climb onset @ frame ~161).")
+parser.add_argument("--max_sample_idx", type=int, default=130,
+                    help="Max reference-motion frame the robot is reset to. Collection uses 150, so "
+                         "resets jitter the start over frames [140,150] just before the climb (the "
+                         "sampler clamps the start to [min,max] directly, NOT subtracting steps). Set "
+                         "equal to --min_sample_idx (e.g. both 140) for a deterministic start / clean video.")
+parser.add_argument("--camera_update_period", type=float, default=0.1,
+                    help="Depth-camera refresh period in seconds. Collection left this at the cfg "
+                         "default 0.1 (10 Hz), so the policy was trained on depth that refreshes "
+                         "every ~5 control steps. Keep 0.1 to match training.")
+parser.add_argument("--actuator_max_delay", type=int, default=0,
+                    help="Max actuator delay (steps) applied to all actuator groups. Collection "
+                         "forced 0 (the robot cfg default is 3). Keep 0 to match training.")
+# --- Diagnostics: separate "data depends on the assistive spring" from "policy diverges" ---
+parser.add_argument("--keep_spring", action="store_true",
+                    help="Do NOT disable events.assistive_spring_force. The dataset was collected "
+                         "with this 600 N/m vertical spring + 0.5 gravity-comp + 120 angular spring "
+                         "ACTIVE (StaircaseCollectCfg leaves curriculum=None, so curriculum_factor "
+                         "stays at its default 1.0). Use this to test whether the robot only stays "
+                         "up because of that assist.")
+parser.add_argument("--replay_actions", action="store_true",
+                    help="Open-loop replay: feed the RECORDED data/act from the zarr instead of the "
+                         "policy's predictions. If the robot collapses anyway, the recorded actions "
+                         "themselves are not self-sufficient (spring-contaminated data); if it stays "
+                         "up, the fall is the policy's closed-loop divergence.")
+parser.add_argument("--replay_zarr", type=str,
+                    default="/move/u/chrzhang/rmr_tracking/STAIRCASE_DATA_COLLECTED/merged_dataset.zarr",
+                    help="Zarr dataset to replay recorded actions from (with --replay_actions).")
+parser.add_argument("--replay_episode", type=int, default=0,
+                    help="Episode index in the zarr to replay (with --replay_actions).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if getattr(args_cli, "video", False):
@@ -174,18 +261,21 @@ class KeyboardJoystick:
             self._listener.stop()
 
 
-def load_vision_encoders(device: str = "cuda"):
+def load_vision_encoders(device: str = "cuda", load_rgb: bool = True):
     siglip_model, siglip_processor = None, None
     defm_model = None
-    try:
-        from transformers import AutoImageProcessor, AutoModel
-        ckpt = "google/siglip2-so400m-patch14-384"
-        siglip_model = AutoModel.from_pretrained(ckpt, device_map=device).eval()
-        siglip_processor = AutoImageProcessor.from_pretrained(ckpt)
-        print(f"[VISION] Loaded SigLIP2 from {ckpt}")
-    except Exception as e:
-        print(f"[VISION] Failed to load SigLIP: {e}")
-        raise
+    if load_rgb:
+        try:
+            from transformers import AutoImageProcessor, AutoModel
+            ckpt = "google/siglip2-so400m-patch14-384"
+            siglip_model = AutoModel.from_pretrained(ckpt, device_map=device).eval()
+            siglip_processor = AutoImageProcessor.from_pretrained(ckpt)
+            print(f"[VISION] Loaded SigLIP2 from {ckpt}")
+        except Exception as e:
+            print(f"[VISION] Failed to load SigLIP: {e}")
+            raise
+    else:
+        print("[VISION] --disable_rgb: skipping SigLIP RGB encoder (depth-only, matches collection).")
     try:
         torch.hub.set_dir("/move/u/chrzhang/.cache/torch/hub")
         defm_model = torch.hub.load(
@@ -250,16 +340,18 @@ def _debug_vision_step(step_count: int, rgb: np.ndarray, depth: np.ndarray, debu
     depth_min = float(np.min(depth_flat[valid])) if valid.any() else float("nan")
     depth_max = float(np.max(depth_flat[valid])) if valid.any() else float("nan")
     depth_mean = float(np.mean(depth_flat[valid])) if valid.any() else float("nan")
+    rgb_shape = None if rgb is None else rgb.shape
     print(
-        f"[VISION step {step_count}] rgb {rgb.shape} dtype={rgb.dtype} | "
+        f"[VISION step {step_count}] rgb {rgb_shape} | "
         f"depth {np.asarray(depth).shape} min={depth_min:.3f} max={depth_max:.3f} mean={depth_mean:.3f} m"
     )
     os.makedirs(debug_dir, exist_ok=True)
     from PIL import Image
-    rgb_uint8 = np.clip(rgb, 0, 255).astype(np.uint8)
-    if rgb_uint8.ndim == 4:
-        rgb_uint8 = rgb_uint8.squeeze(0)
-    Image.fromarray(rgb_uint8, mode="RGB").save(os.path.join(debug_dir, f"step_{step_count:05d}_rgb.png"))
+    if rgb is not None:
+        rgb_uint8 = np.clip(rgb, 0, 255).astype(np.uint8)
+        if rgb_uint8.ndim == 4:
+            rgb_uint8 = rgb_uint8.squeeze(0)
+        Image.fromarray(rgb_uint8, mode="RGB").save(os.path.join(debug_dir, f"step_{step_count:05d}_rgb.png"))
     d = np.asarray(depth).squeeze().astype(np.float64)
     if d.size > 0:
         valid_mask = np.isfinite(d) & (d > 0)
@@ -308,10 +400,27 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     print(f"[INFO] Control rate: decimation={env_cfg.decimation} * sim.dt={env_cfg.sim.dt} "
           f"-> {native_hz:.3f} Hz", flush=True)
 
-    # Ensure the on-robot depth camera refreshes every physics step so policy
-    # observations are as fresh as the training-time renders.
+    # Match the actuator delay used during collection. collect_dataset.py forced
+    # min_delay=max_delay=0 for every actuator group; the G1 cfg default is 0..3,
+    # so without this the policy would face random latency it never trained on.
+    actuators = getattr(getattr(env_cfg.scene, "robot", None), "actuators", None)
+    if actuators is not None:
+        for act_name, act_cfg in actuators.items():
+            if hasattr(act_cfg, "min_delay"):
+                act_cfg.min_delay = 0
+            if hasattr(act_cfg, "max_delay"):
+                act_cfg.max_delay = args_cli.actuator_max_delay
+        print(f"[INFO] Actuator delay set to min=0,max={args_cli.actuator_max_delay} for "
+              f"{list(actuators.keys())} (collection used 0).", flush=True)
+
+    # Match the depth-camera refresh rate the policy was TRAINED on. Collection
+    # left update_period at the cfg default 0.1 s (10 Hz), so the depth embedding
+    # only changed every ~5 control steps. Refreshing every physics step (sim.dt)
+    # would feed the policy fresher depth than it ever saw, an eval/train mismatch.
     if getattr(env_cfg.scene, "depth_camera", None) is not None:
-        env_cfg.scene.depth_camera.update_period = env_cfg.sim.dt
+        env_cfg.scene.depth_camera.update_period = args_cli.camera_update_period
+        print(f"[INFO] depth_camera.update_period = {args_cli.camera_update_period}s "
+              f"(collection used 0.1s / 10 Hz).", flush=True)
     else:
         print("[WARN] env_cfg.scene.depth_camera is None — was ENABLE_CAMERAS=1 set before imports? "
               "The script set it at module load; if you're running via a wrapper that strips env, "
@@ -365,8 +474,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # This mirrors what Staircase-G1-Play-v0 does (staircase_env_cfg.py cfg g1).
     if hasattr(env_cfg, "events"):
         if getattr(env_cfg.events, "assistive_spring_force", None) is not None:
-            env_cfg.events.assistive_spring_force = None
-            print("[INFO] Disabled events.assistive_spring_force for sim2sim.", flush=True)
+            if args_cli.keep_spring:
+                print("[INFO] --keep_spring: leaving events.assistive_spring_force ACTIVE "
+                      "(matches data collection, where curriculum_factor stayed at 1.0).", flush=True)
+            else:
+                env_cfg.events.assistive_spring_force = None
+                print("[INFO] Disabled events.assistive_spring_force for sim2sim.", flush=True)
         if getattr(env_cfg.events, "push_robot", None) is not None:
             env_cfg.events.push_robot = None
             print("[INFO] Disabled events.push_robot for sim2sim.", flush=True)
@@ -378,16 +491,28 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 setattr(env_cfg.curriculum, curr_name, None)
                 print(f"[INFO] Disabled curriculum.{curr_name}.", flush=True)
 
-    # Start the reference motion from frame 0 on every reset, like Play does.
-    # Otherwise the reference-motion anchor the env renders is at a random
-    # frame, which mostly affects debug viz but can be confusing.
+    # Reset the robot to reference-motion frames in [min_sample_idx, max_sample_idx],
+    # matching collection (140..150) so eval covers the same start-pose distribution
+    # the model trained on (just before the stair climb). Set --min_sample_idx ==
+    # --max_sample_idx (e.g. both 140) for a deterministic start / clean video.
     if hasattr(env_cfg, "commands") and hasattr(env_cfg.commands, "motion"):
         if hasattr(env_cfg.commands.motion, "min_sample_idx"):
-            env_cfg.commands.motion.min_sample_idx = 0
+            env_cfg.commands.motion.min_sample_idx = args_cli.min_sample_idx
         if hasattr(env_cfg.commands.motion, "max_sample_idx"):
-            env_cfg.commands.motion.max_sample_idx = 0
+            env_cfg.commands.motion.max_sample_idx = args_cli.max_sample_idx
+        print(f"[INFO] Reset sample_idx range = [{args_cli.min_sample_idx}, "
+              f"{args_cli.max_sample_idx}] (collection uses [140, 150]).", flush=True)
 
     print("[INFO] Loading diffusion policy (DiffusionAgentIsaac); wandb download can be slow...", flush=True)
+    stabilizer_kwargs = dict(
+        enable_action_inpainting=args_cli.action_inpainting,
+        temporal_ensemble_size=args_cli.temporal_ensemble_size,
+        ensemble_size=args_cli.ensemble_size,
+        enable_rolling=args_cli.enable_rolling,
+    )
+    print(f"[INFO] Closed-loop stabilizers: action_inpainting={args_cli.action_inpainting}, "
+          f"temporal_ensemble_size={args_cli.temporal_ensemble_size}, "
+          f"ensemble_size={args_cli.ensemble_size}, enable_rolling={args_cli.enable_rolling}", flush=True)
     model_name = ""
     if args_cli.checkpoint:
         policy = DiffusionAgentIsaac(
@@ -396,6 +521,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
+            **stabilizer_kwargs,
         )
         model_name = args_cli.checkpoint.split("/")[-3]
     else:
@@ -406,6 +532,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             compile=False,
             warmup=False,
             deterministic=args_cli.deterministic,
+            **stabilizer_kwargs,
         )
         model_name = args_cli.wandb_path.split("/")[-1]
     print("[INFO] Diffusion policy loaded (Isaac ordering).", flush=True)
@@ -414,9 +541,42 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         siglip_model = siglip_processor = defm_model = None
         print("[INFO] --no_vision: skipping vision encoder load; will pass vision_embeds=None.", flush=True)
     else:
-        print("[INFO] Loading vision encoders (SigLIP2 + DeFM)...", flush=True)
-        siglip_model, siglip_processor, defm_model = load_vision_encoders(device)
+        load_rgb = not args_cli.disable_rgb
+        enc_desc = "DeFM (depth only)" if args_cli.disable_rgb else "SigLIP2 + DeFM"
+        print(f"[INFO] Loading vision encoders ({enc_desc})...", flush=True)
+        siglip_model, siglip_processor, defm_model = load_vision_encoders(device, load_rgb=load_rgb)
         print("[INFO] Vision encoders loaded.", flush=True)
+
+    # Sanity-check that the vision embedding we will feed matches what the policy's
+    # backbone expects. This is exactly the RGB-vs-depth-only trap: a depth-only
+    # model expects 1024 dims, the RGB+depth concat is 2176. Catch it before the
+    # control loop instead of failing deep inside the first inference.
+    if not args_cli.no_vision:
+        expected_vision_dim = None
+        backbone = getattr(policy.actor, "backbone", None)
+        if backbone is not None:
+            for attr in ("vision_input_dim", "v_input_dim", "v_output_dim"):
+                val = getattr(backbone, attr, None)
+                if val:
+                    expected_vision_dim = int(val)
+                    break
+            # ContextConditionedDiT doesn't expose a vision-dim attribute; read it
+            # off the vision context projection layer instead (Linear(vision_dim, hidden)).
+            if expected_vision_dim is None:
+                proj = getattr(backbone, "vision_ctx_proj1", None)
+                if proj is not None and hasattr(proj, "in_features"):
+                    expected_vision_dim = int(proj.in_features)
+        provided_vision_dim = DEPTH_EMBED_DIM if args_cli.disable_rgb else VISION_EMBED_DIM
+        print(f"[VISION] Feeding {provided_vision_dim}-dim embeddings "
+              f"({'depth-only' if args_cli.disable_rgb else 'RGB+depth concat'}); "
+              f"model expects {expected_vision_dim}.", flush=True)
+        if expected_vision_dim is not None and expected_vision_dim != provided_vision_dim:
+            raise SystemExit(
+                f"[VISION][ERROR] Vision dim mismatch: model expects {expected_vision_dim} but this "
+                f"run feeds {provided_vision_dim}. Your dataset was collected with --disable_rgb "
+                f"(depth-only, 1024). {'Add' if not args_cli.disable_rgb else 'Remove'} --disable_rgb "
+                f"to match."
+            )
 
     print(f"[INFO] Creating environment (render_mode={render_mode!r}, may take 1-2 min)...", flush=True)
     env = gym.make(args_cli.task, cfg=env_cfg, device=device, render_mode=render_mode, seed=seed)
@@ -437,7 +597,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if record_video:
         video_folder = os.path.abspath(os.path.expanduser(getattr(args_cli, "video_folder", "videos/vision_staircase")))
         video_length = getattr(args_cli, "video_length", 500)
-        if args_cli.guidance_type:
+        if getattr(args_cli, "video_name", None):
+            video_name = args_cli.video_name
+        elif args_cli.guidance_type:
             video_name = f"{model_name}_staircase_fwd{args_cli.forward_speed}_lat{args_cli.lateral_speed}_spin{args_cli.spin_speed}_scale{args_cli.guidance_scale}"
         else:
             video_name = f"{model_name}_staircase_noguidance"
@@ -477,6 +639,26 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     max_steps = args_cli.steps
     env_id = 0
     action = None
+    # Inference-latency compensation: queue of the last `action_shift` predictions.
+    # Each step we apply the oldest (computed action_shift steps ago) and push the
+    # newest, so a_t computed from s_t is applied at s_{t+action_shift}, matching
+    # holosoma/real and the action_shift relabeling used at training time.
+    action_queue = None
+    if args_cli.action_shift > 0:
+        print(f"[INFO] action_shift={args_cli.action_shift}: applied action is delayed "
+              f"{args_cli.action_shift} control step(s) to match training relabeling.", flush=True)
+
+    replay_acts = None
+    if args_cli.replay_actions:
+        import zarr as _zarr
+        _z = _zarr.open(args_cli.replay_zarr, "r")
+        _ee = _z["meta/episode_ends"][:]
+        _starts = np.concatenate([[0], _ee[:-1]])
+        _s, _e = int(_starts[args_cli.replay_episode]), int(_ee[args_cli.replay_episode])
+        replay_acts = _z["data/act"][_s:_e].astype(np.float32)
+        print(f"[REPLAY] Open-loop replay of recorded data/act ep={args_cli.replay_episode} "
+              f"({replay_acts.shape[0]} frames) from {args_cli.replay_zarr}. Policy is BYPASSED.",
+              flush=True)
     debug_vision_dir = ""
     live_rgb_embs: list = []
     live_depth_embs: list = []
@@ -503,21 +685,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             vision_embeds = None
         else:
             camera_data = env.unwrapped.scene["depth_camera"].data
-            rgb = camera_data.output["rgb"].detach().cpu().numpy()
             depth = camera_data.output["depth"].detach().cpu().numpy()
-            if debug_vision and step_count % 200 == 0:
-                _debug_vision_step(step_count, rgb, depth, debug_vision_dir)
-            rgb_emb = encode_rgb(rgb, siglip_model, siglip_processor, device)
             depth_emb = encode_depth(depth, defm_model, device)
-            vision_embeds = np.concatenate([rgb_emb, depth_emb], axis=0).astype(np.float32)
+            if args_cli.disable_rgb:
+                # Depth-only, matching collection (--disable_rgb). The dataset has no
+                # rgb_embed, so the model's vision input is just the DeFM 1024-dim embed.
+                rgb = None
+                rgb_emb = None
+                vision_embeds = depth_emb.astype(np.float32)
+            else:
+                rgb = camera_data.output["rgb"].detach().cpu().numpy()
+                rgb_emb = encode_rgb(rgb, siglip_model, siglip_processor, device)
+                # Concat order is [rgb, depth], matching the training dataset's
+                # vision_embeds assembly (g1_offline_dataset.py: rgb then depth).
+                vision_embeds = np.concatenate([rgb_emb, depth_emb], axis=0).astype(np.float32)
+            if debug_vision and step_count <= 200 and step_count % 20 == 0:
+                _debug_vision_step(step_count, rgb, depth, debug_vision_dir)
             if debug_vision:
-                live_rgb_embs.append(rgb_emb.astype(np.float32))
+                if rgb_emb is not None:
+                    live_rgb_embs.append(rgb_emb.astype(np.float32))
                 live_depth_embs.append(depth_emb.astype(np.float32))
                 if len(raw_depth_samples) < RAW_SAMPLE_LIMIT:
-                    raw_rgb_samples.append(np.asarray(rgb).copy())
+                    if rgb is not None:
+                        raw_rgb_samples.append(np.asarray(rgb).copy())
                     raw_depth_samples.append(np.asarray(depth).copy())
 
-        if guidance_fn is not None:
+        if replay_acts is not None:
+            # Open-loop replay: ignore obs/vision, feed the recorded action. Hold the
+            # last recorded action once we run past the episode length.
+            idx = min(step_count, replay_acts.shape[0] - 1)
+            action = replay_acts[idx].copy()
+        elif guidance_fn is not None:
             if args_cli.guidance_type == "joystick" and keyboard_joystick is not None:
                 if hasattr(guidance_fn, "joystick_values"):
                     guidance_fn.joystick_values[0] = keyboard_joystick.lx
@@ -531,15 +729,47 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                 guidance_fn=guidance_fn,
                 guidance_kwargs=None,
                 guidance_scale=args_cli.guidance_scale,
+                debug=step_count < args_cli.debug_policy,
             )
         else:
             action = policy.get_action(
                 body_pos, body_quat, body_lin_vel, body_ang_vel,
                 joint_pos, joint_vel,
                 vision_embeds=vision_embeds,
+                debug=step_count < args_cli.debug_policy,
             )
         if action is None:
             action = np.zeros(29, dtype=np.float32)
+
+        # Inference-latency compensation (skip in open-loop replay, which feeds
+        # recorded actions directly). Apply the action computed `action_shift`
+        # steps ago and queue the freshly computed one. The queue is primed with
+        # the first prediction so step 0 applies its own action (no spurious
+        # zero/default action at start); every later step is delayed by one.
+        if args_cli.action_shift > 0 and replay_acts is None:
+            action = np.asarray(action, dtype=np.float32)
+            if action_queue is None:
+                action_queue = deque(
+                    [action.copy() for _ in range(args_cli.action_shift)],
+                    maxlen=args_cli.action_shift,
+                )
+            applied_action = action_queue[0].copy()
+            action_queue.append(action.copy())  # maxlen evicts the one we just read
+            action = applied_action
+
+        # Flushed action diagnostics for the first --debug_policy steps. These are
+        # printed by the SCRIPT (not the library) with flush=True so they survive
+        # Isaac's hard process teardown, which drops unflushed stdout. `action` here
+        # is the unnormalized joint-position target the env will apply: it should be
+        # plausible (~order ±1 rad, near the default pose), NOT huge (±5/±10 -> bad
+        # model) and NOT stuck in [-1,1] looking normalized (-> normalizer issue).
+        if step_count < args_cli.debug_policy:
+            a = np.asarray(action, dtype=np.float64)
+            robot = env.unwrapped.scene["robot"]
+            pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
+            print(f"[ACT step {step_count}] action min={a.min():.3f} max={a.max():.3f} "
+                  f"mean={a.mean():.3f} absmax={np.abs(a).max():.3f} | pelvis_z={pelvis_z:.3f}m",
+                  flush=True)
 
         action = torch.from_numpy(action).float().to(device).unsqueeze(0)
 
@@ -551,37 +781,38 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if step_count % 100 == 0:
             robot = env.unwrapped.scene["robot"]
             pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
-            print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m")
+            print(f"Step {step_count}: pelvis height = {pelvis_z:.3f}m", flush=True)
 
     if keyboard_joystick is not None:
         keyboard_joystick.stop()
 
-    if debug_vision and live_rgb_embs:
+    # Gate on depth embeds, not rgb: with --disable_rgb there are no rgb embeds,
+    # but we still want the depth embeds/raw depth dumped (this is the whole point
+    # of the depth-only OOD analysis). rgb_embed/rgb are saved only if present.
+    if debug_vision and live_depth_embs:
         embeds_path = os.path.join(debug_vision_dir, "live_embeds.npz")
-        np.savez_compressed(
-            embeds_path,
-            rgb_embed=np.stack(live_rgb_embs, axis=0),
-            depth_embed=np.stack(live_depth_embs, axis=0),
-        )
-        print(f"[VISION] Saved {len(live_rgb_embs)} live embeddings to {embeds_path}", flush=True)
+        embeds_kwargs = {"depth_embed": np.stack(live_depth_embs, axis=0)}
+        if live_rgb_embs:
+            embeds_kwargs["rgb_embed"] = np.stack(live_rgb_embs, axis=0)
+        np.savez_compressed(embeds_path, **embeds_kwargs)
+        print(f"[VISION] Saved {len(live_depth_embs)} live depth embeddings to {embeds_path}", flush=True)
         if raw_depth_samples:
             raw_path = os.path.join(debug_vision_dir, "live_raw_vision.npz")
-            np.savez_compressed(
-                raw_path,
-                rgb=np.stack(raw_rgb_samples, axis=0),
-                depth=np.stack(raw_depth_samples, axis=0),
-            )
-            print(f"[VISION] Saved {len(raw_depth_samples)} raw rgb/depth samples to {raw_path}",
+            raw_kwargs = {"depth": np.stack(raw_depth_samples, axis=0)}
+            if raw_rgb_samples:
+                raw_kwargs["rgb"] = np.stack(raw_rgb_samples, axis=0)
+            np.savez_compressed(raw_path, **raw_kwargs)
+            print(f"[VISION] Saved {len(raw_depth_samples)} raw depth samples to {raw_path}",
                   flush=True)
 
-    print(f"[INFO] Completed {step_count} steps")
+    print(f"[INFO] Completed {step_count} steps", flush=True)
     robot = env.unwrapped.scene["robot"]
     pelvis_z = robot.data.body_pos_w[env_id, 0, 2].item()
-    print(f"[INFO] Final pelvis height = {pelvis_z:.3f}m")
+    print(f"[INFO] Final pelvis height = {pelvis_z:.3f}m", flush=True)
     if pelvis_z < 0.3:
-        print("[WARNING] Robot appears to have fallen")
+        print("[WARNING] Robot appears to have fallen", flush=True)
     else:
-        print("[SUCCESS] Robot maintained balance")
+        print("[SUCCESS] Robot maintained balance", flush=True)
     env.close()
     simulation_app.close()
 

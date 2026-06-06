@@ -91,6 +91,13 @@ parser.add_argument("--min_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--max_delay", type=int, default=0, help="actuator delay.")
 parser.add_argument("--num_obstacles", type=int, default=0, help="Number of obstacles to generate.")
 parser.add_argument("--seed", type=int, default=None, help="Random seed for the experiment.")
+parser.add_argument(
+    "--disable_rgb",
+    action="store_true",
+    default=False,
+    help="Skip the SigLIP RGB encoder and store depth-only embeddings (no rgb_embed keys). "
+    "Matches the sim2sim --disable_rgb model and the existing STAIRCASE_DATA_COLLECTED schema.",
+)
 
 def none_or_int(value):
     if value.lower() == 'none':
@@ -316,20 +323,20 @@ def main():
     NUM_EPISODE = int(args_cli.num_eps_collect)
     
     # Noise params for filename
-    noise_level = .05
-    hip_noise = .05
-    knee_noise = .05
-    ankle_noise = .1
+    # noise_level = .05
+    # hip_noise = .05
+    # knee_noise = .05
+    # ankle_noise = .1
 
     # noise_level = .3
     # hip_noise = .3
     # knee_noise = .3
     # ankle_noise = .5
 
-    # noise_level = .15
-    # hip_noise = .15
-    # knee_noise = .15
-    # ankle_noise =.2
+    noise_level = .15
+    hip_noise = .15
+    knee_noise = .15
+    ankle_noise = .2
 
     hip_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'hip' in name ]
     knee_idxs = [i for i, name in enumerate(env.unwrapped.command_manager.get_term('motion').robot.joint_names) if 'knee_joint' in name ]
@@ -377,33 +384,42 @@ def main():
     # recorded_rgb_episode = np.zeros((num_envs, 2000, img_h, img_w, 3), dtype=np.uint8)
     # recorded_depth_episode = np.zeros((num_envs, 2000, img_h, img_w), dtype=np.float32)
 
-    # Initialize Siglip2 Model
-    print("[INFO] Initializing Siglip2 Vision Model...")
-    model_id = "google/siglip2-so400m-patch14-384" 
-    # model_id = "google/siglip2-base-patch16-384" 
-    
-    # Use AutoImageProcessor to avoid tokenizer issues
-    processor = AutoImageProcessor.from_pretrained(model_id)
-    # Try Flash Attention 2 first, then fall back if the package is unavailable.
-    try:
-        siglip_model = SiglipModel.from_pretrained(
-            model_id,
-            attn_implementation="flash_attention_2",
-            dtype=torch.float16,
-        )
-    except (ImportError, ValueError):
-        print("[WARN] flash_attention_2 not available, using default attention")
-        siglip_model = SiglipModel.from_pretrained(
-            model_id,
-            dtype=torch.float16,
-        )
-    siglip_model.to(device=args_cli.device).eval()
-    
-    # Siglip2 Embeddings Storage
-    # Get hidden size from the vision component properly
-    rgb_embed_dim = siglip_model.vision_model.config.hidden_size
-    recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
-    recorded_rgb_embed_flipped_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+    # Initialize Siglip2 Model (RGB encoder). Skipped entirely with --disable_rgb so the
+    # dataset stores depth-only embeddings (matches sim2sim --disable_rgb + existing data).
+    collect_rgb = not args_cli.disable_rgb
+    processor = None
+    siglip_model = None
+    recorded_rgb_embed_episode = None
+    recorded_rgb_embed_flipped_episode = None
+    if collect_rgb:
+        print("[INFO] Initializing Siglip2 Vision Model...")
+        model_id = "google/siglip2-so400m-patch14-384"
+        # model_id = "google/siglip2-base-patch16-384"
+
+        # Use AutoImageProcessor to avoid tokenizer issues
+        processor = AutoImageProcessor.from_pretrained(model_id)
+        # Try Flash Attention 2 first, then fall back if the package is unavailable.
+        try:
+            siglip_model = SiglipModel.from_pretrained(
+                model_id,
+                attn_implementation="flash_attention_2",
+                dtype=torch.float16,
+            )
+        except (ImportError, ValueError):
+            print("[WARN] flash_attention_2 not available, using default attention")
+            siglip_model = SiglipModel.from_pretrained(
+                model_id,
+                dtype=torch.float16,
+            )
+        siglip_model.to(device=args_cli.device).eval()
+
+        # Siglip2 Embeddings Storage
+        # Get hidden size from the vision component properly
+        rgb_embed_dim = siglip_model.vision_model.config.hidden_size
+        recorded_rgb_embed_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+        recorded_rgb_embed_flipped_episode = np.zeros((num_envs, 2000, rgb_embed_dim), dtype=np.float32)
+    else:
+        print("[INFO] --disable_rgb set: skipping SigLIP RGB encoder (depth-only collection).")
 
     # DeFM Embeddings Storage
     # Initialize DeFM Model
@@ -536,27 +552,23 @@ def main():
 
 
             camera_sensor = env.unwrapped.scene.sensors["depth_camera"]
-            rgb_image = camera_sensor.data.output["rgb"] 
-            depth_image = camera_sensor.data.output["depth"] 
+            depth_image = camera_sensor.data.output["depth"]
 
-            # Save images to buffer
-            # Check for alpha channel in RGB
-            if rgb_image.shape[-1] == 4:
-                rgb_to_save = rgb_image[..., :3]
-            else:
-                rgb_to_save = rgb_image
+            # --- Process and Embed RGB Images with Siglip2 (skipped with --disable_rgb) ---
+            if collect_rgb:
+                rgb_image = camera_sensor.data.output["rgb"]
+                # Check for alpha channel in RGB
+                if rgb_image.shape[-1] == 4:
+                    rgb_to_save = rgb_image[..., :3]
+                else:
+                    rgb_to_save = rgb_image
 
-            # recorded_rgb_episode[np.arange(num_envs), curr_idx] = rgb_to_save.cpu().numpy().astype(np.uint8)
-            # recorded_depth_episode[np.arange(num_envs), curr_idx] = depth_image.squeeze(-1).cpu().numpy().astype(np.float32)
-
-            # --- Process and Embed Images with Siglip2 ---
-            
-            # Convert tensors to list of PIL images for the processor
-            # rgb_to_save: (B, H, W, 3) 
-            rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
-            rgb_images = [Image.fromarray(img) for img in rgb_np]
-            rgb_np_flipped = np.flip(rgb_np, axis=2).copy()
-            rgb_images_flipped = [Image.fromarray(img) for img in rgb_np_flipped]
+                # Convert tensors to list of PIL images for the processor
+                # rgb_to_save: (B, H, W, 3)
+                rgb_np = rgb_to_save.cpu().numpy().astype(np.uint8)
+                rgb_images = [Image.fromarray(img) for img in rgb_np]
+                rgb_np_flipped = np.flip(rgb_np, axis=2).copy()
+                rgb_images_flipped = [Image.fromarray(img) for img in rgb_np_flipped]
 
             # depth_image: (B, H, W, 1) -> convert to 3 channel for processor
             depth_np = depth_image.cpu().numpy().squeeze(-1) # (B, H, W)
@@ -580,31 +592,32 @@ def main():
                 with torch.no_grad():
                     VISION_BATCH_SIZE = 10 # Process in batches to avoid OOM
                     
-                    # --- Process RGB in batches ---
-                    rgb_embeds_list = []
-                    rgb_embeds_flipped_list = []
-                    for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
-                        batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
-                        inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
-                        inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
-                        
-                        outputs_rgb = siglip_model.vision_model(**inputs_rgb)
-                        rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
+                    # --- Process RGB in batches (skipped with --disable_rgb) ---
+                    if collect_rgb:
+                        rgb_embeds_list = []
+                        rgb_embeds_flipped_list = []
+                        for i in range(0, len(rgb_images), VISION_BATCH_SIZE):
+                            batch_imgs = rgb_images[i : i + VISION_BATCH_SIZE]
+                            inputs_rgb = processor(images=batch_imgs, return_tensors="pt").to(device)
+                            inputs_rgb["pixel_values"] = inputs_rgb["pixel_values"].to(dtype=torch.float16)
 
-                        batch_imgs_flipped = rgb_images_flipped[i : i + VISION_BATCH_SIZE]
-                        inputs_rgb_flipped = processor(images=batch_imgs_flipped, return_tensors="pt").to(device)
-                        inputs_rgb_flipped["pixel_values"] = inputs_rgb_flipped["pixel_values"].to(dtype=torch.float16)
+                            outputs_rgb = siglip_model.vision_model(**inputs_rgb)
+                            rgb_embeds_list.append(outputs_rgb.pooler_output.cpu()) # Move to CPU immediately
 
-                        outputs_rgb_flipped = siglip_model.vision_model(**inputs_rgb_flipped)
-                        rgb_embeds_flipped_list.append(outputs_rgb_flipped.pooler_output.cpu())
-                        
-                        # Cleanup
-                        del inputs_rgb, outputs_rgb, inputs_rgb_flipped, outputs_rgb_flipped
-                        # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
-                    
-                    rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
-                    rgb_embeds_flipped = torch.cat(rgb_embeds_flipped_list, dim=0)
-                    
+                            batch_imgs_flipped = rgb_images_flipped[i : i + VISION_BATCH_SIZE]
+                            inputs_rgb_flipped = processor(images=batch_imgs_flipped, return_tensors="pt").to(device)
+                            inputs_rgb_flipped["pixel_values"] = inputs_rgb_flipped["pixel_values"].to(dtype=torch.float16)
+
+                            outputs_rgb_flipped = siglip_model.vision_model(**inputs_rgb_flipped)
+                            rgb_embeds_flipped_list.append(outputs_rgb_flipped.pooler_output.cpu())
+
+                            # Cleanup
+                            del inputs_rgb, outputs_rgb, inputs_rgb_flipped, outputs_rgb_flipped
+                            # torch.cuda.empty_cache() # Optional: helps if fragmentation is high
+
+                        rgb_embeds = torch.cat(rgb_embeds_list, dim=0) # Concatenate on CPU, then move to GPU if needed or keep on CPU
+                        rgb_embeds_flipped = torch.cat(rgb_embeds_flipped_list, dim=0)
+
                     # For saving, we want numpy anyway, so keeping on CPU is perfect.
                     # But the code below expects `rgb_embeds` to have a .cpu() method or be a tensor.
                     # rgb_embeds_list contains cpu tensors now.
@@ -655,8 +668,9 @@ def main():
                     depth_embeds_flipped = torch.cat(depth_embeds_flipped_list, dim=0)
                 
                 # Arrays are already on CPU if we used .cpu() above, but .cpu() is safe to call on CPU tensors too.
-                recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
-                recorded_rgb_embed_flipped_episode[np.arange(num_envs), curr_idx] = rgb_embeds_flipped.cpu().numpy()
+                if collect_rgb:
+                    recorded_rgb_embed_episode[np.arange(num_envs), curr_idx] = rgb_embeds.cpu().numpy()
+                    recorded_rgb_embed_flipped_episode[np.arange(num_envs), curr_idx] = rgb_embeds_flipped.cpu().numpy()
                 recorded_depth_embed_episode[np.arange(num_envs), curr_idx] = depth_embeds.cpu().numpy()
                 recorded_depth_embed_flipped_episode[np.arange(num_envs), curr_idx] = depth_embeds_flipped.cpu().numpy()
             except Exception as e:
@@ -740,8 +754,6 @@ def main():
                             # Extract data for this episode
                             ep_obs = np.copy(recorded_obs_episode[env_ids[i], :epi_len])
                             ep_acs = np.copy(recorded_acs_episode[env_ids[i], :epi_len])
-                            ep_rgb_embed = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
-                            ep_rgb_embed_flipped = np.copy(recorded_rgb_embed_flipped_episode[env_ids[i], :epi_len])
                             ep_depth_embed = np.copy(recorded_depth_embed_episode[env_ids[i], :epi_len])
                             ep_depth_embed_flipped = np.copy(recorded_depth_embed_flipped_episode[env_ids[i], :epi_len])
                             # Save to Zarr immediately
@@ -756,11 +768,13 @@ def main():
                                 "root_pos": (ep_obs[:, : num_bodies * 3].reshape(-1, num_bodies, 3)[:, 0, :].reshape(-1, 3)),
                                 "root_rot": (ep_obs[:, num_bodies * 3 : num_bodies * 3 + num_bodies * 4].reshape(-1, num_bodies, 4)[:, 0, :].reshape(-1, 4)),
                                 "act": ep_acs[:],
-                                "rgb_embed": ep_rgb_embed,
-                                "rgb_embed_flipped": ep_rgb_embed_flipped,
                                 "depth_embed": ep_depth_embed,
                                 "depth_embed_flipped": ep_depth_embed_flipped,
                             }
+                            # Only store RGB embeddings when the SigLIP encoder is enabled.
+                            if collect_rgb:
+                                episode_data["rgb_embed"] = np.copy(recorded_rgb_embed_episode[env_ids[i], :epi_len])
+                                episode_data["rgb_embed_flipped"] = np.copy(recorded_rgb_embed_flipped_episode[env_ids[i], :epi_len])
                             buff.add_episode(episode_data)
 
                             saved_idx += epi_len
@@ -776,8 +790,9 @@ def main():
                     
                     recorded_obs_episode[env_ids[i]] = 0
                     recorded_acs_episode[env_ids[i]] = 0
-                    recorded_rgb_embed_episode[env_ids[i]] = 0
-                    recorded_rgb_embed_flipped_episode[env_ids[i]] = 0
+                    if collect_rgb:
+                        recorded_rgb_embed_episode[env_ids[i]] = 0
+                        recorded_rgb_embed_flipped_episode[env_ids[i]] = 0
                     recorded_depth_embed_episode[env_ids[i]] = 0
                     recorded_depth_embed_flipped_episode[env_ids[i]] = 0
 

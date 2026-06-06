@@ -131,6 +131,15 @@ class G1StaircaseCollectEnvCfg(StaircaseCollectCfg):
     def __post_init__(self):
         super().__post_init__()
 
+        # Collect at 33.3 Hz (1 / (sim.dt 0.005 s * decimation 6)) to match the
+        # control rate the collected policy was trained at. The base staircase env
+        # runs at 50 Hz (decimation=4); stepping a 33 Hz policy there makes it
+        # diverge from the reference motion so every episode terminates early
+        # (anchor_pos_* terminations) and nothing gets saved. render_interval
+        # tracks decimation so the depth camera still renders once per control step.
+        self.decimation = 6
+        self.sim.render_interval = self.decimation
+
         self.scene.robot = G1_CYLINDER_CFG.replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.actions.joint_pos.scale = G1_ACTION_SCALE
         self.commands.motion.anchor_body_name = "pelvis"
