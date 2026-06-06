@@ -4,6 +4,7 @@ from isaaclab.utils import configclass
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import whole_body_tracking.tasks.staircase.mdp as mdp
@@ -11,7 +12,7 @@ from whole_body_tracking.robots.g1 import G1_ACTION_SCALE, G1_CYLINDER_CFG
 from whole_body_tracking.tasks.staircase.staircase_env_cfg import StaircaseEnvCfg, CurriculumCfg
 from whole_body_tracking.tasks.staircase.staircase_collect_cfg import StaircaseCollectCfg
 from whole_body_tracking.tasks.staircase.staircase_compliance_cfg import StaircaseComplianceCfg
-from whole_body_tracking.tasks.staircase.staircase_collect_cfg import StaircaseCollectCfg
+from whole_body_tracking.tasks.staircase.mdp.commands import make_staircase_multiclip_motion_cfg
 
 @configclass
 class G1StaircaseEnvCfg(StaircaseEnvCfg):
@@ -56,14 +57,71 @@ class G1StaircaseEnvCfg(StaircaseEnvCfg):
             self.events.assistive_spring_force.params["ang_stiffness"] = 0.0
             self.events.assistive_spring_force.params["gravity_comp"] = 0.0
 
+        _any_stance_term = any(
+            os.environ.get(v) == "1"
+            for v in ("WBT_DS_CONTACT", "WBT_DS_SLIDE", "WBT_DS_DRIFT")
+        )
+        if _any_stance_term:
+            _foot_sensor_cfg = SceneEntityCfg(
+                "contact_forces",
+                body_names=["left_ankle_roll_link", "right_ankle_roll_link"],
+            )
+            _foot_body_names = ["left_ankle_roll_link", "right_ankle_roll_link"]
+
+        # A: original velocity-mismatch penalty (--double_step)
         if os.environ.get("WBT_DOUBLE_STEP") == "1":
             self.rewards.double_step_penalty = RewTerm(
                 func=mdp.double_step_penalty,
                 weight=0.5,
                 params={
                     "command_name": "motion",
-                    "threshold": 2.0,
+                    "moving_threshold": 0.3,
+                    "stance_vel_threshold": 0.25,
                     "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
+                },
+            )
+
+        # B: missing contact during reference stance (--double_step_contact)
+        if os.environ.get("WBT_DS_CONTACT") == "1":
+            self.rewards.stance_contact_penalty = RewTerm(
+                func=mdp.stance_contact_penalty,
+                weight=1.0,
+                params={
+                    "command_name": "motion",
+                    "sensor_cfg": _foot_sensor_cfg,
+                    "body_names": _foot_body_names,
+                    "stance_vel_threshold": 0.25,
+                    "contact_force_threshold": 10.0,
+                },
+            )
+
+        # C: lateral sliding while contacting during reference stance (--double_step_slide)
+        if os.environ.get("WBT_DS_SLIDE") == "1":
+            self.rewards.stance_slide_penalty = RewTerm(
+                func=mdp.stance_slide_penalty,
+                weight=1.0,
+                params={
+                    "command_name": "motion",
+                    "sensor_cfg": _foot_sensor_cfg,
+                    "body_names": _foot_body_names,
+                    "stance_vel_threshold": 0.25,
+                    "contact_force_threshold": 10.0,
+                    "slide_vel_threshold": 0.15,
+                },
+            )
+
+        # D: stance foot drifting from initial contact point (--double_step_drift)
+        if os.environ.get("WBT_DS_DRIFT") == "1":
+            self.rewards.stance_drift_penalty = RewTerm(
+                func=mdp.stance_drift_penalty,
+                weight=3.0,
+                params={
+                    "command_name": "motion",
+                    "sensor_cfg": _foot_sensor_cfg,
+                    "body_names": _foot_body_names,
+                    "stance_vel_threshold": 0.25,
+                    "contact_force_threshold": 10.0,
+                    "drift_threshold": 0.05,
                 },
             )
 
@@ -125,6 +183,35 @@ class G1StaircasePlayCfg(G1StaircaseEnvCfg):
 
 
 @configclass
+class G1StaircaseMultiClipEnvCfg(G1StaircaseEnvCfg):
+    """G1 staircase config with multiclip Zarr motion loading."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.commands.motion = make_staircase_multiclip_motion_cfg(
+            self.commands.motion,
+            zarr_path="",
+            staircase_variant_names={},
+        )
+
+
+@configclass
+class G1StaircaseMultiClipPlayCfg(G1StaircaseMultiClipEnvCfg):
+    """Playback config for staircase multiclip."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        if os.environ.get("WBT_PUSH") != "1":
+            self.events.push_robot = None
+        self.events.assistive_spring_force = None
+        if self.curriculum is not None:
+            self.curriculum.spring_force_linear = None
+            self.curriculum.spring_force_factor = None
+        self.episode_length_s = 25.0
+        self.terminations.anchor_pos_xy = None
+
+
+@configclass
 class G1StaircaseCollectEnvCfg(StaircaseCollectCfg):
     """G1 robot configuration for staircase dataset collection."""
 
@@ -182,7 +269,8 @@ class G1StaircaseCollectEnvCfg(StaircaseCollectCfg):
                 weight=0.5,
                 params={
                     "command_name": "motion",
-                    "threshold": 2.0,
+                    "moving_threshold": 0.3,
+                    "stance_vel_threshold": 0.3,
                     "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
                 },
             )
@@ -252,7 +340,8 @@ class G1StaircaseComplianceCfg(StaircaseComplianceCfg):
                 weight=0.5,
                 params={
                     "command_name": "motion",
-                    "threshold": 2.0,
+                    "moving_threshold": 0.3,
+                    "stance_vel_threshold": 0.3,
                     "body_names": ["left_ankle_roll_link", "right_ankle_roll_link"],
                 },
             )

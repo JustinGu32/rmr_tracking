@@ -47,6 +47,14 @@ class StaircaseEnv(ManagerBasedRLEnv):
             self.extras["log"]["depth/std"] = float(getattr(self, "_last_depth_obs_std", 0.0))
             self.extras["log"]["depth/batch_mean_std"] = float(getattr(self, "_last_depth_obs_batch_std", 0.0))
             self.extras["log"]["depth/nonfinite_count"] = float(getattr(self, "_last_depth_obs_nonfinite_count", 0))
+        motion_cmd = self.command_manager.get_term("motion")
+        if hasattr(motion_cmd, "clip_ids"):
+            self.extras["log"]["multiclip/clip_id_mean"] = float(motion_cmd.clip_ids.float().mean().item())
+            self.extras["log"]["multiclip/staircase_id_mean"] = float(motion_cmd.current_staircase_id.float().mean().item())
+            self.extras["log"]["multiclip/timestep_mean"] = float(motion_cmd.time_steps.float().mean().item())
+            self.extras["log"]["multiclip/staircase_x_mean"] = float(motion_cmd.current_staircase_pos[:, 0].mean().item())
+            self.extras["log"]["multiclip/staircase_y_mean"] = float(motion_cmd.current_staircase_pos[:, 1].mean().item())
+            self.extras["log"]["multiclip/staircase_z_mean"] = float(motion_cmd.current_staircase_pos[:, 2].mean().item())
 
         return result
 
@@ -57,6 +65,10 @@ class StaircaseEnv(ManagerBasedRLEnv):
     def _update_staircase_pose(self):
         """Sync staircase rigid body pose with the motion command's object state."""
         motion_cmd = self.command_manager.get_term("motion")
+
+        if hasattr(motion_cmd, "sync_staircase_scene"):
+            motion_cmd.sync_staircase_scene(self.scene)
+            return
 
         box_pos = motion_cmd.object_pos_w
         box_quat = motion_cmd.object_quat_w

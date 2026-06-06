@@ -560,6 +560,14 @@ class ZarrMotionLoader:
         self.num_clips = len(self.clip_start_idx)
         self.clip_lengths = self.clip_end_idx - self.clip_start_idx
 
+        # Per-clip names (aligned to valid_indices), used for motion categorization
+        # in hierarchical PopArt. Absent in older stores → left as None.
+        if "clip_names" in store:
+            all_clip_names = store["clip_names"][:]
+            self.clip_names = [str(all_clip_names[i]) for i in valid_indices]
+        else:
+            self.clip_names = None
+
         # Only load frames that are actually referenced by the selected clips
         if max_clips is not None and max_clips < total_clips_raw:
             frame_end = int(self.clip_end_idx.max().item())
@@ -726,8 +734,59 @@ class MultiClipMotionCommand(MotionCommand):
         # Sampling mode: "adaptive" (default) or "uniform", set via BONES_SAMPLING env var in train script
         self._use_adaptive = os.environ.get("BONES_SAMPLING", "adaptive") == "adaptive"
 
+        # ── Motion categories (hierarchical PopArt) ──────────────────────────
+        # Opt-in: only when cfg.categorizer is set. Maps each clip to a motion
+        # category and (optionally) enables category-balanced sampling so rare
+        # categories actually contribute gradient signal.
+        self._setup_categories()
+
         # Initial clip assignment (also initializes the per-step frame cache)
         self._assign_random_clips(torch.arange(self.num_envs, device=self.device))
+
+    def _setup_categories(self):
+        """Build per-clip category indices from cfg.categorizer (opt-in)."""
+        self.categorizer = getattr(self.cfg, "categorizer", None)
+        self._balanced_category_sampling = bool(getattr(self.cfg, "balanced_category_sampling", False))
+        self.num_categories = None
+        self.category_names = None
+        self.clip_category = None
+        if self.categorizer is None:
+            return
+        if getattr(self.motion, "clip_names", None) is None:
+            raise RuntimeError(
+                "cfg.categorizer is set but the Zarr store has no 'clip_names' array; "
+                "cannot assign motion categories."
+            )
+        # Lazy import to avoid a hard tracking→bones dependency for non-categorized runs.
+        from whole_body_tracking.tasks.bones.mdp.categorizers import categorize_clip_names
+
+        self.clip_category, self.category_names = categorize_clip_names(
+            self.motion.clip_names, self.categorizer, device=self.device
+        )  # [num_clips] long
+        self.num_categories = len(self.category_names)
+
+        # Precompute clip-id lists per category for balanced sampling.
+        self._clips_by_category = [
+            torch.where(self.clip_category == c)[0] for c in range(self.num_categories)
+        ]
+        self._nonempty_categories = torch.tensor(
+            [c for c in range(self.num_categories) if len(self._clips_by_category[c]) > 0],
+            dtype=torch.long, device=self.device,
+        )
+        counts = [len(self._clips_by_category[c]) for c in range(self.num_categories)]
+        print(
+            f"[MultiClipMotionCommand] categorizer={self.categorizer!r} "
+            f"num_categories={self.num_categories} balanced_sampling={self._balanced_category_sampling}"
+        )
+        for c, name in enumerate(self.category_names):
+            print(f"    [{c:2d}] {name:14s} {counts[c]:6d} clips")
+
+    @property
+    def category_idx(self) -> torch.Tensor:
+        """Per-env motion category index, shape [num_envs] (long)."""
+        if self.clip_category is None:
+            return torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        return self.clip_category[self.clip_ids]
 
     # ── Per-step frame cache ────────────────────────────────────────────
 
@@ -866,20 +925,49 @@ class MultiClipMotionCommand(MotionCommand):
         return result
 
     def _assign_random_clips(self, env_ids: torch.Tensor):
-        """Assign clips and start frames to the given envs by uniform sampling
-        over the global timeline. Clips are effectively weighted by length, so
-        each frame across the full dataset is equally likely to be picked."""
+        """Assign clips and start frames to the given envs.
+
+        Default: uniform sampling over the global timeline (clips weighted by
+        length, so every frame is equally likely). When category-balanced
+        sampling is enabled, instead sample category uniformly → clip uniformly
+        within category → frame uniformly within clip, so rare motion categories
+        get an equal share of envs regardless of how few/short their clips are.
+        """
         n = len(env_ids)
-        global_idx = torch.randint(0, self.total_frames, (n,), device=self.device)
-        clip_ids = torch.searchsorted(self.motion.clip_end_idx, global_idx, right=True)
-        clip_ids = torch.clamp(clip_ids, max=self.motion.num_clips - 1)
-        self.clip_ids[env_ids] = clip_ids
-        self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
-        self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
-        self.time_steps[env_ids] = global_idx
+
+        if self._balanced_category_sampling and self.clip_category is not None:
+            clip_ids = self._sample_balanced_clip_ids(n)
+            self.clip_ids[env_ids] = clip_ids
+            self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
+            self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
+            # Uniform start frame within each assigned clip.
+            clip_lens = (self.clip_end[env_ids] - self.clip_start[env_ids]).clamp_min(1)
+            offsets = (torch.rand(n, device=self.device) * (clip_lens - 1).float()).long()
+            self.time_steps[env_ids] = self.clip_start[env_ids] + offsets
+        else:
+            global_idx = torch.randint(0, self.total_frames, (n,), device=self.device)
+            clip_ids = torch.searchsorted(self.motion.clip_end_idx, global_idx, right=True)
+            clip_ids = torch.clamp(clip_ids, max=self.motion.num_clips - 1)
+            self.clip_ids[env_ids] = clip_ids
+            self.clip_start[env_ids] = self.motion.clip_start_idx[clip_ids]
+            self.clip_end[env_ids] = self.motion.clip_end_idx[clip_ids]
+            self.time_steps[env_ids] = global_idx
 
         # Refresh cache for newly assigned envs
         self._cache_current_frames()
+
+    def _sample_balanced_clip_ids(self, n: int) -> torch.Tensor:
+        """Sample n clip ids: uniform category (among non-empty) → uniform clip."""
+        cat_choice = self._nonempty_categories[
+            torch.randint(0, len(self._nonempty_categories), (n,), device=self.device)
+        ]
+        clip_ids = torch.empty(n, dtype=torch.long, device=self.device)
+        for c in torch.unique(cat_choice).tolist():
+            sel = cat_choice == c
+            pool = self._clips_by_category[c]
+            picks = pool[torch.randint(0, len(pool), (int(sel.sum()),), device=self.device)]
+            clip_ids[sel] = picks
+        return clip_ids
 
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
@@ -896,8 +984,12 @@ class MultiClipMotionCommand(MotionCommand):
             )
             self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count).float()
 
-        # Sampling over global timeline (adaptive vs uniform random clip assignment)
-        if self._use_adaptive:
+        # Sampling over global timeline (adaptive vs uniform random clip assignment).
+        # Category-balanced sampling takes precedence: it samples category → clip
+        # → frame so rare motion categories keep an equal env share.
+        if self._balanced_category_sampling and self.clip_category is not None:
+            self._assign_random_clips(env_ids_t)
+        elif self._use_adaptive:
             self._adaptive_sampling(env_ids_t)
         else:
             self._assign_random_clips(env_ids_t)
@@ -1030,6 +1122,16 @@ class MultiClipMotionCommandCfg(MotionCommandCfg):
     future_steps: list[int] = []
     """Future timestep offsets to include in observations (e.g., [5, 10, 15]).
     Empty list = no future frames cached. Each offset is clamped to clip boundaries."""
+
+    categorizer: str | None = None
+    """Motion categorizer name for hierarchical (category x reward-head) PopArt
+    (e.g. 'balanced', 'mid', 'fine' from bones.mdp.categorizers). None disables
+    category assignment entirely (default; no behavior change)."""
+
+    balanced_category_sampling: bool = False
+    """When True (requires `categorizer`), sample category uniformly → clip
+    uniformly within category → frame uniformly, instead of length-weighted
+    global-timeline sampling. Gives rare motion categories an equal env share."""
 
     # Override motion_file — not used in multi-clip mode
     motion_file: str = ""

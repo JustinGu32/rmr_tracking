@@ -32,6 +32,7 @@ VALID_POPART_GROUP_PRESETS = (
     "limb_tracking",
     "limb_tracking_ul",
     "limb_tracking_ul_individual",
+    "all_rewards",
 )
 DEFAULT_POPART_GROUPS_UPPER_LOWER = {
     "global_pose_tracking": [
@@ -201,7 +202,13 @@ def resolve_popart_groups(
     popart_group_preset: str = "upper_lower",
 ) -> tuple[list[str], dict[str, list[str]], torch.Tensor]:
     validate_popart_group_preset(popart_group_preset)
-    groups = DEFAULT_POPART_GROUPS_BY_PRESET[popart_group_preset] if popart_groups is None else popart_groups
+    if popart_groups is None:
+        if popart_group_preset == "all_rewards":
+            groups = {"all_rewards": list(reward_term_names)}
+        else:
+            groups = DEFAULT_POPART_GROUPS_BY_PRESET[popart_group_preset]
+    else:
+        groups = popart_groups
     if not isinstance(groups, Mapping):
         raise ValueError("popart_groups must be a mapping from group name to a list of reward term names.")
 
@@ -530,6 +537,20 @@ class BonesPopArtActorCritic(nn.Module):
             self.critic_obs_normalizer.update(self.get_critic_obs(obs))
 
     def load_state_dict(self, state_dict, strict: bool = True):
+        # If checkpoint was saved with value_dim=1 but current model has value_dim>1,
+        # expand the critic/normalizer tensors by repeating along the value dimension.
+        target_value_dim = self.critic_head.weight.shape[0]
+        ckpt_value_dim = state_dict.get("critic_head.weight", self.critic_head.weight).shape[0]
+        if ckpt_value_dim == 1 and target_value_dim > 1:
+            keys_2d = ("critic_head.weight", "value_normalizer.weight")
+            keys_1d = ("critic_head.bias", "value_normalizer.bias", "value_normalizer.mean", "value_normalizer.mean_sq")
+            state_dict = dict(state_dict)
+            for k in keys_2d:
+                if k in state_dict:
+                    state_dict[k] = state_dict[k].repeat(target_value_dim, 1)
+            for k in keys_1d:
+                if k in state_dict:
+                    state_dict[k] = state_dict[k].repeat(target_value_dim)
         super().load_state_dict(state_dict, strict=strict)
         return True
 

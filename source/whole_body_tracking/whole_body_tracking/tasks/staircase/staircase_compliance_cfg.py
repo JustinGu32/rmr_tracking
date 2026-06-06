@@ -144,14 +144,14 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
     )
 
     # Depth camera mounted on the D435 link (head)
-    # Only included when --enable_cameras is set (ENABLE_CAMERAS=1)
+    # Only included when --use_depth is passed (WBT_USE_DEPTH_OBS=1)
     depth_camera: TiledCameraCfg | None = (
         TiledCameraCfg(
             prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-            update_period=0.1,  # 10Hz
-            height=480,
-            width=848,
-            data_types=["rgb", "depth"],
+            update_period=0.0,
+            height=48,
+            width=64,
+            data_types=["distance_to_camera"],
             spawn=sim_utils.PinholeCameraCfg(
                 focal_length=1.93,  # D435i: ~87° HFOV
                 horizontal_aperture=3.6,
@@ -163,7 +163,7 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
                 convention="ros",
             ),
         )
-        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+        if os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
         else None
     )
 
@@ -504,7 +504,7 @@ class StaircaseComplianceCfg(ManagerBasedRLEnvCfg):
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 4
+        self.decimation = 6
         self.episode_length_s = 10.0
         # simulation settings
         self.sim.dt = 0.005

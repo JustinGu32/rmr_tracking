@@ -36,7 +36,7 @@ parser.add_argument("--decimation", type=int, default=None, help="Override decim
 parser.add_argument("--bones_popart", action="store_true", default=False, help="Use PopArt multi-head critic (must match training).")
 parser.add_argument("--popart_head_mode", type=str, default="grouped", choices=["per_term", "grouped"],
                     help="PopArt critic head layout for inference (default: per_term).")
-parser.add_argument("--popart_group_preset", type=str, default="upper_lower", choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual"],
+parser.add_argument("--popart_group_preset", type=str, default="upper_lower", choices=["upper_lower", "motion_tracking", "actual_individual", "limb_tracking", "limb_tracking_ul", "limb_tracking_ul_individual", "all_rewards"],
                     help="Default grouped PopArt preset when --popart_head_mode grouped and no explicit popart_groups are provided.")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -153,6 +153,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         print(f"[INFO] Loading experiment from directory: {log_root_path}")
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
+
+        if args_cli.motion_file is not None:
+            motion_path = args_cli.motion_file
+            print(f"[INFO]: Using motion file from CLI: {motion_path}")
+            if hasattr(env_cfg.commands.motion, "motion_files"):
+                env_cfg.commands.motion.motion_files = [motion_path]
+            else:
+                env_cfg.commands.motion.motion_file = motion_path
 
     checkpoint = torch.load(resume_path, map_location="cpu")
     model_state_dict = checkpoint["model_state_dict"]

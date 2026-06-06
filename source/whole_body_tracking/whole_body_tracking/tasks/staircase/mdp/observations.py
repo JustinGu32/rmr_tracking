@@ -31,6 +31,24 @@ def robot_anchor_ang_vel_w(env: ManagerBasedEnv, command_name: str) -> torch.Ten
     return command.robot_anchor_vel_w[:, 3:6].view(env.num_envs, -1)
 
 
+def robot_body_pos_w_rootrel(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Robot body positions relative to robot root, in world orientation (no character-frame rotation)."""
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    pos_w_rel = command.robot_body_pos_w - command.robot_anchor_pos_w[:, None, :]
+    return pos_w_rel.view(env.num_envs, -1)
+
+
+def motion_body_pos_w_rootrel(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
+    """Reference body positions relative to robot root, in world orientation (no character-frame rotation).
+
+    Uses body_pos_relative_w which is the reference motion warped to the robot's world position,
+    so subtracting robot_anchor_pos_w gives root-relative positions in world frame.
+    """
+    command: MotionCommand = env.command_manager.get_term(command_name)
+    pos_w_rel = command.body_pos_relative_w - command.robot_anchor_pos_w[:, None, :]
+    return pos_w_rel.view(env.num_envs, -1)
+
+
 def robot_body_pos_b(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command: MotionCommand = env.command_manager.get_term(command_name)
 

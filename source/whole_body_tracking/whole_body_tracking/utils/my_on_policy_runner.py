@@ -1,15 +1,20 @@
+import math
 import os
 import time
+import warnings
 
 import torch
 import torch.nn as nn
 
+from rsl_rl.algorithms import PPO
 from rsl_rl.env import VecEnv
+from rsl_rl.modules import resolve_rnd_config, resolve_symmetry_config
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 from isaaclab_rl.rsl_rl import export_policy_as_onnx
 
 import wandb
+from whole_body_tracking.utils.depth_encoder_actor_critic import DepthCNNActorCritic, DepthEncoderActorCritic
 from whole_body_tracking.utils.exporter import attach_onnx_metadata, export_motion_policy_as_onnx
 
 
@@ -230,6 +235,7 @@ class MotionOnPolicyRunner(OnPolicyRunner):
         # The standard PPO runner should not receive Bones PopArt-only algorithm flags.
         for key in [
             "use_popart_multihead",
+            "popart_hierarchical",
             "popart_head_mode",
             "popart_groups",
             "popart_group_preset",
@@ -326,6 +332,75 @@ class MotionOnPolicyRunner(OnPolicyRunner):
     #     if self.logger.writer is not None:
     #         self.save(os.path.join(self.logger.log_dir, f"model_{self.current_learning_iteration}.pt"))
     #         self.logger.stop_logging_writer()
+
+    def _get_depth_start_idx(self) -> int:
+        """Return the flat index at which 'depth_image' starts in the policy obs vector."""
+        obs_manager = self.env.unwrapped.observation_manager
+        term_names = obs_manager.active_terms.get("policy", [])
+        term_dims = obs_manager.group_obs_term_dim.get("policy", [])
+        start = 0
+        for name, shape in zip(term_names, term_dims):
+            if name == "depth_image":
+                return start
+            start += math.prod(shape)
+        raise RuntimeError(
+            "Could not find 'depth_image' term in the policy observation group. "
+            "Pass --depth_obs together with --depth_encoder."
+        )
+
+    def _construct_algorithm(self, obs):
+        """Construct the PPO algorithm, using a depth-encoder ActorCritic when enabled.
+
+        --depth_encoder  → DepthEncoderActorCritic (MLP encoder, WBT_USE_DEPTH_ENCODER)
+        --depth_cnn      → DepthCNNActorCritic     (CNN encoder, WBT_USE_DEPTH_CNN)
+        Both require --depth_obs (WBT_USE_DEPTH_OBS=1).
+        """
+        depth_obs_on = os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
+        use_depth_encoder = depth_obs_on and os.environ.get("WBT_USE_DEPTH_ENCODER", "0") == "1"
+        use_depth_cnn = depth_obs_on and os.environ.get("WBT_USE_DEPTH_CNN", "0") == "1"
+
+        if use_depth_encoder and use_depth_cnn:
+            raise ValueError("WBT_USE_DEPTH_ENCODER and WBT_USE_DEPTH_CNN are mutually exclusive.")
+
+        if not (use_depth_encoder or use_depth_cnn):
+            return super()._construct_algorithm(obs)
+
+        actor_critic_cls = DepthCNNActorCritic if use_depth_cnn else DepthEncoderActorCritic
+
+        # ── depth-encoder path ─────────────────────────────────────────────
+        self.alg_cfg = resolve_rnd_config(self.alg_cfg, obs, self.cfg["obs_groups"], self.env)
+        self.alg_cfg = resolve_symmetry_config(self.alg_cfg, self.env)
+
+        if self.cfg.get("empirical_normalization") is not None:
+            warnings.warn(
+                "The `empirical_normalization` parameter is deprecated. Use "
+                "`actor_obs_normalization` / `critic_obs_normalization` in the policy config.",
+                DeprecationWarning,
+            )
+            if self.policy_cfg.get("actor_obs_normalization") is None:
+                self.policy_cfg["actor_obs_normalization"] = self.cfg["empirical_normalization"]
+            if self.policy_cfg.get("critic_obs_normalization") is None:
+                self.policy_cfg["critic_obs_normalization"] = self.cfg["empirical_normalization"]
+
+        depth_start_idx = self._get_depth_start_idx()
+        print(f"[DepthEncoderActorCritic] depth_start_idx resolved from obs manager: {depth_start_idx}")
+
+        policy_cfg = dict(self.policy_cfg)
+        policy_cfg.pop("class_name", None)
+
+        actor_critic = actor_critic_cls(
+            obs,
+            self.cfg["obs_groups"],
+            self.env.num_actions,
+            depth_start_idx=depth_start_idx,
+            **policy_cfg,
+        ).to(self.device)
+
+        alg_cfg = dict(self.alg_cfg)
+        alg_cfg.pop("class_name", None)
+        alg = PPO(actor_critic, device=self.device, **alg_cfg, multi_gpu_cfg=self.multi_gpu_cfg)
+        alg.init_storage("rl", self.env.num_envs, self.num_steps_per_env, obs, [self.env.num_actions])
+        return alg
 
     def save(self, path: str, infos=None):
         """Save the model and training information."""

@@ -160,7 +160,7 @@ def callable_to_string(value: Callable) -> str:
         # return the string
         return f"{module_name}:{function_name}"
 
-def class_to_dict(obj: object) -> dict[str, Any]:
+def class_to_dict(obj: object) -> dict[Any, Any]:
     """Convert an object into dictionary recursively.
 
     Note:
@@ -195,7 +195,7 @@ def class_to_dict(obj: object) -> dict[str, Any]:
     data = dict()
     for key, value in obj_dict.items():
         # disregard builtin attributes
-        if key.startswith("__"):
+        if isinstance(key, str) and key.startswith("__"):
             continue
         # check if attribute is callable -- function
         if callable(value):
@@ -333,7 +333,6 @@ def configure_height_map_obs(env_cfg, enabled: bool):
             group_cfg.height_scan = None
     if height_scanner_cfg is not None or has_height_scan_term:
         print("[HEIGHT_MAP_DEBUG] Disabled task-configured height-map observations. Pass --heightmap to train with them.")
-
 
 # Import extensions to set up environment tasks
 import whole_body_tracking.tasks  # noqa: F401

@@ -10,6 +10,17 @@ from whole_body_tracking.tasks.bones.mdp.commands import MotionCommand, MultiMot
 if TYPE_CHECKING:
     from isaaclab.envs import ManagerBasedEnv
 
+def category_idx_obs(env: ManagerBasedEnv, command_name: str = "motion") -> torch.Tensor:
+    """Per-env motion category index, shape (num_envs, 1) as float.
+
+    Consumed by the hierarchical (category x reward-head) PopArt critic, which
+    reads obs['category'] to select the active category's value head. Stored as
+    float because the rollout storage / observation buffers are float tensors;
+    the critic casts back to long.
+    """
+    command = env.command_manager.get_term(command_name)
+    return command.category_idx.unsqueeze(-1).float()
+
 def command_lookahead(env: ManagerBasedEnv, command_name: str) -> torch.Tensor:
     command = MultiMotionCommand = env.command_manager.get_term(command_name)
     return command.command_lookahead
