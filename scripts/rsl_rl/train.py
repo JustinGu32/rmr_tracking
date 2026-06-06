@@ -26,11 +26,15 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--seed", type=int, default=None, help="Seed used for the environment")
 parser.add_argument("--max_iterations", type=int, default=None, help="RL Policy training iterations.")
 parser.add_argument("--registry_name", type=str, default=None, help="The name of the wandb registry.")
+parser.add_argument("--motion_file", type=str, default=None, help="Path to a local motion .npz file (bypasses wandb registry).")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr motion store (for multi-clip training).")
 parser.add_argument("--include_objects", action="store_true", default=False, help="Include motions with object manipulation (excluded by default).")
 parser.add_argument("--curriculum", action="store_true", default=False, help="Enable assistive spring force curriculum.")
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
+parser.add_argument("--stair_phase_term", action="store_true", default=False, help="Terminate if a foot is off its expected stair beyond a grace window.")
+parser.add_argument("--stair_phase_grace", type=int, default=5, help="Grace steps a foot may be off its expected stair before termination.")
+parser.add_argument("--stair_phase_min_steps", type=int, default=15, help="Warmup steps before the stair-phase termination is active.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
 parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
@@ -43,7 +47,7 @@ parser.add_argument("--depth_debug_save_frames", action="store_true", default=Fa
 parser.add_argument("--depth_debug_max_frames", type=int, default=4, help="Maximum number of depth debug frames to save.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+parser.add_argument("--activation", type=str, default=None, choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
@@ -61,6 +65,19 @@ args_cli, hydra_args = parser.parse_known_args()
 if args_cli.video or args_cli.depth_obs:
     args_cli.enable_cameras = True
 
+# Video logging: render a deterministic full-motion rollout of env 0 every
+# --video_interval iters and upload it to WandB (handled in MotionOnPolicyRunner).
+# NOTE: do NOT set ENABLE_CAMERAS=1 here — that spawns the per-env depth_camera
+# TiledCamera, which at 4096 envs tries to tile one giant render target and OOMs the
+# RTX renderer (cudaErrorInvalidValue, "Failed to allocate 54272x30720 LdrColor").
+# env.render('rgb_array') builds its OWN viewport render product and drives sim.render()
+# itself when there's no RTX sensor (manager_based_rl_env.py:268), so app-level
+# --enable_cameras (set above) is sufficient for the viewport video.
+if args_cli.video:
+    os.environ["WBT_VIDEO"] = "1"
+    os.environ["WBT_VIDEO_INTERVAL"] = str(args_cli.video_interval)
+    os.environ["WBT_VIDEO_LENGTH"] = str(args_cli.video_length)
+
 # Export CLI flags as env vars so __post_init__ in env configs can read them
 if args_cli.curriculum:
     os.environ["WBT_CURRICULUM"] = "1"
@@ -69,6 +86,10 @@ if args_cli.double_step:
     os.environ["BONES_DOUBLE_STEP"] = "1"
 if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
+if args_cli.stair_phase_term:
+    os.environ["WBT_STAIR_PHASE_TERM"] = "1"
+    os.environ["WBT_STAIR_PHASE_GRACE"] = str(args_cli.stair_phase_grace)
+    os.environ["WBT_STAIR_PHASE_MIN_STEPS"] = str(args_cli.stair_phase_min_steps)
 if args_cli.depth_obs:
     os.environ["WBT_USE_DEPTH_OBS"] = "1"
 if args_cli.depth_debug_save_frames:
@@ -350,7 +371,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     """Train with RSL-RL agent."""
     # override configurations with non-hydra CLI arguments
     agent_cfg = cli_args.update_rsl_rl_cfg(agent_cfg, args_cli)
-    agent_cfg.policy.activation = args_cli.activation
+    # Only override the task's configured activation when --activation is explicitly passed,
+    # so the PPO cfg default (e.g. swish for staircase) is respected otherwise.
+    if args_cli.activation is not None:
+        agent_cfg.policy.activation = args_cli.activation
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
         args_cli.max_iterations if args_cli.max_iterations is not None else agent_cfg.max_iterations
@@ -389,9 +413,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             env_cfg.commands.motion.future_steps = steps
             print(f"[INFO] Future ref steps: {steps}")
 
-    # load the motion file from zarr path or wandb registry
+    # load the motion file from a local path, zarr path, or wandb registry
     import pathlib
-    if args_cli.zarr_path is not None:
+    if args_cli.motion_file is not None:
+        # Single-clip training from a local motion .npz (no wandb needed)
+        motion_path = str(pathlib.Path(args_cli.motion_file).expanduser())
+        if not os.path.isfile(motion_path):
+            raise FileNotFoundError(f"--motion_file not found: {motion_path}")
+        print(f"[INFO] Loading motion from local file: {motion_path}")
+        env_cfg.commands.motion.motion_file = motion_path
+        registry_name = f"local:{motion_path}"
+    elif args_cli.zarr_path is not None:
         # Multi-clip training from local Zarr store
         print(f"[INFO] Loading motion from Zarr: {args_cli.zarr_path}")
         env_cfg.commands.motion.zarr_path = args_cli.zarr_path
@@ -408,7 +440,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         artifact = api.artifact(registry_name)
         env_cfg.commands.motion.motion_file = str(pathlib.Path(artifact.download()) / "motion.npz")
     else:
-        raise ValueError("Either --zarr_path or --registry_name must be provided.")
+        raise ValueError("One of --motion_file, --zarr_path, or --registry_name must be provided.")
 
     # specify directory for logging experiments
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
@@ -421,18 +453,13 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_dir = os.path.join(log_root_path, log_dir)
 
     # create isaac environment
+    # render_mode="rgb_array" lets MotionOnPolicyRunner._log_video() render env 0 for WandB.
+    # NOTE: gym.wrappers.RecordVideo is intentionally NOT used — it silently produces nothing
+    # with the rsl_rl VecEnv wrapper + headless Isaac Lab, and rsl_rl never uploads videos to
+    # WandB. Video logging is done directly in MotionOnPolicyRunner (manual render + wandb.Video).
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array" if args_cli.video else None)
-    # wrap for video recording
     if args_cli.video:
-        video_kwargs = {
-            "video_folder": os.path.join(log_dir, "videos", "train"),
-            "step_trigger": lambda step: step % args_cli.video_interval == 0,
-            "video_length": args_cli.video_length,
-            "disable_logger": True,
-        }
-        print("[INFO] Recording videos during training.")
-        print_dict(video_kwargs, nesting=4)
-        env = gym.wrappers.RecordVideo(env, **video_kwargs)
+        print(f"[INFO] Video logging ON: full-motion rollout every {args_cli.video_interval} iters -> WandB.")
 
     # convert to single-agent instance if required by the RL algorithm
     if isinstance(env.unwrapped, DirectMARLEnv):

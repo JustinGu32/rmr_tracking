@@ -4,7 +4,7 @@ import os
 from dataclasses import MISSING
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import ArticulationCfg, AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg, RigidObjectCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
@@ -12,10 +12,8 @@ from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, TiledCameraCfg, patterns
-from isaaclab.assets import RigidObjectCfg
+from isaaclab.sensors import ContactSensorCfg, TiledCameraCfg
 from isaaclab.terrains import TerrainImporterCfg
 
 ##
@@ -25,16 +23,6 @@ from isaaclab.utils import configclass
 from isaaclab.utils.noise import AdditiveUniformNoiseCfg as Unoise
 
 import whole_body_tracking.tasks.staircase.mdp as mdp
-
-# Recommended Implementation
-from isaaclab.terrains.config import TerrainGeneratorCfg
-import isaaclab.terrains.config as terrain_gen
-from isaaclab.terrains import HfPyramidStairsTerrainCfg
-from isaaclab.terrains.trimesh.mesh_terrains_cfg import MeshPyramidStairsTerrainCfg
-from whole_body_tracking.tasks.bones.terrain_mesh_spawner_cfg import TerrainMeshSpawnerCfg
-
-# from whole_body_tracking.tasks.chair_step.custom_terrains import LinearStairsTerrainCfg
-
 
 ##
 # Scene definition
@@ -58,31 +46,35 @@ VELOCITY_RANGE_Null = {
     "yaw": (-0.0, 0.0),
 }
 
-# Staircase definition
-STAIRCASE_URDF_PATH = (
-    "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes.urdf"
+# --- Staircase object (the ONLY addition over the tracking task) ---
+# Directory holding multi_boxes.urdf and its box_models/*.obj (relative mesh paths).
+# Override with WBT_STAIRCASE_DIR.
+STAIRCASE_DIR = os.environ.get(
+    "WBT_STAIRCASE_DIR",
+    os.path.expanduser("~/Downloads/artifacts/walk_up_karen_stairs"),
 )
+STAIRCASE_URDF_PATH = os.path.join(STAIRCASE_DIR, "multi_boxes.urdf")
 STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/walk_up_karen_stairs_usd")
-STAIRCASE_RAYCAST_URDF_PATH = (
-    "/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs/multi_boxes_combined.urdf"
-)
 
-# walk up: 3.2, -0.2
-# walk down: 3.2, 1.95
-# up: 3.7, 0.55
-# down: 3.65, 0.47
+# Placement matched to the walk_up motion (pelvis trajectory).
+# walk up: 3.2, -0.2 ; +94 degree yaw (w, x, y, z).
 STAIRCASE_POSITION = [3.2, -0.2, 0.0]
-# Quaternion is in (w, x, y, z); this is a +94 degree yaw.
 STAIRCASE_ROTATION = (0.6819983600624985, 0.0, 0.0, 0.7313537016191705)
 
-DEPTH_CAMERA_WIDTH = 64
-DEPTH_CAMERA_HEIGHT = 48
-DEPTH_OBS_WIDTH = 32
-DEPTH_OBS_HEIGHT = 24
+
+def _load_stair_bounds():
+    """Read per-stair AABBs (local frame) from staircase_metadata.json, for the stair-phase term."""
+    import json
+    meta_path = os.path.join(STAIRCASE_DIR, "staircase_metadata.json")
+    if not os.path.isfile(meta_path):
+        return []
+    meta = json.load(open(meta_path))
+    return [(s["bounds_min_m"], s["bounds_max_m"]) for s in meta.get("stairs", [])]
+
 
 @configclass
 class StaircaseSceneCfg(InteractiveSceneCfg):
-    """Configuration for the terrain scene with a legged robot."""
+    """Configuration for the terrain scene with a legged robot and a staircase object."""
 
     # ground terrain
     terrain = TerrainImporterCfg(
@@ -114,16 +106,8 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
     contact_forces = ContactSensorCfg(
         prim_path="{ENV_REGEX_NS}/Robot/.*", history_length=3, track_air_time=True, force_threshold=10.0, debug_vis=True
     )
-    height_scanner = RayCasterCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/torso_link",
-        offset=RayCasterCfg.OffsetCfg(pos=(0.0, 0.0, 20.0)),
-        attach_yaw_only=True,
-        pattern_cfg=patterns.GridPatternCfg(resolution=0.2, size=(1.0, 1.0)),
-        debug_vis=False,
-        mesh_prim_paths=["/World/envs/env_0/StaircaseRaycast"],
-    )
 
-    # Staircase object
+    # Staircase object (kinematic, fixed-base). The ONLY scene addition over `tracking`.
     staircase = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Staircase",
         spawn=sim_utils.UrdfFileCfg(
@@ -141,32 +125,28 @@ class StaircaseSceneCfg(InteractiveSceneCfg):
         init_state=RigidObjectCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
     )
 
-    # Single combined, non-physical staircase mesh used only by RayCaster height scans.
-    staircase_raycast = AssetBaseCfg(
-        prim_path="{ENV_REGEX_NS}/StaircaseRaycast",
-        spawn=TerrainMeshSpawnerCfg(
-            urdf_path=STAIRCASE_RAYCAST_URDF_PATH,
-            visible=False,
-            collision_props=sim_utils.CollisionPropertiesCfg(collision_enabled=False),
-        ),
-        init_state=AssetBaseCfg.InitialStateCfg(pos=STAIRCASE_POSITION, rot=STAIRCASE_ROTATION),
-    )
-
-    depth_camera: TiledCameraCfg | None = TiledCameraCfg(
-        prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
-        update_period=0.0,
-        height=DEPTH_CAMERA_HEIGHT,
-        width=DEPTH_CAMERA_WIDTH,
-        data_types=["distance_to_camera"],
-        spawn=sim_utils.PinholeCameraCfg(
-            focal_length=8.0,
-            clipping_range=(0.1, 5.0),
-        ),
-        offset=TiledCameraCfg.OffsetCfg(
-            pos=(0.0, 0.0, 0.0),
-            rot=(0.9848078, 0.0, -0.1736482, 0.0),
-            convention="world",
-        ),
+    # Depth camera mounted on the D435 link (head). Only when ENABLE_CAMERAS=1 (matches tracking).
+    depth_camera: TiledCameraCfg | None = (
+        TiledCameraCfg(
+            prim_path="{ENV_REGEX_NS}/Robot/torso_link/d435_link/depth_camera",
+            update_period=0.1,  # 10Hz
+            height=480,
+            width=848,
+            data_types=["rgb", "depth"],
+            spawn=sim_utils.PinholeCameraCfg(
+                focal_length=1.93,  # D435i: ~87° HFOV
+                horizontal_aperture=3.6,
+                clipping_range=(0.1, 5.0),
+            ),
+            debug_vis=True,
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0, 0.0, 0.0),
+                rot=(0.5, -0.5, 0.5, -0.5),  # ROS convention: z-forward
+                convention="ros",
+            ),
+        )
+        if os.environ.get("ENABLE_CAMERAS", "0") == "1"
+        else None
     )
 
 
@@ -183,51 +163,30 @@ class CommandsCfg:
         asset_name="robot",
         resampling_time_range=(1.0e9, 1.0e9),
         debug_vis=True,
+        # No reset-state randomization (matches main): reset to the exact reference pose /
+        # zero velocity. Randinit was found to make training harder, so it's disabled.
         pose_range={
-            "x": (-0.05, 0.05),
-            "y": (-0.05, 0.05),
-            "z": (-0.01, 0.01),
-            "roll": (-0.1, 0.1),
-            "pitch": (-0.1, 0.1),
-            "yaw": (-0.2, 0.2),
+            "x": (0.0, 0.0),
+            "y": (0.0, 0.0),
+            "z": (0.0, 0.0),
+            "roll": (0.0, 0.0),
+            "pitch": (0.0, 0.0),
+            "yaw": (0.0, 0.0),
         },
-        velocity_range=VELOCITY_RANGE,
+        velocity_range=VELOCITY_RANGE_Null,
         joint_position_range=(-0.1, 0.1),
+        joint_velocity_range=(0.0, 0.0),
+        # Staircase object placement (the only command addition over tracking).
         box_position=STAIRCASE_POSITION,
         box_rotation=STAIRCASE_ROTATION,
     )
 
-# Null pose
-# pose_range={
-#     "x": (-0.0, 0.0),
-#     "y": (-0.0, 0.0),
-#     "z": (-0.0, 0.0),
-#     "roll": (-0.0, 0.0),
-#     "pitch": (-0.0, 0.0),
-#     "yaw": (-0.0, 0.0),
-# }
 
 @configclass
 class ActionsCfg:
     """Action specifications for the MDP."""
 
     joint_pos = mdp.JointPositionActionCfg(asset_name="robot", joint_names=[".*"], use_default_offset=True)
-
-
-@configclass
-class DepthObservationCfg:
-    """Configuration for optional depth observations."""
-
-    enabled: bool = False
-    min_depth_m: float = 0.2
-    max_depth_m: float = 4.0
-    resized_height: int = DEPTH_OBS_HEIGHT
-    resized_width: int = DEPTH_OBS_WIDTH
-    flatten: bool = True
-    invert: bool = True
-    save_debug_frames: bool = False
-    debug_frame_dir: str = "data/debug_depth_frames"
-    debug_max_frames: int = 4
 
 
 @configclass
@@ -250,28 +209,6 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel, noise=Unoise(n_min=-0.2, n_max=0.2))
         joint_pos = ObsTerm(func=mdp.joint_pos_rel, noise=Unoise(n_min=-0.01, n_max=0.01))
         joint_vel = ObsTerm(func=mdp.joint_vel_rel, noise=Unoise(n_min=-0.5, n_max=0.5))
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
-            noise=Unoise(n_min=-0.1, n_max=0.1),
-            clip=(-1.0, 1.0),
-        )
-        depth_image = ObsTerm(
-            func=mdp.depth_observation,
-            params={
-                "sensor_cfg": SceneEntityCfg("depth_camera"),
-                "data_type": "distance_to_camera",
-                "min_depth_m": 0.2,
-                "max_depth_m": 4.0,
-                "resized_height": DEPTH_OBS_HEIGHT,
-                "resized_width": DEPTH_OBS_WIDTH,
-                "flatten": True,
-                "invert": True,
-                "save_debug_frames": False,
-                "debug_frame_dir": "data/debug_depth_frames",
-                "debug_max_frames": 4,
-            },
-        )
         actions = ObsTerm(func=mdp.last_action)
 
         def __post_init__(self):
@@ -289,11 +226,6 @@ class ObservationsCfg:
         base_ang_vel = ObsTerm(func=mdp.base_ang_vel)
         joint_pos = ObsTerm(func=mdp.joint_pos_rel)
         joint_vel = ObsTerm(func=mdp.joint_vel_rel)
-        height_scan = ObsTerm(
-            func=mdp.height_scan,
-            params={"sensor_cfg": SceneEntityCfg("height_scanner"), "offset": 0.5},
-            clip=(-1.0, 1.0),
-        )
         actions = ObsTerm(func=mdp.last_action)
 
     # observation groups
@@ -343,23 +275,6 @@ class EventCfg:
         mode="interval",
         interval_range_s=(1.0, 3.0),
         params={"velocity_range": VELOCITY_RANGE},
-    )
-
-    # Spring force is applied intervally (every step) and modulated by the curriculum
-    assistive_spring_force = EventTerm(
-        func=mdp.apply_spring_force,
-        mode="interval",
-        interval_range_s=(0.005, 0.005),  # Assuming 200Hz control frequency (0.005s)
-        params={
-            "command_name": "motion",
-            "asset_name": "robot",
-            "stiffness": 600.0,
-            "ang_stiffness": 120.0,
-            "damping": 15.0,
-            "axis_weights": (0.0, 0.0, 1.0),
-            "gravity_comp": 0.5,
-            "curriculum_factor": 1.0,
-        },
     )
 
 
@@ -422,13 +337,9 @@ class RewardsCfg:
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
-    time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    anchor_pos_z = DoneTerm(
+    time_out = DoneTerm(func=mdp.my_time_out, params={"command_name": "motion"}, time_out=True)
+    anchor_pos = DoneTerm(
         func=mdp.bad_anchor_pos_z_only,
-        params={"command_name": "motion", "threshold": 0.12},
-    )
-    anchor_pos_xy = DoneTerm(
-        func=mdp.bad_anchor_pos_x_y_only,
         params={"command_name": "motion", "threshold": 0.25},
     )
     anchor_ori = DoneTerm(
@@ -454,26 +365,8 @@ class TerminationsCfg:
 class CurriculumCfg:
     """Curriculum terms for the MDP."""
 
-    spring_force_linear = CurrTerm(
-        func=mdp.LinearForceScheduler,
-        params={
-            "command_name": "motion",
-            "start_steps": 0,
-            "ramp_steps": 240000,  # Ramp up over 10k iters (× 24 steps_per_env)
-        },
-    )
-    spring_force_factor = CurrTerm(
-        func=mdp.modify_term_cfg,
-        params={
-            "address": "events.assistive_spring_force.params.curriculum_factor",
-            "modify_fn": mdp.linear_interpolate_fn,
-            "modify_params": {
-                "initial_value": 1.0,
-                "final_value": 0.0,
-                "difficulty_term_str": "spring_force_linear",
-            },
-        },
-    )
+    pass
+
 
 ##
 # Environment configuration
@@ -482,7 +375,7 @@ class CurriculumCfg:
 
 @configclass
 class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
-    """Configuration for the staircase environment."""
+    """Configuration for the staircase tracking environment (tracking task + staircase object)."""
 
     # Scene settings
     scene: StaircaseSceneCfg = StaircaseSceneCfg(num_envs=4096, env_spacing=2.5)
@@ -494,14 +387,14 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
     events: EventCfg = EventCfg()
-    curriculum: CurriculumCfg | None = None
-    depth_observation: DepthObservationCfg = DepthObservationCfg()
+    curriculum: CurriculumCfg = CurriculumCfg()
 
     def __post_init__(self):
         """Post initialization."""
         # general settings
-        self.decimation = 4
-        self.episode_length_s = 10.0
+        # decimation=6 with sim.dt=0.005 -> control rate = 33.33 Hz, matching the 33 fps motion.
+        self.decimation = 6
+        self.episode_length_s = 100.0
         # simulation settings
         self.sim.dt = 0.005
         self.sim.render_interval = self.decimation
@@ -512,28 +405,15 @@ class StaircaseEnvCfg(ManagerBasedRLEnvCfg):
         self.viewer.origin_type = "asset_root"
         self.viewer.asset_name = "robot"
 
-        self.depth_observation.enabled = os.environ.get("WBT_USE_DEPTH_OBS", "0") == "1"
-        self.depth_observation.save_debug_frames = os.environ.get("WBT_DEPTH_SAVE_FRAMES", "0") == "1"
-        self.depth_observation.debug_max_frames = int(
-            os.environ.get("WBT_DEPTH_DEBUG_MAX_FRAMES", str(self.depth_observation.debug_max_frames))
-        )
-
-        if self.depth_observation.enabled:
-            self.sim.render_interval = min(self.sim.render_interval, self.decimation)
-            depth_term = self.observations.policy.depth_image
-            depth_term.params.update(
-                {
-                    "min_depth_m": self.depth_observation.min_depth_m,
-                    "max_depth_m": self.depth_observation.max_depth_m,
-                    "resized_height": self.depth_observation.resized_height,
-                    "resized_width": self.depth_observation.resized_width,
-                    "flatten": self.depth_observation.flatten,
-                    "invert": self.depth_observation.invert,
-                    "save_debug_frames": self.depth_observation.save_debug_frames,
-                    "debug_frame_dir": self.depth_observation.debug_frame_dir,
-                    "debug_max_frames": self.depth_observation.debug_max_frames,
-                }
+        # Stair-phase termination (gated by WBT_STAIR_PHASE_TERM=1): terminate when a foot is
+        # off the stair the reference expects it on, beyond a grace window (after a warmup).
+        if os.environ.get("WBT_STAIR_PHASE_TERM") == "1":
+            self.commands.motion.stair_bounds = _load_stair_bounds()
+            self.terminations.stair_phase = DoneTerm(
+                func=mdp.bad_stair_phase,
+                params={
+                    "command_name": "motion",
+                    "grace": int(os.environ.get("WBT_STAIR_PHASE_GRACE", "5")),
+                    "min_steps": int(os.environ.get("WBT_STAIR_PHASE_MIN_STEPS", "15")),
+                },
             )
-        else:
-            self.scene.depth_camera = None
-            self.observations.policy.depth_image = None

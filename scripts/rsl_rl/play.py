@@ -265,6 +265,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO]: Loading model checkpoint from: {resume_path}")
 
+        # Local-run playback: apply the CLI motion file (the wandb branch handles this itself).
+        if args_cli.motion_file is not None:
+            print(f"[INFO]: Using motion file from CLI: {args_cli.motion_file}")
+            env_cfg.commands.motion.motion_file = args_cli.motion_file
+
     # Set zarr_path for multi-clip tasks
     if args_cli.zarr_path is not None:
         if not hasattr(env_cfg.commands.motion, "zarr_path"):

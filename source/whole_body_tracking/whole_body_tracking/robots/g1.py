@@ -26,14 +26,16 @@ DAMPING_7520_14 = 2.0 * DAMPING_RATIO * ARMATURE_7520_14 * NATURAL_FREQ
 DAMPING_7520_22 = 2.0 * DAMPING_RATIO * ARMATURE_7520_22 * NATURAL_FREQ
 DAMPING_4010 = 2.0 * DAMPING_RATIO * ARMATURE_4010 * NATURAL_FREQ
 
-#JUSTIN HELP 
-MIN_DELAY= 0
-MAX_DELAY= 3
+# delay0 run: no actuator command delay (was MAX_DELAY=3)
+MIN_DELAY = 0
+MAX_DELAY = 0
 G1_CYLINDER_CFG = ArticulationCfg(
     spawn=sim_utils.UrdfFileCfg(
         usd_dir=os.path.join(os.path.expanduser("~"), ".cache/isaaclab/usd"),
         fix_base=False,
         replace_cylinders_with_capsules=True,
+        # g1_29dof.urdf has the d435_link head-cam mount (fixed child of torso_link),
+        # required for the depth camera / vision. Installed under assets/unitree_ros/...
         # asset_path=f"{ASSET_DIR}/unitree_description/urdf/g1/main.urdf",
         asset_path=f"{ASSET_DIR}/unitree_ros/robots/g1_description/g1_29dof.urdf",
         activate_contact_sensors=True,

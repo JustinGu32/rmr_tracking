@@ -3,7 +3,6 @@ from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlPpoActorCriticCfg, R
 
 
 @configclass
-@configclass
 class G1StaircasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 30000
@@ -14,7 +13,7 @@ class G1StaircasePPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
-        activation="elu",
+        activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

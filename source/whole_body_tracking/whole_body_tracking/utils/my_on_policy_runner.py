@@ -1,11 +1,35 @@
 import os
 import time
 
+import numpy as np
 import torch
 import torch.nn as nn
 
 from rsl_rl.env import VecEnv
 from rsl_rl.runners.on_policy_runner import OnPolicyRunner
+
+# ── Add swish/silu activation support to rsl_rl (its resolver lacks it) ──────────
+# rsl_rl.utils.resolve_nn_activation only knows elu/relu/etc. We wrap it to map
+# "swish"/"silu" -> nn.SiLU, and reassign the name on every module that already
+# did `from rsl_rl.utils import resolve_nn_activation` at import time.
+import rsl_rl.utils as _rsl_utils
+import rsl_rl.modules as _rsl_modules
+
+_orig_resolve = _rsl_utils.resolve_nn_activation
+
+
+def _resolve_with_swish(act_name: str):
+    if act_name in ("swish", "silu"):
+        return nn.SiLU()
+    return _orig_resolve(act_name)
+
+
+_rsl_utils.resolve_nn_activation = _resolve_with_swish
+for _modname in ("actor_critic", "actor_critic_recurrent", "student_teacher",
+                 "student_teacher_recurrent", "rnd"):
+    _mod = getattr(_rsl_modules, _modname, None)
+    if _mod is not None and hasattr(_mod, "resolve_nn_activation"):
+        _mod.resolve_nn_activation = _resolve_with_swish
 
 from isaaclab_rl.rsl_rl import export_policy_as_onnx
 
@@ -251,6 +275,81 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             self.dormant_tracker = None
         self._dormant_measure_interval = 100  # measure every N iterations
 
+        # ── Video logging to WandB ──────────────────────────────────────────────
+        # Enabled via env vars (set by train.py's --video flag). Renders a single
+        # deterministic full-motion rollout of env 0 every N iters and uploads it
+        # as wandb.Video. Requires the app launched with rendering (ENABLE_CAMERAS=1).
+        self._video_enabled = os.environ.get("WBT_VIDEO", "0") == "1"
+        self._video_interval = int(os.environ.get("WBT_VIDEO_INTERVAL", "1000"))
+        # Max frames to render (safety cap); the rollout normally stops at end-of-motion.
+        self._video_max_frames = int(os.environ.get("WBT_VIDEO_LENGTH", "600"))
+        self._video_warmup = 4  # throwaway renders so the RTX buffer isn't black
+        # playback fps = control rate = 1 / (decimation * physics_dt)
+        try:
+            self._video_fps = int(round(1.0 / self.env.unwrapped.step_dt))
+        except Exception:
+            self._video_fps = 30
+
+    def _log_video(self, it: int):
+        """Render one deterministic full-motion rollout of env 0 and log it to WandB.
+
+        Steps ALL envs (the sim is a single batched env) but only records env 0's
+        follow-camera frames. env 0 is forced to start at motion frame 0 and the
+        rollout runs until the motion clip ends (my_time_out) or the safety cap.
+        """
+        env = self.env.unwrapped
+        if env.render_mode != "rgb_array":
+            return  # app was not launched with rendering; nothing to capture
+
+        cmd = env.command_manager.get_term("motion")
+        T = int(cmd.motion.time_step_total)
+        policy = self.alg.act_inference if hasattr(self.alg, "act_inference") else self.alg.policy.act_inference
+
+        frames = []
+        # rsl_rl's rollout runs under inference_mode, which makes env tensors "inference
+        # tensors" that cannot be modified outside inference_mode. Match that context here.
+        with torch.inference_mode():
+            obs, _ = self.env.get_observations()
+            # Force env 0 to the start of the clip so we capture a full climb.
+            cmd.time_steps[0] = 0
+
+            # Warm the renderer (first few frames are black until the RTX buffer fills).
+            for _ in range(self._video_warmup):
+                env.render()
+
+            for _ in range(min(self._video_max_frames, T + 2)):
+                actions = policy(obs.to(self.device))
+                obs, _, _, _ = self.env.step(actions.to(self.env.device))
+                frame = env.render()
+                if frame is not None:
+                    frames.append(np.asarray(frame, dtype=np.uint8))
+                # Stop once env 0 has played through the whole clip.
+                if int(cmd.time_steps[0]) >= T - 1:
+                    break
+
+        if not frames:
+            return
+        # (T, H, W, 3) -> (T, 3, H, W) for wandb.Video
+        video = np.stack(frames).transpose(0, 3, 1, 2)
+        try:
+            wandb.log({"video/rollout": wandb.Video(video, fps=self._video_fps, format="mp4")}, step=it)
+        except Exception as e:
+            print(f"[WARN] video upload failed: {e}")
+
+    def log(self, locs: dict, width: int = 80, pad: int = 35):
+        super().log(locs, width, pad)
+        it = locs["it"]
+        # Skip it=0: don't spend the expensive render rollout on a fresh random policy before
+        # the renderer is even warm (and it would block the first training print for minutes).
+        if (
+            self._video_enabled
+            and wandb.run is not None
+            and self._video_interval > 0
+            and it > 0
+            and it % self._video_interval == 0
+        ):
+            self._log_video(it)
+
     # # learn() override for newer rsl_rl with self.logger API — commented out for current version
     # def learn(self, num_learning_iterations: int, init_at_random_ep_len: bool = False) -> None:
     #     """Run the learning loop with dormant neuron tracking."""
@@ -357,7 +456,11 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             attach_onnx_metadata(self.env.unwrapped, wandb.run.name, path=policy_path, filename=filename)
             wandb.save(policy_path + filename, base_path=os.path.dirname(policy_path))
 
-            # link the artifact registry to this run (skip for zarr paths)
-            if self.registry_name is not None and not self.registry_name.startswith("zarr:"):
+            # link the artifact registry to this run (skip for zarr / local paths)
+            if (
+                self.registry_name is not None
+                and not self.registry_name.startswith("zarr:")
+                and not self.registry_name.startswith("local:")
+            ):
                 wandb.run.use_artifact(self.registry_name)
                 self.registry_name = None

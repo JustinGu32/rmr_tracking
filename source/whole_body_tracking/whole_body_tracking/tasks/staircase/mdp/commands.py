@@ -38,7 +38,6 @@ class MotionLoader:
         self._body_quat_w = torch.tensor(data["body_quat_w"], dtype=torch.float32, device=device)
         self._body_lin_vel_w = torch.tensor(data["body_lin_vel_w"], dtype=torch.float32, device=device)
         self._body_ang_vel_w = torch.tensor(data["body_ang_vel_w"], dtype=torch.float32, device=device)
-
         self._body_indexes = body_indexes
         self.time_step_total = self.joint_pos.shape[0]
 
@@ -76,7 +75,6 @@ class MotionCommand(CommandTerm):
         self.max_sample_idx = cfg.max_sample_idx
         self.steps_collect = cfg.steps_collect
 
-        
         self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.body_pos_relative_w = torch.zeros(self.num_envs, len(cfg.body_names), 3, device=self.device)
@@ -90,48 +88,21 @@ class MotionCommand(CommandTerm):
             [self.cfg.adaptive_lambda**i for i in range(self.cfg.adaptive_kernel_size)], device=self.device
         )
         self.kernel = self.kernel / self.kernel.sum()
-        
-        # Store box position
+
+        # Staircase object placement (static): world pose = env_origin + box_position.
         self.box_position = torch.tensor(self.cfg.box_position, device=self.device)
         self.box_rotation = torch.tensor(self.cfg.box_rotation, dtype=torch.float32, device=self.device).repeat(
             self.num_envs, 1
         )
 
-        # VR 3-point related (ankle + pelvis tracking points)
-        self.vr_3point_body_indices = [self.robot.body_names.index(name) for name in self.cfg.vr_3point_body]
-        self.vr_3point_body_indices_motion = [self.cfg.body_names.index(name) for name in self.cfg.vr_3point_body]
-        self.vr_3point_body_offsets = torch.tensor(self.cfg.vr_3point_body_offset, dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
-
-        self.down_dir = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
-
-        # Force push related (CHIP)
-        self.force_update_frequency = self.cfg.force_update_frequency
-        self.max_force = self.cfg.max_force
-        self.num_bodies = len(self.cfg.body_names)
-        self.body_force_dir_buf = torch.randn(self.num_envs, self.num_bodies, 3, dtype=torch.float, device=self.device, requires_grad=False)
-        self.body_force_dir_buf /= torch.norm(self.body_force_dir_buf, dim=-1, keepdim=True)
-        self.body_force_magnitude_buf = torch.rand(self.num_envs, dtype=torch.float, device=self.device, requires_grad=False)
-
-        self.force_push_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
-        self.force_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
-        self.force_config_init = False
-        self.force_push_ids = self.robot.find_bodies(self.cfg.force_push_body, preserve_order=True)[0]
-        self.non_force_push_ids_rel = []
-        self.force_push_ids_rel = []
-        for i, idx in enumerate(self.body_indexes.tolist()):
-            if idx not in self.force_push_ids:
-                self.non_force_push_ids_rel.append(i)
-            else:
-                self.force_push_ids_rel.append(i)
-
-        self.force_push_body_offsets = torch.tensor(self.cfg.force_push_body_offset, dtype=torch.float32, device=self.device).view(1, -1, 3).repeat(self.num_envs, 1, 1)
-        self.last_force_applied = torch.zeros(self.num_envs, len(self.force_push_ids), 3, dtype=torch.float, device=self.device, requires_grad=False)
-
-        # Compliance related (CHIP)
-        self.compliance_counter = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
-        self.compliance_duration_per_env = torch.zeros(self.num_envs, dtype=torch.int, device=self.device)
-        self.eef_stiffness_buf = torch.zeros(self.num_envs, 3, dtype=torch.float32, device=self.device)
-        self.compliance_config_init = False
+        # ── Stair-phase termination support ──────────────────────────────────────
+        # Precompute, for every motion frame, which stair each foot SHOULD be on
+        # ("on the stair, anywhere", gated by stance = low ref foot speed). Used by the
+        # mdp.bad_stair_phase termination. Only built when stair_bounds are provided.
+        self.stair_expected = None  # (T, 2) long: expected stair (1-based) per [L, R] foot, 0 = none
+        self.foot_off_streak = torch.zeros(self.num_envs, 2, dtype=torch.long, device=self.device)
+        if self.cfg.stair_bounds:
+            self._build_stair_schedule()
 
         self.metrics["error_anchor_pos"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["error_anchor_rot"] = torch.zeros(self.num_envs, device=self.device)
@@ -144,29 +115,34 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_entropy"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_prob"] = torch.zeros(self.num_envs, device=self.device)
         self.metrics["sampling_top1_bin"] = torch.zeros(self.num_envs, device=self.device)
-        self.metrics["force_applied"] = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
 
+    # Takara 
+    def reload_motion(self):
+        # import ipdb; ipdb.set_trace() 
+        self.motion = MotionLoader(self.cfg.motion_file, self.body_indexes, device=self.device)
+
+    # TODO: may not need?
+    @property
+    def joint_pos_ref(self) -> torch.Tensor:
+        return self.motion.joint_pos #[self.time_steps]
+    
+    # TODO: may not need?
+    @property
+    def joint_vel_ref(self) -> torch.Tensor:
+        return self.motion.joint_vel #[self.time_steps]
+
+    
     @property
     def command(self) -> torch.Tensor:  # TODO Consider again if this is the best observation
         return torch.cat([self.joint_pos, self.joint_vel], dim=1)
 
     @property
     def joint_pos(self) -> torch.Tensor:
-        pos = self.motion.joint_pos[self.time_steps]
-        # Truncate to match robot DOF if necessary (e.g. 36 -> 29)
-        robot_dof = self.robot.data.soft_joint_pos_limits.shape[1]
-        if pos.shape[1] > robot_dof:
-            return pos[:, :robot_dof]
-        return pos
+        return self.motion.joint_pos[self.time_steps]
 
     @property
     def joint_vel(self) -> torch.Tensor:
-        vel = self.motion.joint_vel[self.time_steps]
-        # Truncate to match robot DOF if necessary
-        robot_dof = self.robot.data.soft_joint_pos_limits.shape[1]
-        if vel.shape[1] > robot_dof:
-            return vel[:, :robot_dof]
-        return vel
+        return self.motion.joint_vel[self.time_steps]
 
     @property
     def body_pos_w(self) -> torch.Tensor:
@@ -192,6 +168,27 @@ class MotionCommand(CommandTerm):
     def anchor_quat_w(self) -> torch.Tensor:
         return self.motion.body_quat_w[self.time_steps, self.motion_anchor_body_index]
 
+    # TODO: may not need?
+    #Takara
+    @property
+    def ref_pos_w(self) -> torch.Tensor:
+        # import ipdb; ipdb.set_trace()
+        return self.motion._body_pos_w[self.time_steps] + self._env.scene.env_origins[:,None,:]
+    # TODO: may not need?
+
+    @property
+    def ref_quat_w(self) -> torch.Tensor:
+        return self.motion._body_quat_w[self.time_steps]
+    # TODO: may not need?
+
+    @property
+    def ref_lin_vel_w(self) -> torch.Tensor:
+        return self.motion._body_lin_vel_w[self.time_steps] 
+    # TODO: may not need?
+    @property
+    def ref_ang_vel_w(self) -> torch.Tensor:
+        return self.motion._body_ang_vel_w[self.time_steps]
+
     @property
     def anchor_lin_vel_w(self) -> torch.Tensor:
         return self.motion.body_lin_vel_w[self.time_steps, self.motion_anchor_body_index]
@@ -199,6 +196,23 @@ class MotionCommand(CommandTerm):
     @property
     def anchor_ang_vel_w(self) -> torch.Tensor:
         return self.motion.body_ang_vel_w[self.time_steps, self.motion_anchor_body_index]
+
+    # --- Staircase object pose (static, per-env). Consumed by StaircaseEnv. ---
+    @property
+    def object_pos_w(self) -> torch.Tensor:
+        return self._env.scene.env_origins + self.box_position
+
+    @property
+    def object_quat_w(self) -> torch.Tensor:
+        return self.box_rotation
+
+    @property
+    def object_lin_vel_w(self) -> torch.Tensor:
+        return torch.zeros_like(self.object_pos_w)
+
+    @property
+    def object_ang_vel_w(self) -> torch.Tensor:
+        return torch.zeros_like(self.object_pos_w)
 
     @property
     def robot_joint_pos(self) -> torch.Tensor:
@@ -240,45 +254,53 @@ class MotionCommand(CommandTerm):
     def robot_anchor_ang_vel_w(self) -> torch.Tensor:
         return self.robot.data.body_ang_vel_w[:, self.robot_anchor_body_index]
 
-    @property
-    def object_pos_w(self) -> torch.Tensor:
-        """Position of the object in world frame."""
-        return self._env.scene.env_origins + self.box_position
+    # ── Stair-phase schedule / membership (for bad_stair_phase termination) ──────
+    def _stair_membership(self, pos_local: torch.Tensor) -> torch.Tensor:
+        """Which stair (1-based) each point sits on; 0 = none. pos_local: (..., 3) in stair frame.
 
-    @property
-    def object_quat_w(self) -> torch.Tensor:
-        """Orientation of the object in world frame."""
-        return self.box_rotation
+        "On the stair, anywhere": xy within the stair AABB (+ xy slack), z near the stair top.
+        """
+        out = torch.zeros(pos_local.shape[:-1], dtype=torch.long, device=self.device)
+        xs, ys = self.cfg.stair_xy_slack, self.cfg.stair_xy_slack
+        zs = self.cfg.stair_z_slack
+        for i, (lo, hi) in enumerate(self.cfg.stair_bounds):
+            lo = torch.tensor(lo, device=self.device)
+            hi = torch.tensor(hi, device=self.device)
+            on = (
+                (pos_local[..., 0] >= lo[0] - xs) & (pos_local[..., 0] <= hi[0] + xs)
+                & (pos_local[..., 1] >= lo[1] - ys) & (pos_local[..., 1] <= hi[1] + ys)
+                & ((pos_local[..., 2] - hi[2]).abs() < zs)
+            )
+            out = torch.where(on, torch.full_like(out, i + 1), out)
+        return out
 
-    @property
-    def object_lin_vel_w(self) -> torch.Tensor:
-        """Linear velocity of the object in world frame."""
-        return torch.zeros_like(self.object_pos_w)
+    def _world_to_stair_local(self, pos_world: torch.Tensor) -> torch.Tensor:
+        """Rotate world points into the staircase local frame (about box yaw, minus box position)."""
+        w, z = self.cfg.box_rotation[0], self.cfg.box_rotation[3]
+        yaw = 2.0 * math.atan2(z, w)
+        c, s = math.cos(-yaw), math.sin(-yaw)
+        d = pos_world - self.box_position
+        lx = c * d[..., 0] - s * d[..., 1]
+        ly = s * d[..., 0] + c * d[..., 1]
+        return torch.stack([lx, ly, d[..., 2]], dim=-1)
 
-    @property
-    def object_ang_vel_w(self) -> torch.Tensor:
-        """Angular velocity of the object in world frame."""
-        return torch.zeros_like(self.object_pos_w)
-
-    # VR 3-point properties (CHIP compliance tracking points)
-    @property
-    def vr_3point_body_quat_w(self) -> torch.Tensor:
-        return self.motion.body_quat_w[self.time_steps][:, self.vr_3point_body_indices_motion]
-
-    @property
-    def vr_3point_body_pos_w(self) -> torch.Tensor:
-        return self.motion.body_pos_w[self.time_steps][:, self.vr_3point_body_indices_motion] \
-            + quat_apply(self.vr_3point_body_quat_w, self.vr_3point_body_offsets) \
-            + self._env.scene.env_origins[:, None, :]
-
-    @property
-    def robot_vr_3point_quat_w(self) -> torch.Tensor:
-        return self.robot.data.body_quat_w[:, self.vr_3point_body_indices]
-
-    @property
-    def robot_vr_3point_pos_w(self) -> torch.Tensor:
-        return self.robot.data.body_pos_w[:, self.vr_3point_body_indices] \
-            + quat_apply(self.robot_vr_3point_quat_w, self.vr_3point_body_offsets)
+    def _build_stair_schedule(self):
+        """Precompute (T, 2) expected-stair-per-foot from the motion (stance frames only)."""
+        L = self.cfg.body_names.index(self.cfg.stair_foot_body_names[0])
+        R = self.cfg.body_names.index(self.cfg.stair_foot_body_names[1])
+        L_abs = int(self.body_indexes[L].item())
+        R_abs = int(self.body_indexes[R].item())
+        pos = self.motion._body_pos_w  # (T, num_bodies, 3) in motion (== env-origin) frame
+        vel = self.motion._body_lin_vel_w
+        T = pos.shape[0]
+        sched = torch.zeros(T, 2, dtype=torch.long, device=self.device)
+        for col, abi in enumerate((L_abs, R_abs)):
+            local = self._world_to_stair_local(pos[:, abi, :])         # (T, 3)
+            stair = self._stair_membership(local)                       # (T,)
+            speed = torch.linalg.norm(vel[:, abi, :], dim=-1)           # (T,)
+            stance = speed < self.cfg.stair_foot_speed_thr
+            sched[:, col] = torch.where(stance, stair, torch.zeros_like(stair))
+        self.stair_expected = sched
 
     def _update_metrics(self):
         self.metrics["error_anchor_pos"] = torch.norm(self.anchor_pos_w - self.robot_anchor_pos_w, dim=-1)
@@ -302,9 +324,6 @@ class MotionCommand(CommandTerm):
 
         self.metrics["error_joint_pos"] = torch.norm(self.joint_pos - self.robot_joint_pos, dim=-1)
         self.metrics["error_joint_vel"] = torch.norm(self.joint_vel - self.robot_joint_vel, dim=-1)
-
-        self.metrics["force_applied"] = torch.norm(self.last_force_applied, dim=-1).mean(dim=-1)
-
 
     def _adaptive_sampling(self, env_ids: Sequence[int]):
         episode_failed = self._env.termination_manager.terminated[env_ids]
@@ -334,16 +353,6 @@ class MotionCommand(CommandTerm):
             * (self.motion.time_step_total - 1)
         ).long()
 
-        self.time_steps[env_ids] = torch.clamp(
-            self.time_steps[env_ids],
-            min=self.min_sample_idx,
-            max=min(self.max_sample_idx, self.motion.time_step_total - 1),
-        )
-        eps_mask = torch.rand(len(env_ids), device=self.device) < 0.1
-        self.time_steps[env_ids[eps_mask]] = 0
-        
-        # Can add stride sampling to avoid near identical samples
-        
         # Metrics
         H = -(sampling_probabilities * (sampling_probabilities + 1e-12).log()).sum()
         H_norm = H / math.log(self.bin_count)
@@ -352,19 +361,32 @@ class MotionCommand(CommandTerm):
         self.metrics["sampling_top1_prob"][:] = pmax
         self.metrics["sampling_top1_bin"][:] = imax.float() / self.bin_count
 
+    def _uniform_sampling(self, env_ids: Sequence[int]):
+        # Reference State Initialization: each env starts at a uniformly random frame of the clip.
+        phase = sample_uniform(0.0, 1.0, (len(env_ids),), device=self.device)
+        time_samples = (phase * (self.motion.time_step_total - 1)).long()
+        # Only restrict to a sub-window [min_sample_idx, max_sample_idx - steps_collect] when a
+        # real window is configured. NOTE: guarding on `is not None` is wrong because the default
+        # max_sample_idx=0/steps_collect=0 collapses the range to a single frame (always frame 0).
+        if self.max_sample_idx:
+            sampling_range = (self.max_sample_idx - self.steps_collect) - self.min_sample_idx
+            time_samples = (phase * sampling_range + self.min_sample_idx).long()
+            time_samples = torch.clip(time_samples, min=self.min_sample_idx, max=self.max_sample_idx - self.steps_collect)
+
+        self.time_steps[env_ids] = time_samples.long()
+
     def _resample_command(self, env_ids: Sequence[int]):
         if len(env_ids) == 0:
             return
-        self._adaptive_sampling(env_ids)
+        # TODO: if training, use adaptive sampling (make a command-line flag)
+        #self._adaptive_sampling(env_ids)
 
-        root_pos = self.body_pos_w[:, 0].clone()
+        self._uniform_sampling(env_ids)
+
+        root_pos = self.body_pos_w[:, 0].clone() 
         root_ori = self.body_quat_w[:, 0].clone()
         root_lin_vel = self.body_lin_vel_w[:, 0].clone()
         root_ang_vel = self.body_ang_vel_w[:, 0].clone()
-
-        # Adjust robot position to be relative to the configured box position
-        # Maintains the relative vector: (Robot - Box)_sim = (Robot - Box)_motion
-        # root_pos[env_ids] += (self.box_position + self._env.scene.env_origins[env_ids]) - self.object_pos_w[env_ids]
 
         range_list = [self.cfg.pose_range.get(key, (0.0, 0.0)) for key in ["x", "y", "z", "roll", "pitch", "yaw"]]
         ranges = torch.tensor(range_list, device=self.device)
@@ -381,15 +403,8 @@ class MotionCommand(CommandTerm):
         joint_pos = self.joint_pos.clone()
         joint_vel = self.joint_vel.clone()
 
-        # Handle size mismatch (e.g. 36 in motion vs 29 in robot)
-        soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
-        robot_dof = soft_joint_pos_limits.shape[1]
-        
-        if joint_pos.shape[1] > robot_dof:
-            joint_pos = joint_pos[:, :robot_dof]
-            joint_vel = joint_vel[:, :robot_dof]
-
         joint_pos += sample_uniform(*self.cfg.joint_position_range, joint_pos.shape, joint_pos.device)
+        joint_vel += sample_uniform(*self.cfg.joint_velocity_range, joint_vel.shape, joint_vel.device)
         soft_joint_pos_limits = self.robot.data.soft_joint_pos_limits[env_ids]
         joint_pos[env_ids] = torch.clip(
             joint_pos[env_ids], soft_joint_pos_limits[:, :, 0], soft_joint_pos_limits[:, :, 1]
@@ -422,6 +437,31 @@ class MotionCommand(CommandTerm):
         )
         self._current_bin_failed.zero_()
 
+        if self.stair_expected is not None:
+            self._update_foot_off_streak(env_ids)
+
+    def _update_foot_off_streak(self, resampled_env_ids: Sequence[int]):
+        """Per step, track how long each foot has been OFF the stair the reference expects.
+
+        For each foot: if the reference (at this env's time_step) expects it on stair S>0 but the
+        robot foot is not on stair S, increment the off-streak; otherwise reset it. Resampled envs
+        start fresh. Consumed by mdp.bad_stair_phase.
+        """
+        L = self.cfg.body_names.index(self.cfg.stair_foot_body_names[0])
+        R = self.cfg.body_names.index(self.cfg.stair_foot_body_names[1])
+        # expected stair per foot for each env at its current frame: (num_envs, 2)
+        expected = self.stair_expected[self.time_steps]  # (num_envs, 2)
+        # robot foot world pos -> stair-local -> membership
+        foot_w = self.robot_body_pos_w[:, [L, R], :] - self._env.scene.env_origins[:, None, :]
+        foot_local = self._world_to_stair_local(foot_w)             # (num_envs, 2, 3)
+        robot_stair = self._stair_membership(foot_local)            # (num_envs, 2)
+        violating = (expected > 0) & (robot_stair != expected)      # (num_envs, 2)
+        self.foot_off_streak = torch.where(
+            violating, self.foot_off_streak + 1, torch.zeros_like(self.foot_off_streak)
+        )
+        if len(resampled_env_ids) > 0:
+            self.foot_off_streak[resampled_env_ids] = 0
+
     def _set_debug_vis_impl(self, debug_vis: bool):
         if debug_vis:
             if not hasattr(self, "current_anchor_visualizer"):
@@ -434,31 +474,31 @@ class MotionCommand(CommandTerm):
 
                 self.current_body_visualizers = []
                 self.goal_body_visualizers = []
-                # for name in self.cfg.body_names:
-                #     self.current_body_visualizers.append(
-                #         VisualizationMarkers(
-                #             self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/current/" + name)
-                #         )
-                #     )
-                #     self.goal_body_visualizers.append(
-                #         VisualizationMarkers(
-                #             self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/goal/" + name)
-                #         )
-                #     )
+                for name in self.cfg.body_names:
+                    self.current_body_visualizers.append(
+                        VisualizationMarkers(
+                            self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/current/" + name)
+                        )
+                    )
+                    self.goal_body_visualizers.append(
+                        VisualizationMarkers(
+                            self.cfg.body_visualizer_cfg.replace(prim_path="/Visuals/Command/goal/" + name)
+                        )
+                    )
 
             self.current_anchor_visualizer.set_visibility(True)
             self.goal_anchor_visualizer.set_visibility(True)
-            # for i in range(len(self.cfg.body_names)):
-            #     self.current_body_visualizers[i].set_visibility(True)
-            #     self.goal_body_visualizers[i].set_visibility(True)
+            for i in range(len(self.cfg.body_names)):
+                self.current_body_visualizers[i].set_visibility(True)
+                self.goal_body_visualizers[i].set_visibility(True)
 
         else:
             if hasattr(self, "current_anchor_visualizer"):
                 self.current_anchor_visualizer.set_visibility(False)
                 self.goal_anchor_visualizer.set_visibility(False)
-                # for i in range(len(self.cfg.body_names)):
-                #     self.current_body_visualizers[i].set_visibility(False)
-                #     self.goal_body_visualizers[i].set_visibility(False)
+                for i in range(len(self.cfg.body_names)):
+                    self.current_body_visualizers[i].set_visibility(False)
+                    self.goal_body_visualizers[i].set_visibility(False)
 
     def _debug_vis_callback(self, event):
         if not self.robot.is_initialized:
@@ -467,9 +507,9 @@ class MotionCommand(CommandTerm):
         self.current_anchor_visualizer.visualize(self.robot_anchor_pos_w, self.robot_anchor_quat_w)
         self.goal_anchor_visualizer.visualize(self.anchor_pos_w, self.anchor_quat_w)
 
-        # for i in range(len(self.cfg.body_names)):
-        #     self.current_body_visualizers[i].visualize(self.robot_body_pos_w[:, i], self.robot_body_quat_w[:, i])
-        #     self.goal_body_visualizers[i].visualize(self.body_pos_relative_w[:, i], self.body_quat_relative_w[:, i])
+        for i in range(len(self.cfg.body_names)):
+            self.current_body_visualizers[i].visualize(self.robot_body_pos_w[:, i], self.robot_body_quat_w[:, i])
+            self.goal_body_visualizers[i].visualize(self.body_pos_relative_w[:, i], self.body_quat_relative_w[:, i])
 
 
 @configclass
@@ -484,13 +524,23 @@ class MotionCommandCfg(CommandTermCfg):
     anchor_body_name: str = MISSING
     body_names: list[str] = MISSING
 
-    box_position: list[float] = [0.0, 0.0, 0.0]
-    box_rotation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
-
     pose_range: dict[str, tuple[float, float]] = {}
     velocity_range: dict[str, tuple[float, float]] = {}
 
     joint_position_range: tuple[float, float] = (-0.52, 0.52)
+    joint_velocity_range: tuple[float, float] = (0.0, 0.0)
+
+    # Staircase object placement (world pose = env_origin + box_position).
+    box_position: list[float] = [0.0, 0.0, 0.0]
+    box_rotation: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+
+    # ── Stair-phase termination schedule (empty stair_bounds -> feature disabled) ──
+    # Each entry: ([xmin, ymin, zmin], [xmax, ymax, zmax]) in the staircase local frame.
+    stair_bounds: list = []
+    stair_foot_body_names: tuple[str, str] = ("left_ankle_roll_link", "right_ankle_roll_link")
+    stair_foot_speed_thr: float = 0.15  # ref foot speed below this = stance (should be planted)
+    stair_xy_slack: float = 0.05        # "anywhere on the stair" xy tolerance
+    stair_z_slack: float = 0.08         # vertical tolerance to the stair top
 
     adaptive_kernel_size: int = 1
     adaptive_lambda: float = 0.8
@@ -503,18 +553,8 @@ class MotionCommandCfg(CommandTermCfg):
     body_visualizer_cfg: VisualizationMarkersCfg = FRAME_MARKER_CFG.replace(prim_path="/Visuals/Command/pose")
     body_visualizer_cfg.markers["frame"].scale = (0.1, 0.1, 0.1)
 
-    # sampling controls (safe defaults)
     min_sample_idx: int = 0
-    max_sample_idx: int = 10**9
-    steps_collect: int = 1
+    max_sample_idx: int = 0
+    steps_collect: int  = 0
 
-    # CHIP force push config
-    force_update_frequency: int = 100
-    max_force: float = 20.0
-
-    force_push_body: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
-    force_push_body_offset: list[list[float]] = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
-
-    # CHIP VR 3-point tracking config
-    vr_3point_body: list[str] = ["left_ankle_roll_link", "right_ankle_roll_link", "pelvis"]
-    vr_3point_body_offset: list[list[float]] = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+    # TODO: add config term for sampling (adaptive vs uniform)
