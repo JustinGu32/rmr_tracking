@@ -48,10 +48,12 @@ VELOCITY_RANGE_Null = {
 
 # --- Staircase object (the ONLY addition over the tracking task) ---
 # Directory holding multi_boxes.urdf and its box_models/*.obj (relative mesh paths).
-# Override with WBT_STAIRCASE_DIR.
+# Committed in-repo under assets/staircase/; override with WBT_STAIRCASE_DIR.
+from whole_body_tracking.assets import ASSET_DIR  # noqa: E402
+
 STAIRCASE_DIR = os.environ.get(
     "WBT_STAIRCASE_DIR",
-    os.path.expanduser("~/Downloads/artifacts/walk_up_karen_stairs"),
+    os.path.join(ASSET_DIR, "staircase", "walk_up_karen_stairs"),
 )
 STAIRCASE_URDF_PATH = os.path.join(STAIRCASE_DIR, "multi_boxes.urdf")
 STAIRCASE_USD_DIR = os.path.expanduser("~/tmp/IsaacLab/walk_up_karen_stairs_usd")

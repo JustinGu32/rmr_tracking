@@ -1,0 +1,4 @@
+# These mesh/asset files are tiny text -- store in git directly, not LFS.
+*.obj !filter !diff !merge text
+*.urdf !filter !diff !merge text
+*.xml  !filter !diff !merge text

@@ -1,0 +1,96 @@
+{
+  "source_fbx": "/move/u/karenvo/Projects/holosoma_retargeting/src/holosoma_retargeting/holosoma_retargeting/demo_data/TML_data/up_continuous_v2_staircase_hierarchy.fbx",
+  "unit_scale_to_meters": 0.01,
+  "axis_conversion": "fbx_y_up_to_z_up_with_negated_y",
+  "adjustments": {
+    "first_step_height_offset_m": 0.02,
+    "second_step_height_offset_m": 0.0,
+    "third_step_height_offset_m": 0.0,
+    "third_step_length_scale": 3.0,
+    "third_step_length_offset_m": 0.0,
+    "third_step_length_axis": "x",
+    "third_step_length_anchor": "front_edge_x_max",
+    "width_offset_each_side_m": 0.3
+  },
+  "stairs": [
+    {
+      "name": "step_01",
+      "bounds_min_m": [
+        -0.38102977554,
+        -1.0603391132,
+        0.0
+      ],
+      "bounds_max_m": [
+        0.0,
+        0.32187325,
+        0.19558224999999999
+      ],
+      "size_m": [
+        0.38102977554,
+        1.3822123631999998,
+        0.19558224999999999
+      ],
+      "top_front_left_marker_m": [
+        -0.38102977554,
+        0.32187325,
+        0.19558224999999999
+      ]
+    },
+    {
+      "name": "step_02",
+      "bounds_min_m": [
+        -0.7117760255400001,
+        -1.0384658632,
+        0.0
+      ],
+      "bounds_max_m": [
+        -0.33074624999999996,
+        0.34374649999999995,
+        0.3511645
+      ],
+      "size_m": [
+        0.3810297755400001,
+        1.3822123631999998,
+        0.3511645
+      ],
+      "top_front_left_marker_m": [
+        -0.7117760255400001,
+        0.34374649999999995,
+        0.3511645
+      ]
+    },
+    {
+      "name": "step_03",
+      "bounds_min_m": [
+        -1.7040147755400006,
+        -1.0165926131999998,
+        0.0
+      ],
+      "bounds_max_m": [
+        -0.6614924999999999,
+        0.40936625000000004,
+        0.52674675
+      ],
+      "size_m": [
+        1.0425222755400005,
+        1.4259588632,
+        0.52674675
+      ],
+      "top_front_left_marker_m": [
+        -1.7040147755400006,
+        0.40936625000000004,
+        0.52674675
+      ]
+    }
+  ],
+  "combined_bounds_min_m": [
+    -1.7040147755400006,
+    -1.0603391132,
+    0.0
+  ],
+  "combined_bounds_max_m": [
+    0.0,
+    0.40936625000000004,
+    0.52674675
+  ]
+}

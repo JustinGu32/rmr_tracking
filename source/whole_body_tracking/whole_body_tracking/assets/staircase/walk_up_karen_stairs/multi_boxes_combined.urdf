@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<robot name="multi_boxes_combined">
+  <link name="multi_boxes_combined_link">
+    <visual>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="multi_boxes.obj" scale="1 1 1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="multi_boxes.obj" scale="1 1 1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="100.0"/>
+      <origin rpy="0 0 0" xyz="0 0 0"/>
+      <inertia ixx="10.0" ixy="0.0" ixz="0.0" iyy="10.0" iyz="0.0" izz="10.0"/>
+    </inertial>
+  </link>
+</robot>
