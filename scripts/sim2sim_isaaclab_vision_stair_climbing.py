@@ -82,28 +82,6 @@ parser.add_argument("--video_folder", type=str, default="videos/vision_stair_cli
 parser.add_argument("--video_length", type=int, default=500, help="Number of steps to record")
 parser.add_argument("--video_name", type=str, default=None, help="Video name prefix (overrides the auto-generated name)")
 parser.add_argument("--debug_vision", action="store_true", help="Print and save robot vision (RGB/depth) for debugging")
-parser.add_argument("--debug_policy", type=int, default=0,
-                    help="Print policy action diagnostics (normalized vs unnormalized action range, "
-                         "normalizer stats) for the first N control steps. Use this to tell whether the "
-                         "robot falls because the policy emits garbage actions (huge/normalized-looking "
-                         "values, or a missing normalizer) vs. a fine policy with a bad init/dynamics. "
-                         "Try --debug_policy 5.")
-# --- Closed-loop stabilizers (DiffusionAgentIsaac supports these but the script
-# left them off, which is the jitter-prone config). When the policy reproduces
-# training actions open-loop (see teacher_forcing_check.py) but the robot still
-# diverges in sim, these reduce compounding error. action_inpainting is the most
-# important for the DiffuseCLoC co-diffusion model: it anchors each step's
-# diffusion on the committed past actions so the trajectory stays continuous. ---
-parser.add_argument("--action_inpainting", action="store_true",
-                    help="Condition each step's diffusion on the previous steps' committed actions "
-                         "(temporal continuity). Strongly recommended for closed-loop stability.")
-parser.add_argument("--temporal_ensemble_size", type=int, default=1,
-                    help="Average overlapping action predictions from the last K inferences (à la ACT/"
-                         "Diffusion Policy action chunking). 4-8 markedly smooths the closed loop. Default 1 (off).")
-parser.add_argument("--ensemble_size", type=int, default=1,
-                    help="Average N diffusion samples per step to cut per-step sampling noise. Default 1 (off).")
-parser.add_argument("--enable_rolling", action="store_true",
-                    help="Rolling trajectory optimization (warm-start denoising from the previous step).")
 parser.add_argument("--no_vision", action="store_true",
                     help="Skip vision encoding and pass vision_embeds=None to the policy. "
                          "Use this when running checkpoints that were trained without vision.")
@@ -132,41 +110,10 @@ parser.add_argument("--action_shift", type=int, default=0,
                          "holosoma/real apply it ~25 ms later at s_{t+1}; the shifted policy predicts "
                          "the t+1 action, so delaying it here makes sim match real. Default 0 (off, "
                          "for checkpoints trained without the shift).")
-# --- Knobs that control how closely eval matches the data-collection conditions ---
-# Defaults are chosen to MATCH run_dataset.sh / multi_collect.py so evaluation
-# reproduces the training-time scene and initial-state distribution.
 parser.add_argument("--min_sample_idx", type=int, default=110,
-                    help="Min reference-motion frame the robot is reset to. Collection uses 140 "
-                         "(~20 frames before the climb onset @ frame ~161).")
+                    help="Min reference-motion frame the robot is reset to.")
 parser.add_argument("--max_sample_idx", type=int, default=130,
-                    help="Max reference-motion frame the robot is reset to. Collection uses 150, so "
-                         "resets jitter the start over frames [140,150] just before the climb (the "
-                         "sampler clamps the start to [min,max] directly, NOT subtracting steps). Set "
-                         "equal to --min_sample_idx (e.g. both 140) for a deterministic start / clean video.")
-parser.add_argument("--camera_update_period", type=float, default=0.1,
-                    help="Depth-camera refresh period in seconds. Collection left this at the cfg "
-                         "default 0.1 (10 Hz), so the policy was trained on depth that refreshes "
-                         "every ~5 control steps. Keep 0.1 to match training.")
-parser.add_argument("--actuator_max_delay", type=int, default=0,
-                    help="Max actuator delay (steps) applied to all actuator groups. Collection "
-                         "forced 0 (the robot cfg default is 3). Keep 0 to match training.")
-# --- Diagnostics: separate "data depends on the assistive spring" from "policy diverges" ---
-parser.add_argument("--keep_spring", action="store_true",
-                    help="Do NOT disable events.assistive_spring_force. The dataset was collected "
-                         "with this 600 N/m vertical spring + 0.5 gravity-comp + 120 angular spring "
-                         "ACTIVE (StaircaseCollectCfg leaves curriculum=None, so curriculum_factor "
-                         "stays at its default 1.0). Use this to test whether the robot only stays "
-                         "up because of that assist.")
-parser.add_argument("--replay_actions", action="store_true",
-                    help="Open-loop replay: feed the RECORDED data/act from the zarr instead of the "
-                         "policy's predictions. If the robot collapses anyway, the recorded actions "
-                         "themselves are not self-sufficient (spring-contaminated data); if it stays "
-                         "up, the fall is the policy's closed-loop divergence.")
-parser.add_argument("--replay_zarr", type=str,
-                    default="/move/u/chrzhang/rmr_tracking/STAIRCASE_DATA_COLLECTED/merged_dataset.zarr",
-                    help="Zarr dataset to replay recorded actions from (with --replay_actions).")
-parser.add_argument("--replay_episode", type=int, default=0,
-                    help="Episode index in the zarr to replay (with --replay_actions).")
+                    help="Max reference-motion frame the robot is reset to.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 if getattr(args_cli, "video", False):
