@@ -104,9 +104,9 @@ def main():
             wandb_path= 'robot-mcrobotface/new_staircase/njj02br2/model_9500.pt',
             # wandb_path = 'justingu-stanfo`rd-university/takara_walk_isaac/p45lz75q',
 # 'takaraet/tracking/5xjdxvln', #justingu-stanford-university/takara_rumba_isaac/up5d790d',
-            episode_collect_length_s=8.0, # 8 for walk and stairs, 3.4 for staircase
-            num_steps_collect=250,  # 250 for walk and stairs, 120 for staircase
-            num_eps_collect= 20, # 2000 #10000, #8000
+            episode_collect_length_s=9.0, # 8 for walk and stairs, 3.4 for staircase
+            num_steps_collect=300,  # 250 for walk and stairs, 120 for staircase
+            num_eps_collect= 2000, # 2000 #10000, #8000
             min_sample_idx = 0,  # 0 for walk and stairs, 120 for staircase
             max_sample_idx = 20,  # 20 for walk and stairs, 140 for staircase
             save_folder='STAIRCASE_DATA_new_walk_and_stairs', #_OU
@@ -135,7 +135,7 @@ def main():
         print(f"Running Experiment {i+1}/{total_experiments} (delay={config.min_delay})")
         print(f"{'='*50}")
         
-        success = run_experiment(config, task="Staircase-G1-Collect-v0", num_envs=8, seed=args.seed) # 750
+        success = run_experiment(config, task="Staircase-G1-Collect-v0", num_envs=750, seed=args.seed) # 750
         if success:
             successful_experiments += 1
         

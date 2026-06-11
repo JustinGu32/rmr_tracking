@@ -29,7 +29,7 @@ echo "working directory = "$SLURM_SUBMIT_DIR
 source /nlp/scr/chrzhang/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab
 
-CHECKPOINT_NAME=my_stairs_0.15_noise
+CHECKPOINT_NAME=my_stairs_0.15_noise_no_vision
 CHECKPOINT=/move/u/chrzhang/outputs/diffuse_cloc/${CHECKPOINT_NAME}/checkpoints/latest.ckpt
 # Staircase selection. Do NOT `export` this at the top level: an exported var
 # persists in your shell and is inherited by later runs (and by sbatch via the
@@ -52,16 +52,17 @@ STAIRCASE_6STEP=/move/u/chrzhang/rmr_tracking/artifacts/walk_up_karen_stairs_6st
 # staircase — so the camera sees open floor, not stairs, and the policy collapses.
 # Fix: use the matching motion so the robot resets at the stairs it trained on.
 # MOTION=/move/u/karenvo/Projects/rmr_tracking/artifacts/walk_up_karen_stairs:v0/motion.npz
-min_sample_idx=120
-max_sample_idx=140
+min_sample_idx=130
+max_sample_idx=150
 # python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --disable_rgb --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "my_stairs_0.15_noise_no_vision_start_${min_sample_idx}" --no_vision
 
 # use shifted action with --action_shift 1
 # 6-STEP: the WBT_STAIRCASE_DIR prefix exists only for this python process.
 # To run the 3-STEP default instead, comment THIS line and uncomment the one below.
-# WBT_STAIRCASE_DIR=${STAIRCASE_6STEP} python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --disable_rgb --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "${CHECKPOINT_NAME}_6step_start_${min_sample_idx}" --debug_vision
+# WBT_STAIRCASE_DIR=${STAIRCASE_6STEP} python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --disable_rgb --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "${CHECKPOINT_NAME}_6step_start_${min_sample_idx}" # --debug_vision
+WBT_STAIRCASE_DIR=${STAIRCASE_6STEP} python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --no_vision --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "${CHECKPOINT_NAME}_6step_start_${min_sample_idx}"
 # 3-STEP default (no prefix -> cfg uses the original staircase):
-python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --disable_rgb --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "my_stairs_0.15_noise_3step_start_${min_sample_idx}" --debug_vision --video_folder videos/vision_stair_climbing_debug
+# python -u scripts/sim2sim_isaaclab_vision_stair_climbing.py --checkpoint ${CHECKPOINT} --headless --video --disable_rgb --min_sample_idx ${min_sample_idx} --max_sample_idx ${max_sample_idx} --video_name "${CHECKPOINT_NAME}_3step_start_${min_sample_idx}" # --debug_vision --video_folder videos/vision_stair_climbing_debug
 
 # min_sample_idx=120
 # max_sample_idx=140

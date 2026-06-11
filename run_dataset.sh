@@ -29,7 +29,11 @@ echo "working directory = "$SLURM_SUBMIT_DIR
 source /nlp/scr/chrzhang/miniconda3/etc/profile.d/conda.sh
 conda activate isaaclab
 
-python scripts/multi_collect.py --seed 0 --disable_rgb
+# WBT_USE_DEPTH_OBS=1: njj02br2 is a 922-dim depth-in-obs policy, so the env must
+# build the depth observation or load_state_dict fails ([512,922] vs [512,154]).
+# Prefixed (NOT exported) so it stays scoped to this process; multi_collect copies
+# os.environ into the collect_dataset subprocess, carrying it through.
+WBT_USE_DEPTH_OBS=1 python scripts/multi_collect.py --seed 2 --disable_rgb
 
 # done
 echo "Done"
