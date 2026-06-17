@@ -4,7 +4,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=40G
-#SBATCH --gres=gpu:rtxpro6000:1
+#SBATCH --gres=gpu:l40s:1
 #SBATCH --job-name=hier_popart
 #SBATCH --output=logs/slurm/hier_popart_%j.out
 #SBATCH --error=logs/slurm/hier_popart_%j.err
@@ -15,6 +15,8 @@ cd /move/u/karenvo/Projects/rmr_tracking/
 
 source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
+
+export WANDB_ENTITY="karenvo-stanford-university"
 
 # Hierarchical (motion-category x reward-head) PopArt + category-balanced sampling.
 #
@@ -36,13 +38,23 @@ python scripts/rsl_rl/train_bones.py \
   --headless \
   --logger wandb \
   --log_project_name multiclip_bones_popart \
-  --run_name multiclip_flat_hier_popart \
+  --run_name multiclip_flat_hier_popart_jump_head_weights_mom0.001_bs \
   --popart_hierarchical \
-  --popart_categorizer balanced \
-  --popart_balanced_sampling \
   --popart_group_preset upper_lower \
   --popart_actor_advantage_scaling raw \
-  --popart_momentum 0.001
+  --popart_momentum 0.001 \
+  --popart_categorizer balanced \
+  --popart_balanced_sampling \
+  --popart_category_head_weights '{"jump": [1.0, 3.0, 3.0, 0.5, 0.5]}'
+
+# heads for upper_lower preset (in order):
+#   0: global_pose_tracking
+#   1: lower_limb_tracking      ← 3x for jump (foot z)
+#   2: motion_dynamics           ← 3x for jump (vertical velocity)
+#   3: regularization_constraints ← 0.5x (allow more aggressive joint motion)
+#   4: upper_limb_tracking       ← 0.5x (arms matter less during jump)
+
+#   --warmstart_actor_from karenvo-stanford-university/multiclip_bones_popart/6wwgw3ig
 
 # Ablation B (balanced sampling, NO PopArt) — the key baseline for "B vs E":
 #   drop --popart_hierarchical and the popart_* flags, keep balanced sampling by

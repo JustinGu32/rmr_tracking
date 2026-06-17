@@ -11,6 +11,7 @@ from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_terrain import Bones3ptTe
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_multi_terrain import Bones3ptMultiTerrainEnvCfg
 from whole_body_tracking.tasks.bones.bones_env_cfg_3pt_binded_multi_terrain import Bones3ptBindedMultiTerrainEnvCfg
 from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
 from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
@@ -47,6 +48,18 @@ def _g1_post_init(self):
     self.commands.motion.body_names = G1_BODY_NAMES
 
 
+@configclass
+class _CategoryObsCfg(ObsGroup):
+    """Standalone 'category' observation group exposing the per-env motion
+    category index, for hierarchical (category x reward-head) PopArt."""
+
+    category = ObsTerm(func=mdp.category_idx_obs, params={"command_name": "motion"})
+
+    def __post_init__(self):
+        self.enable_corruption = False
+        self.concatenate_terms = True
+
+
 def _add_category_obs_group(self):
     """Attach a standalone 'category' observation group exposing the per-env
     motion category index, for hierarchical (category x reward-head) PopArt.
@@ -58,17 +71,7 @@ def _add_category_obs_group(self):
     hierarchical critic via obs['category'] and stored in the rollout buffer."""
     if os.environ.get("BONES_POPART_HIERARCHICAL") != "1":
         return
-    from isaaclab.managers import ObservationGroupCfg as ObsGroup
-
-    @configclass
-    class _CategoryCfg(ObsGroup):
-        category = ObsTerm(func=mdp.category_idx_obs, params={"command_name": "motion"})
-
-        def __post_init__(self):
-            self.enable_corruption = False
-            self.concatenate_terms = True
-
-    self.observations.category = _CategoryCfg()
+    self.observations.category = _CategoryObsCfg()
 
 
 def _add_videomimic_heightmap(self):

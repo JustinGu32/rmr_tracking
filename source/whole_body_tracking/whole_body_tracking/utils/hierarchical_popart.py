@@ -206,7 +206,7 @@ class BonesCategoryRewardActorCritic(nn.Module):
         critic_obs_normalization: bool = False,
         actor_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
         critic_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
-        activation: str = "elu",
+        activation: str = "swish",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         popart_momentum: float = 0.1,
@@ -360,6 +360,7 @@ class BonesCategoryRewardPPO:
         per_head_rewards_key: str = PER_HEAD_REWARDS_KEY,
         group_membership: torch.Tensor | None = None,
         category_obs_group: str = DEFAULT_CATEGORY_OBS_GROUP,
+        category_head_weights: torch.Tensor | None = None,
         num_learning_epochs=5,
         num_mini_batches=4,
         clip_param=0.2,
@@ -375,6 +376,7 @@ class BonesCategoryRewardPPO:
         device="cpu",
         normalize_advantage_per_mini_batch=False,
         popart_actor_advantage_scaling: str = "raw",
+        category_adv_scaling: bool = False,
         multi_gpu_cfg: dict | None = None,
         **kwargs,
     ):
@@ -423,6 +425,7 @@ class BonesCategoryRewardPPO:
         self.per_head_rewards_key = per_head_rewards_key
         self.group_membership = group_membership.to(device) if group_membership is not None else None
         self.reward_weights = reward_weights.to(device)
+        self.category_head_weights = category_head_weights.to(device) if category_head_weights is not None else None
         self.category_obs_group = category_obs_group
         if popart_actor_advantage_scaling not in VALID_ACTOR_ADVANTAGE_SCALINGS:
             raise ValueError(
@@ -430,6 +433,7 @@ class BonesCategoryRewardPPO:
                 f"Expected one of {VALID_ACTOR_ADVANTAGE_SCALINGS}."
             )
         self.actor_advantage_scaling = popart_actor_advantage_scaling
+        self.category_adv_scaling = category_adv_scaling
         self.last_diagnostics: dict[str, float] = {}
 
     def init_storage(self, training_type, num_envs, num_transitions_per_env, obs, actions_shape):
@@ -486,6 +490,43 @@ class BonesCategoryRewardPPO:
         self.transition.clear()
         self.policy.reset(dones)
 
+    @torch.no_grad()
+    def _compute_category_adv_scale(
+        self, cat_buf: torch.Tensor, advantages_raw: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute per-category advantage scale factors for category-conditional scaling.
+
+        For each category c, computes the fraction of samples with a positive actor
+        advantage, then returns scale = 0.5 / pos_frac so every category contributes
+        equally regardless of critic calibration state.
+
+        Args:
+            cat_buf: [T, N] per-step category indices.
+            advantages_raw: [T, N, H] unnormalized per-head advantages.
+
+        Returns:
+            scale: [C] — multiplicative factor per category, clamped to [0.1, 5.0].
+            pos_adv_frac: [C] — raw positive-advantage fraction per category.
+        """
+        # Scalar actor advantage per sample [T, N]
+        if self.category_head_weights is not None:
+            per_sample_w = self.reward_weights * self.category_head_weights[cat_buf]  # [T, N, H]
+        else:
+            per_sample_w = self.reward_weights  # [H] broadcast
+        actor_adv = (advantages_raw * per_sample_w).sum(-1)
+        cat_flat = cat_buf.reshape(-1)
+        actor_adv_flat = actor_adv.reshape(-1)
+
+        # Default to 0.5 (scale=1) for categories with no data.
+        pos_adv_frac = torch.full((self.num_categories,), 0.5, device=self.device)
+        for c in range(self.num_categories):
+            mask = cat_flat == c
+            if int(mask.sum()) >= 2:
+                pos_adv_frac[c] = (actor_adv_flat[mask] > 0).float().mean()
+
+        scale = (0.5 / pos_adv_frac.clamp_min(0.1)).clamp_max(5.0)
+        return scale, pos_adv_frac
+
     def _category_buffer(self) -> torch.Tensor:
         """Per-step category index from stored observations, shape [T, N]."""
         cat = self.storage.observations[self.category_obs_group]  # [T, N, 1]
@@ -517,6 +558,13 @@ class BonesCategoryRewardPPO:
             lam=self.lam,
         )
 
+        # Category-conditional advantage scaling: re-center per-category gradient
+        # contribution so every category pushes the policy with equal strength.
+        cat_scale = pos_adv_frac = None
+        if self.category_adv_scaling:
+            cat_scale, pos_adv_frac = self._compute_category_adv_scale(cat_buf, advantages_raw)
+            advantages_raw = advantages_raw * cat_scale[cat_buf].unsqueeze(-1)
+
         whitened_advantages, _, raw_std = whiten_advantages_per_head(advantages_raw)
 
         # Update PopArt stats (ART correction keeps unnorm predictions continuous),
@@ -530,10 +578,18 @@ class BonesCategoryRewardPPO:
         self.storage.raw_advantages.copy_(advantages_raw)
         self.storage.advantages.copy_(whitened_advantages)
 
-        self._build_diagnostics(cat_buf, returns_unnorm, advantages_raw, raw_std)
+        self._build_diagnostics(cat_buf, returns_unnorm, advantages_raw, raw_std, pos_adv_frac, cat_scale)
 
     @torch.no_grad()
-    def _build_diagnostics(self, cat_buf, returns_unnorm, advantages_raw, raw_std):
+    def _build_diagnostics(
+        self,
+        cat_buf,
+        returns_unnorm,
+        advantages_raw,
+        raw_std,
+        pos_adv_frac: torch.Tensor | None = None,
+        adv_scale: torch.Tensor | None = None,
+    ):
         mean_ch, std_ch = self.policy.value_normalizer.mean_std()  # [C,H]
         cat_flat = cat_buf.reshape(-1)
         ret_flat = returns_unnorm.reshape(-1, self.num_heads)
@@ -543,6 +599,10 @@ class BonesCategoryRewardPPO:
             mask = cat_flat == c
             n_c = int(mask.sum())
             diag[f"popart/fraction/{cat_name}"] = n_c / total
+            if pos_adv_frac is not None:
+                diag[f"popart/pos_adv_frac/{cat_name}"] = float(pos_adv_frac[c])
+            if adv_scale is not None:
+                diag[f"popart/adv_scale/{cat_name}"] = float(adv_scale[c])
             for h, head_name in enumerate(self.head_names):
                 key = f"{cat_name}/{head_name}"
                 diag[f"popart/mu/{key}"] = float(mean_ch[c, h])
@@ -609,14 +669,22 @@ class BonesCategoryRewardPPO:
                     for param_group in self.optimizer.param_groups:
                         param_group["lr"] = self.learning_rate
 
+            # Per-sample effective head weights: base reward_weights optionally
+            # multiplied by per-category overrides [B, H].
+            cat_ids_batch = obs_batch[self.category_obs_group].long().squeeze(-1)  # [B]
+            if self.category_head_weights is not None:
+                per_sample_weights = self.reward_weights * self.category_head_weights[cat_ids_batch]  # [B, H]
+            else:
+                per_sample_weights = self.reward_weights  # [H] broadcasts over B
+
             # Actor advantage aggregation across heads.
             if self.actor_advantage_scaling == "raw":
-                head_adv = raw_advantages_batch * self.reward_weights
+                head_adv = raw_advantages_batch * per_sample_weights
             elif self.actor_advantage_scaling == "whitened":
-                head_adv = advantages_batch * self.reward_weights
+                head_adv = advantages_batch * per_sample_weights
             elif self.actor_advantage_scaling == "sigma_rescaled":
                 sigma = self.policy.value_normalizer.debiased_std().mean(dim=0).detach()  # [H]
-                head_adv = advantages_batch * sigma * self.reward_weights
+                head_adv = advantages_batch * sigma * per_sample_weights
             else:
                 raise ValueError(f"Unsupported actor_advantage_scaling={self.actor_advantage_scaling!r}.")
             actor_adv_abs_sum += head_adv.detach().abs().reshape(-1, self.num_heads).sum(dim=0)
@@ -764,6 +832,8 @@ class BonesCategoryRewardOnPolicyRunner(OnPolicyRunner):
         popart_momentum = algorithm_cfg.pop("popart_momentum", 0.1)
         popart_epsilon = algorithm_cfg.pop("popart_epsilon", 1.0e-5)
         popart_min_samples = algorithm_cfg.pop("popart_min_samples", 2)
+        category_adv_scaling = algorithm_cfg.pop("category_adv_scaling", False)
+        category_head_weights_dict = algorithm_cfg.pop("popart_category_head_weights", None)
 
         group_membership = None
         popart_groups = None
@@ -789,6 +859,29 @@ class BonesCategoryRewardOnPolicyRunner(OnPolicyRunner):
             per_head_rewards_key = PER_HEAD_REWARDS_KEY
         num_heads = len(head_names)
 
+        # Build [C, H] category-head weight multiplier tensor (default: all ones).
+        category_head_weights = torch.ones(num_categories, num_heads, device=self.device)
+        if category_head_weights_dict:
+            for cat_name, weights in category_head_weights_dict.items():
+                if cat_name not in category_names:
+                    print(
+                        f"[WARN] popart_category_head_weights: unknown category {cat_name!r} "
+                        f"(known: {category_names}), skipping"
+                    )
+                    continue
+                if len(weights) != num_heads:
+                    raise ValueError(
+                        f"popart_category_head_weights[{cat_name!r}]: expected {num_heads} weights "
+                        f"(heads: {head_names}), got {len(weights)}"
+                    )
+                c_idx = category_names.index(cat_name)
+                category_head_weights[c_idx] = torch.tensor(weights, dtype=torch.float, device=self.device)
+        # Use None when all-ones to skip the per-sample indexing in update().
+        if category_head_weights_dict:
+            _use_category_head_weights = category_head_weights
+        else:
+            _use_category_head_weights = None
+
         actor_critic = BonesCategoryRewardActorCritic(
             obs=obs,
             obs_groups=self.cfg["obs_groups"],
@@ -812,6 +905,8 @@ class BonesCategoryRewardOnPolicyRunner(OnPolicyRunner):
             per_head_rewards_key=per_head_rewards_key,
             group_membership=group_membership,
             category_obs_group=category_obs_group,
+            category_adv_scaling=category_adv_scaling,
+            category_head_weights=_use_category_head_weights,
             device=self.device,
             multi_gpu_cfg=self.multi_gpu_cfg,
             **algorithm_cfg,
@@ -833,9 +928,16 @@ class BonesCategoryRewardOnPolicyRunner(OnPolicyRunner):
         print(f"  critic outputs: {num_categories * num_heads} = C x H")
         print(f"  head_mode: {head_mode}  group_preset: {group_preset}")
         print(f"  actor_advantage_scaling: {alg.actor_advantage_scaling}")
+        print(f"  category_adv_scaling: {alg.category_adv_scaling}")
         print(f"  grouped_actor_weight_mode: {grouped_actor_weight_mode}")
         print(f"  popart_momentum: {popart_momentum}  min_samples: {popart_min_samples}")
         print(f"  category_obs_group: {category_obs_group!r}")
+        if _use_category_head_weights is not None:
+            print("  category_head_weights (multipliers on top of base reward_weights):")
+            for c, cat_name in enumerate(category_names):
+                w = _use_category_head_weights[c].tolist()
+                w_str = "  ".join(f"{head_names[h]}={w[h]:.2f}" for h in range(num_heads))
+                print(f"    [{c}] {cat_name}: {w_str}")
         print("=" * 80)
 
         if wandb.run is not None:
@@ -848,10 +950,40 @@ class BonesCategoryRewardOnPolicyRunner(OnPolicyRunner):
                     "popart_num_heads": num_heads,
                     "popart_group_preset": group_preset if head_mode == "grouped" else None,
                     "popart_actor_advantage_scaling": alg.actor_advantage_scaling,
+                    "category_adv_scaling": alg.category_adv_scaling,
+                    "popart_category_head_weights": (
+                        {cat: _use_category_head_weights[c].tolist()
+                         for c, cat in enumerate(category_names)}
+                        if _use_category_head_weights is not None else None
+                    ),
                 },
                 allow_val_change=True,
             )
         return alg
+
+    def load_actor_only(self, path: str) -> None:
+        """Load only actor weights from a checkpoint (baseline or PopArt).
+
+        Used for two-phase training: phase-1 checkpoint provides a warm-started
+        actor; the hierarchical critic starts fresh and calibrates to the already-
+        competent policy rather than racing ahead of it.
+        """
+        import torch
+        loaded = torch.load(path, map_location=self.device)
+        src = loaded.get("model_state_dict", loaded)
+        actor_keys = [k for k in src if k.startswith("actor") or k == "std"]
+        dst = self.alg.policy.state_dict()
+        loaded_keys, skipped_keys = [], []
+        for k in actor_keys:
+            if k in dst and dst[k].shape == src[k].shape:
+                dst[k] = src[k]
+                loaded_keys.append(k)
+            else:
+                skipped_keys.append(k)
+        self.alg.policy.load_state_dict(dst)
+        print(f"[load_actor_only] loaded {len(loaded_keys)} keys from {path}")
+        if skipped_keys:
+            print(f"[load_actor_only] skipped (shape mismatch): {skipped_keys}")
 
     def log(self, locs: dict, width: int = 80, pad: int = 35):
         super().log(locs, width=width, pad=pad)

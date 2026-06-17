@@ -1,0 +1,44 @@
+{
+  "clip_id": 355,
+  "clip_name": "Turn_Start_Jog_0000_001__A017",
+  "clip_length_frames": 3861,
+  "task": "Bones-MultiClip-Flat-G1-v0",
+  "wandb_path": "karenvo-stanford-university/multiclip_bones_popart/cgwt6x25",
+  "steps_run": 3861,
+  "terminated_at": 426,
+  "termination_reason": "anchor_pos_global",
+  "termination_errors": {
+    "step": 425,
+    "anchor_pos_err_xy": 0.8052,
+    "anchor_pos_err_z": 0.0085,
+    "anchor_pos_err_xyz": [
+      -0.6514,
+      0.4733,
+      -0.0085
+    ],
+    "ee_z_errors": {
+      "left_ankle_roll_link": {
+        "z_error": 0.0225,
+        "ref_z": 0.0575,
+        "robot_z": 0.035
+      },
+      "right_ankle_roll_link": {
+        "z_error": 0.0091,
+        "ref_z": 0.1859,
+        "robot_z": 0.195
+      },
+      "left_wrist_yaw_link": {
+        "z_error": 0.0298,
+        "ref_z": 0.7568,
+        "robot_z": 0.727
+      },
+      "right_wrist_yaw_link": {
+        "z_error": 0.0391,
+        "ref_z": 0.7125,
+        "robot_z": 0.7517
+      }
+    }
+  },
+  "progress_pct": 11.0,
+  "success": false
+}

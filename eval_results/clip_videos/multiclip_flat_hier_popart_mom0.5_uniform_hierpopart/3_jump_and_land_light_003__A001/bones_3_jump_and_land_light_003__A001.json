@@ -1,0 +1,44 @@
+{
+  "clip_id": 3,
+  "clip_name": "jump_and_land_light_003__A001",
+  "clip_length_frames": 488,
+  "task": "Bones-MultiClip-Flat-G1-v0",
+  "wandb_path": "karenvo-stanford-university/multiclip_bones_popart/tunclkwz",
+  "steps_run": 488,
+  "terminated_at": 273,
+  "termination_reason": "anchor_pos_global",
+  "termination_errors": {
+    "step": 272,
+    "anchor_pos_err_xy": 0.7943,
+    "anchor_pos_err_z": 0.0077,
+    "anchor_pos_err_xyz": [
+      0.118,
+      0.7855,
+      -0.0077
+    ],
+    "ee_z_errors": {
+      "left_ankle_roll_link": {
+        "z_error": 0.0335,
+        "ref_z": 0.0329,
+        "robot_z": 0.0664
+      },
+      "right_ankle_roll_link": {
+        "z_error": 0.005,
+        "ref_z": 0.03,
+        "robot_z": 0.035
+      },
+      "left_wrist_yaw_link": {
+        "z_error": 0.0029,
+        "ref_z": 0.7563,
+        "robot_z": 0.7534
+      },
+      "right_wrist_yaw_link": {
+        "z_error": 0.0236,
+        "ref_z": 0.7446,
+        "robot_z": 0.7682
+      }
+    }
+  },
+  "progress_pct": 55.9,
+  "success": false
+}

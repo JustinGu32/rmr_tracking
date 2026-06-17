@@ -56,7 +56,7 @@ parser.add_argument(
     default="2.0,3.0,5.0",
     help="Comma-separated thresholds for sensitivity analysis.",
 )
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"], help="Policy activation function.")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"], help="Policy activation function.")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()

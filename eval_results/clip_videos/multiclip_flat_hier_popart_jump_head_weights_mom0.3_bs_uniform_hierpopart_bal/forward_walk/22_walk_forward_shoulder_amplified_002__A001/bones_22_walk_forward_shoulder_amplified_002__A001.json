@@ -1,0 +1,44 @@
+{
+  "clip_id": 22,
+  "clip_name": "walk_forward_shoulder_amplified_002__A001",
+  "clip_length_frames": 1407,
+  "task": "Bones-MultiClip-Flat-G1-v0",
+  "wandb_path": "karenvo-stanford-university/multiclip_bones_popart/cgwt6x25",
+  "steps_run": 1407,
+  "terminated_at": 594,
+  "termination_reason": "anchor_pos_global",
+  "termination_errors": {
+    "step": 593,
+    "anchor_pos_err_xy": 0.7917,
+    "anchor_pos_err_z": 0.0026,
+    "anchor_pos_err_xyz": [
+      0.4805,
+      0.6292,
+      -0.0026
+    ],
+    "ee_z_errors": {
+      "left_ankle_roll_link": {
+        "z_error": 0.009,
+        "ref_z": 0.0307,
+        "robot_z": 0.0397
+      },
+      "right_ankle_roll_link": {
+        "z_error": 0.0208,
+        "ref_z": 0.2025,
+        "robot_z": 0.2233
+      },
+      "left_wrist_yaw_link": {
+        "z_error": 0.0216,
+        "ref_z": 0.8066,
+        "robot_z": 0.785
+      },
+      "right_wrist_yaw_link": {
+        "z_error": 0.001,
+        "ref_z": 0.7358,
+        "robot_z": 0.7367
+      }
+    }
+  },
+  "progress_pct": 42.2,
+  "success": false
+}

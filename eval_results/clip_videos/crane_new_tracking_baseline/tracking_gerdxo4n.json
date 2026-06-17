@@ -1,0 +1,6 @@
+{
+  "task": "Tracking-Flat-G1-Play-v0",
+  "wandb_path": "robot-mcrobotface/multiclip_bones_popart/gerdxo4n",
+  "steps_run": 500,
+  "video_length": 500
+}

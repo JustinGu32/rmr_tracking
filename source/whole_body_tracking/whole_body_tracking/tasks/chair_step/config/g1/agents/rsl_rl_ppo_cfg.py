@@ -13,7 +13,7 @@ class G1ChairPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
-        activation="elu",
+        activation="swish",
     )
     algorithm = RslRlPpoAlgorithmCfg(
         value_loss_coef=1.0,

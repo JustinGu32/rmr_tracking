@@ -34,12 +34,13 @@ parser.add_argument("--motion_joint_pos", action="store_true", default=False, he
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
 parser.add_argument("--wandb_resume", type=str, default=None, help="Wandb run path to resume from (e.g., 'user/project/run_id'). Downloads latest checkpoint.")
+parser.add_argument("--warmstart_actor_from", type=str, default=None, help="Wandb run path or local .pt path to warm-start actor weights from (phase-2 training). Critic starts fresh.")
 parser.add_argument("--num_steps_per_env", type=int, default=None, help="Override num rollout steps per env per iteration.")
 parser.add_argument("--layer_norm", action="store_true", default=False, help="Insert LayerNorm after each hidden activation in actor/critic MLPs.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: swish).")
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--crane", action="store_true", default=False, help="Enable crane-mode foot contact penalty for support/contact mismatch.")
 parser.add_argument("--contact_feasibility", action="store_true", default=False, help="Enable contact-feasibility reward shaping, including foot z tracking reward/termination.")
@@ -47,7 +48,7 @@ parser.add_argument("--feet_z_pos_reward", action="store_true", default=False, h
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
-parser.add_argument("--sampling", type=str, default="adaptive", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: adaptive).")
+parser.add_argument("--sampling", type=str, default="uniform", choices=["adaptive", "uniform"], help="Motion clip sampling strategy (default: uniform).")
 parser.add_argument("--popart_multihead", action="store_true", default=False, help="Enable the opt-in multi-head PopArt bones training path.")
 parser.add_argument(
     "--popart_head_mode",
@@ -104,6 +105,25 @@ parser.add_argument(
     default=False,
     help="With --popart_hierarchical: sample category uniformly -> clip -> frame, so "
     "rare motion categories get an equal env share (recommended for the B-vs-E comparison).",
+)
+parser.add_argument(
+    "--category_adv_scaling",
+    action="store_true",
+    default=False,
+    help="With --popart_hierarchical: scale each category's advantages by 0.5/pos_adv_frac "
+    "so every category contributes equally to the policy gradient regardless of critic "
+    "calibration state. Logs popart/pos_adv_frac/ and popart/adv_scale/ per category.",
+)
+parser.add_argument(
+    "--popart_category_head_weights",
+    type=str,
+    default=None,
+    help="With --popart_hierarchical: JSON dict mapping category name → list of per-head "
+    "weight multipliers (applied on top of base reward_weights). Length must match the "
+    "number of reward heads for the chosen group_preset. "
+    "Example for upper_lower (5 heads: global_pose, lower_limb, motion_dynamics, "
+    "regularization, upper_limb): "
+    "'{\"jump\": [1.0, 3.0, 3.0, 0.5, 0.5]}'",
 )
 
 # append RSL-RL cli arguments
@@ -343,6 +363,17 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         if args_cli.popart_momentum is not None:
             agent_cfg.algorithm.popart_momentum = args_cli.popart_momentum
 
+    # Category assignment + (optionally) balanced sampling on the motion command.
+    # Independent of hierarchical PopArt -- usable standalone (e.g. for the
+    # "balanced sampling alone" arm of the B-vs-E comparison).
+    if args_cli.popart_balanced_sampling or args_cli.popart_hierarchical:
+        env_cfg.commands.motion.categorizer = args_cli.popart_categorizer
+        env_cfg.commands.motion.balanced_category_sampling = args_cli.popart_balanced_sampling
+        print(
+            f"[INFO] Motion categorizer={args_cli.popart_categorizer} "
+            f"balanced_sampling={args_cli.popart_balanced_sampling}"
+        )
+
     if args_cli.popart_hierarchical:
         # Hierarchical PopArt: grouped reward heads + per-(category,head) stats.
         agent_cfg.algorithm.popart_hierarchical = True
@@ -352,14 +383,15 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         agent_cfg.algorithm.popart_grouped_actor_weight_mode = args_cli.popart_grouped_actor_weight_mode
         if args_cli.popart_momentum is not None:
             agent_cfg.algorithm.popart_momentum = args_cli.popart_momentum
-        # Category assignment + (optionally) balanced sampling on the motion command.
-        env_cfg.commands.motion.categorizer = args_cli.popart_categorizer
-        env_cfg.commands.motion.balanced_category_sampling = args_cli.popart_balanced_sampling
+        agent_cfg.algorithm.category_adv_scaling = args_cli.category_adv_scaling
+        if args_cli.popart_category_head_weights is not None:
+            import json
+            agent_cfg.algorithm.popart_category_head_weights = json.loads(args_cli.popart_category_head_weights)
         print(
-            f"[INFO] Hierarchical PopArt: categorizer={args_cli.popart_categorizer} "
-            f"group_preset={args_cli.popart_group_preset} "
-            f"balanced_sampling={args_cli.popart_balanced_sampling} "
-            f"actor_adv_scaling={args_cli.popart_actor_advantage_scaling}"
+            f"[INFO] Hierarchical PopArt: group_preset={args_cli.popart_group_preset} "
+            f"actor_adv_scaling={args_cli.popart_actor_advantage_scaling} "
+            f"category_adv_scaling={args_cli.category_adv_scaling} "
+            f"category_head_weights={args_cli.popart_category_head_weights}"
         )
 
     # Append sampling suffix to run name
@@ -370,6 +402,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.popart_hierarchical and agent_cfg.run_name:
         suffix = "_hierpopart" + ("_bal" if args_cli.popart_balanced_sampling else "")
         agent_cfg.run_name = f"{agent_cfg.run_name}{suffix}"
+    elif args_cli.popart_balanced_sampling and agent_cfg.run_name:
+        agent_cfg.run_name = f"{agent_cfg.run_name}_bal"
 
     env_cfg.scene.num_envs = args_cli.num_envs if args_cli.num_envs is not None else env_cfg.scene.num_envs
     agent_cfg.max_iterations = (
@@ -502,6 +536,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if _wandb_resume_path is not None:
         print(f"[INFO]: Loading wandb checkpoint: {_wandb_resume_path}")
         runner.load(_wandb_resume_path)
+
+    # Two-phase training: warm-start actor from a phase-1 checkpoint, critic starts fresh.
+    if args_cli.warmstart_actor_from is not None:
+        _ws_path = args_cli.warmstart_actor_from
+        if not os.path.isfile(_ws_path):
+            import wandb as _wandb
+            api = _wandb.Api()
+            _ws_run = api.run(_ws_path if "model" not in _ws_path else "/".join(_ws_path.split("/")[:-1]))
+            _ws_files = [f for f in _ws_run.files() if "model" in f.name and f.name.endswith(".pt")]
+            if not _ws_files:
+                raise RuntimeError(f"No model checkpoints in warmstart run: {_ws_path}")
+            _ws_latest = max(_ws_files, key=lambda x: int(x.name.split("_")[1].split(".")[0]))
+            _ws_dl_dir = os.path.join("logs", "rsl_rl", "warmstart")
+            _ws_latest.download(_ws_dl_dir, replace=True)
+            _ws_path = os.path.join(_ws_dl_dir, _ws_latest.name)
+            print(f"[INFO]: Warmstart: downloaded {_ws_latest.name} from {args_cli.warmstart_actor_from}")
+        if not hasattr(runner, "load_actor_only"):
+            raise RuntimeError("--warmstart_actor_from requires --popart_hierarchical (BonesCategoryRewardOnPolicyRunner).")
+        runner.load_actor_only(_ws_path)
 
     # Insert LayerNorm into actor/critic MLPs if requested
     if args_cli.layer_norm:

@@ -39,8 +39,8 @@ parser.add_argument("--results_dir", type=str, default="eval_results", help="Dir
 parser.add_argument("--results_name", type=str, default=None, help="Filename (without .json).")
 parser.add_argument("--disable_terminations", action="store_true", default=False,
                     help="Disable failure terminations (only stop at clip end). Useful to see full tracking error curves.")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: swish).")
 cli_args.add_rsl_rl_args(parser)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()

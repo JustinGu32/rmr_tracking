@@ -28,7 +28,7 @@ parser.add_argument("--task", type=str, default=None, help="Name of the task.")
 parser.add_argument("--motion_file", type=str, default=None, help="Path to the motion file.")
 parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr store for multi-clip tasks.")
 parser.add_argument("--max_clips", type=int, default=None, help="Max clips to load from Zarr (for smaller GPUs).")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (must match training).")
 parser.add_argument("--start_from_beginning", action="store_true", default=False,
                     help="Start each episode from the beginning of the clip instead of adaptive sampling.")
@@ -206,14 +206,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     train_cfg = agent_cfg.to_dict()
     if not use_popart_runner:
         # Strip PopArt-specific keys that the stock PPO doesn't accept
-        for key in [
-            "use_popart_multihead", "popart_head_mode", "popart_groups",
-            "popart_group_preset",
-            "popart_grouped_actor_weight_mode",
-            "popart_momentum", "popart_epsilon", "popart_normalize_actor_weights",
-            "popart_actor_advantage_scaling",
-        ]:
-            train_cfg.get("algorithm", {}).pop(key, None)
+        alg_cfg = train_cfg.get("algorithm", {})
+        for key in list(alg_cfg.keys()):
+            if key.startswith("popart_") or key in ("use_popart_multihead", "category_adv_scaling"):
+                alg_cfg.pop(key)
     ppo_runner = runner_cls(env, train_cfg, log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
 

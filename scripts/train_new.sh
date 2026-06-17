@@ -16,13 +16,15 @@ cd /move/u/karenvo/Projects/rmr_tracking/
 source /move/u/karenvo/miniconda3/etc/profile.d/conda.sh
 conda activate env_isaaclab
 
+export WANDB_ENTITY="karenvo-stanford-university"
+
 python scripts/rsl_rl/train_bones.py \
   --task=Bones-Flat-G1-v0 \
   --registry_name justingu-stanford-university-org/wandb-registry-Motions/crane_new:v0 \
   --headless \
   --logger wandb \
-  --log_project_name multiclip_bones_popart \
-  --run_name crane_upperlower_raw_uniform_mom0.0005_v2 \
+  --log_project_name crane_popart \
+  --run_name crane_upperlower_raw_uniform_mom0.001 \
   --video \
   --video_length 500 \
   --video_interval 10000 \
@@ -31,7 +33,7 @@ python scripts/rsl_rl/train_bones.py \
   --popart_group_preset upper_lower \
   --popart_actor_advantage_scaling raw \
   --popart_grouped_actor_weight_mode uniform \
-  --popart_momentum 0.0005 \
+  --popart_momentum 0.001 \
   --seed 1
 
 # python scripts/rsl_rl/train_bones.py \

@@ -78,7 +78,10 @@ FINE_NAMES: list[str] = [
 # ── Coarse presets: fine category → coarse category ──────────────────────────
 PRESET_NAMES: dict[str, list[str]] = {
     "fine": FINE_NAMES,
-    "balanced": ["locomotion", "turn", "jump", "static", "step", "misc", "other"],
+    # "step" removed: all 654 clips named Step_Rotate_Reaction_Idle_* contain
+    # "idle" which fires earlier in FINE_RULES, so step received 0 clips and
+    # its PopArt slot was never updated (sigma stayed at init value of 1).
+    "balanced": ["locomotion", "turn", "jump", "static", "misc", "other"],
     "mid": ["walk", "jog", "run", "turn", "jump", "idle", "sit", "crouch_kneel", "other"],
 }
 
@@ -90,7 +93,7 @@ PRESET_REMAP: dict[str, dict[str, str]] = {
         "jump": "jump",
         "idle": "static", "sit": "static", "crouch": "static",
         "kneel": "static", "crawl": "static", "stand_up": "static",
-        "step": "step",
+        "step": "static",
         "misc": "misc",
         "other": "other",
     },

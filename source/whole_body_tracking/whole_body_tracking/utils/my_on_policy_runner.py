@@ -244,6 +244,10 @@ class MotionOnPolicyRunner(OnPolicyRunner):
             "popart_epsilon",
             "popart_normalize_actor_weights",
             "popart_actor_advantage_scaling",
+            "popart_num_categories",
+            "popart_min_samples",
+            "popart_category_obs_group",
+            "category_adv_scaling",
         ]:
             train_cfg.get("algorithm", {}).pop(key, None)
         super().__init__(env, train_cfg, log_dir, device)

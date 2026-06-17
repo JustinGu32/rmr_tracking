@@ -1,0 +1,13 @@
+{
+  "clip_id": 0,
+  "clip_name": "jump_and_land_light_002__A002",
+  "clip_length_frames": 439,
+  "task": "Bones-MultiClip-Flat-G1-v0",
+  "wandb_path": null,
+  "steps_run": 439,
+  "terminated_at": null,
+  "termination_reason": null,
+  "termination_errors": null,
+  "progress_pct": 100.0,
+  "success": true
+}

@@ -43,8 +43,8 @@ parser.add_argument("--depth_debug_save_frames", action="store_true", default=Fa
 parser.add_argument("--depth_debug_max_frames", type=int, default=4, help="Maximum number of depth debug frames to save.")
 parser.add_argument("--ppo_output", type=str, default="target", choices=["target", "delta-pseudotarget", "delta-all"],
                     help="PPO output mode: 'target' for absolute joint pos, 'delta-pseudotarget' for pseudo-target ONNX output, 'delta-all' for raw delta output.")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: swish).")
 # parser.add_argument("--assist_mode", type=str, default=None, choices=["both", "gravity_only", "spring_only", "none"], help="Assistive force mode for staircase training.")
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")

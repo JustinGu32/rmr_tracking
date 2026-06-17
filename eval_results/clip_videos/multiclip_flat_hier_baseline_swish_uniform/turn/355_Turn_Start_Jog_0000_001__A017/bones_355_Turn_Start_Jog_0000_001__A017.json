@@ -1,0 +1,44 @@
+{
+  "clip_id": 355,
+  "clip_name": "Turn_Start_Jog_0000_001__A017",
+  "clip_length_frames": 3861,
+  "task": "Bones-MultiClip-Flat-G1-v0",
+  "wandb_path": "karenvo-stanford-university/multiclip_bones_popart/evacfrhk",
+  "steps_run": 3861,
+  "terminated_at": 1119,
+  "termination_reason": "anchor_pos_global",
+  "termination_errors": {
+    "step": 1118,
+    "anchor_pos_err_xy": 0.7836,
+    "anchor_pos_err_z": 0.0103,
+    "anchor_pos_err_xyz": [
+      0.5027,
+      -0.6011,
+      -0.0103
+    ],
+    "ee_z_errors": {
+      "left_ankle_roll_link": {
+        "z_error": 0.0097,
+        "ref_z": 0.0927,
+        "robot_z": 0.1024
+      },
+      "right_ankle_roll_link": {
+        "z_error": 0.0332,
+        "ref_z": 0.1257,
+        "robot_z": 0.0924
+      },
+      "left_wrist_yaw_link": {
+        "z_error": 0.0092,
+        "ref_z": 0.8788,
+        "robot_z": 0.888
+      },
+      "right_wrist_yaw_link": {
+        "z_error": 0.0464,
+        "ref_z": 0.7597,
+        "robot_z": 0.8061
+      }
+    }
+  },
+  "progress_pct": 29.0,
+  "success": false
+}

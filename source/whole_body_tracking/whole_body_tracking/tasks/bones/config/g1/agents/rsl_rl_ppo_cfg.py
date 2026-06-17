@@ -19,6 +19,16 @@ class BonesPopArtPpoAlgorithmCfg(RslRlPpoAlgorithmCfg):
     popart_num_categories: int | None = None
     popart_min_samples: int = 2
     popart_category_obs_group: str = "category"
+    # Per-category actor head-weight multipliers.  Maps category name → list of
+    # per-head multipliers (length must equal the number of reward heads).
+    # These are multiplied on top of the base reward_weights so categories not
+    # listed keep the default [1, 1, …, 1] scaling.
+    # Example for upper_lower preset (5 heads: global_pose, lower_limb,
+    # motion_dynamics, regularization, upper_limb):
+    #   popart_category_head_weights = {
+    #       "jump": [1.0, 3.0, 3.0, 0.5, 0.5],
+    #   }
+    popart_category_head_weights: dict[str, list[float]] | None = None
 
 
 @configclass
@@ -32,7 +42,7 @@ class G1FlatPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
         critic_hidden_dims=[2048, 2048, 1024, 1024, 512, 512],
-        activation="elu",
+        activation="swish",
     )
     algorithm = BonesPopArtPpoAlgorithmCfg(
         value_loss_coef=1.0,

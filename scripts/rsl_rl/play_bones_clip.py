@@ -23,6 +23,7 @@ Usage:
 """Launch Isaac Sim Simulator first."""
 
 import argparse
+import os
 import sys
 
 from isaaclab.app import AppLauncher
@@ -45,8 +46,14 @@ parser.add_argument("--clip_id", type=int, default=None, help="Clip index in the
 parser.add_argument("--clip_name", type=str, default=None, help="Clip name (substring match).")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation.")
 parser.add_argument("--video_dir", type=str, default=None, help="Directory to save video. Default: logs/rsl_rl/temp/videos/clip_play/")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: swish).")
+parser.add_argument("--popart_hierarchical", action="store_true", default=False,
+                    help="Use hierarchical (category x head) PopArt runner (must match training).")
+parser.add_argument("--popart_head_mode", type=str, default=None, choices=["per_term", "grouped"],
+                    help="Override head mode (auto-detected from wandb config / checkpoint).")
+parser.add_argument("--popart_group_preset", type=str, default=None,
+                    help="Override group preset (auto-detected from wandb config / checkpoint).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -55,6 +62,8 @@ args_cli, hydra_args = parser.parse_known_args()
 
 if args_cli.video:
     args_cli.enable_cameras = True
+if args_cli.popart_hierarchical:
+    os.environ["BONES_POPART_HIERARCHICAL"] = "1"
 
 # clear out sys.argv for Hydra
 sys.argv = [sys.argv[0]] + hydra_args
@@ -74,6 +83,9 @@ import zarr as _zarr
 
 from rsl_rl.runners import OnPolicyRunner
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner
+from whole_body_tracking.tasks.bones.popart_reward_manager import install_bones_per_term_reward_manager
+from whole_body_tracking.utils.bones_popart import BonesPopArtOnPolicyRunner
+from whole_body_tracking.utils.hierarchical_popart import BonesCategoryRewardOnPolicyRunner
 
 from isaaclab.envs import (
     DirectMARLEnv,
@@ -201,6 +213,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     log_root_path = os.path.join("logs", "rsl_rl", agent_cfg.experiment_name)
     log_root_path = os.path.abspath(log_root_path)
     wandb_run_id = "local"
+    wandb_run = None
 
     if args_cli.wandb_path:
         import wandb
@@ -224,6 +237,70 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     else:
         resume_path = get_checkpoint_path(log_root_path, agent_cfg.load_run, agent_cfg.load_checkpoint)
         print(f"[INFO] Loaded checkpoint: {resume_path}")
+
+    # Auto-detect PopArt variant from checkpoint weights
+    _ckpt = torch.load(resume_path, map_location="cpu")
+    _msd = _ckpt["model_state_dict"]
+    use_popart_runner = any(k.startswith("critic_trunk.") for k in _msd)
+    _mean = _msd.get("value_normalizer.mean")
+    use_hierarchical_runner = use_popart_runner and _mean is not None and _mean.ndim == 2
+    if use_hierarchical_runner:
+        num_categories = int(_mean.shape[0])
+        num_heads_ckpt = int(_mean.shape[1])
+        print(f"[INFO] Detected hierarchical PopArt checkpoint: {num_categories} categories × {num_heads_ckpt} heads.")
+        os.environ["BONES_POPART_HIERARCHICAL"] = "1"
+        agent_cfg.algorithm.popart_hierarchical = True
+        agent_cfg.algorithm.popart_num_categories = num_categories
+
+        # Restore head_mode/group_preset. Priority: CLI flag > wandb run config > local YAML.
+        _head_mode_restored = False
+        if args_cli.popart_head_mode is not None:
+            agent_cfg.algorithm.popart_head_mode = args_cli.popart_head_mode
+            if args_cli.popart_group_preset is not None:
+                agent_cfg.algorithm.popart_group_preset = args_cli.popart_group_preset
+            print(f"[INFO] head_mode={agent_cfg.algorithm.popart_head_mode} group_preset={agent_cfg.algorithm.popart_group_preset} (from CLI)")
+            _head_mode_restored = True
+
+        if not _head_mode_restored and wandb_run is not None:
+            _wbcfg = dict(wandb_run.config)
+            if "popart_group_preset" in _wbcfg:
+                _preset = _wbcfg["popart_group_preset"]
+                if _preset is not None:
+                    agent_cfg.algorithm.popart_head_mode = "grouped"
+                    agent_cfg.algorithm.popart_group_preset = _preset
+                else:
+                    agent_cfg.algorithm.popart_head_mode = "per_term"
+                print(f"[INFO] head_mode={agent_cfg.algorithm.popart_head_mode} group_preset={getattr(agent_cfg.algorithm, 'popart_group_preset', None)} (from wandb config)")
+                _head_mode_restored = True
+
+        if not _head_mode_restored:
+            import yaml
+            _params_yaml = os.path.join(os.path.dirname(resume_path), "params", "agent.yaml")
+            if os.path.isfile(_params_yaml):
+                with open(_params_yaml) as _f:
+                    _saved_alg = yaml.safe_load(_f).get("algorithm", {})
+                agent_cfg.algorithm.popart_head_mode = _saved_alg.get("popart_head_mode", agent_cfg.algorithm.popart_head_mode)
+                agent_cfg.algorithm.popart_group_preset = _saved_alg.get("popart_group_preset", agent_cfg.algorithm.popart_group_preset)
+                print(f"[INFO] head_mode={agent_cfg.algorithm.popart_head_mode} group_preset={agent_cfg.algorithm.popart_group_preset} (from params/agent.yaml)")
+                _head_mode_restored = True
+
+        if not _head_mode_restored:
+            print(
+                f"[WARN] Could not restore head_mode/group_preset (checkpoint has {num_heads_ckpt} heads). "
+                f"Pass --popart_head_mode and --popart_group_preset to override if loading fails."
+            )
+    elif use_popart_runner:
+        print("[INFO] Detected PopArt checkpoint architecture from saved model state.")
+        agent_cfg.algorithm.use_popart_multihead = True
+
+    # Retroactively attach the 'category' obs group when playing a hierarchical
+    # checkpoint. env_cfg is instantiated by the hydra decorator before main()
+    # runs, so setting BONES_POPART_HIERARCHICAL there is too late; we patch it
+    # directly here before gym.make() consumes the config.
+    if use_hierarchical_runner and not hasattr(env_cfg.observations, "category"):
+        from whole_body_tracking.tasks.bones.config.g1.flat_env_cfg import _CategoryObsCfg
+        env_cfg.observations.category = _CategoryObsCfg()
+        print("[INFO] Attached 'category' obs group to env_cfg for hierarchical PopArt.")
 
     # --- Configure env for single-clip playback ---
     # Only load clips up to our target clip to save GPU memory
@@ -272,10 +349,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
 
+    if use_popart_runner:
+        install_bones_per_term_reward_manager(env)
+
     env = RslRlVecEnvWrapper(env)
 
     # --- Load policy ---
-    ppo_runner = MotionOnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
+    if use_hierarchical_runner:
+        runner_cls = BonesCategoryRewardOnPolicyRunner
+    elif use_popart_runner:
+        runner_cls = BonesPopArtOnPolicyRunner
+    else:
+        runner_cls = MotionOnPolicyRunner
+    train_cfg = agent_cfg.to_dict()
+    if not (use_popart_runner or use_hierarchical_runner):
+        alg_cfg = train_cfg.get("algorithm", {})
+        for key in list(alg_cfg.keys()):
+            if key.startswith("popart_") or key in ("use_popart_multihead", "category_adv_scaling"):
+                alg_cfg.pop(key)
+    ppo_runner = runner_cls(env, train_cfg, log_dir=None, device=agent_cfg.device)
     ppo_runner.load(resume_path)
     policy = ppo_runner.get_inference_policy(device=env.unwrapped.device)
 
@@ -466,5 +558,20 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
 
 if __name__ == "__main__":
+    # Pre-detect hierarchical PopArt from wandb run config so BONES_POPART_HIERARCHICAL
+    # is set before Hydra instantiates env_cfg (__post_init__ reads the env var to attach
+    # the 'category' obs group). Auto-detection inside main() fires too late.
+    if args_cli.wandb_path and not os.environ.get("BONES_POPART_HIERARCHICAL"):
+        try:
+            import wandb as _wandb_pre
+            _rpath = args_cli.wandb_path
+            if "model" in _rpath.split("/")[-1]:
+                _rpath = "/".join(_rpath.split("/")[:-1])
+            _run_cfg = _wandb_pre.Api().run(_rpath).config
+            if _run_cfg.get("popart_hierarchical", False):
+                os.environ["BONES_POPART_HIERARCHICAL"] = "1"
+                print("[INFO] Pre-detected hierarchical PopArt from wandb config — set BONES_POPART_HIERARCHICAL=1")
+        except Exception as _e:
+            print(f"[WARN] hierarchical PopArt pre-detection failed: {_e}")
     main()
     simulation_app.close()

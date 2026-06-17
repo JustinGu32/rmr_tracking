@@ -1,0 +1,11 @@
+{
+  "total_episodes": 18,
+  "total_steps": 200,
+  "termination_counts": {
+    "time_out": 0,
+    "anchor_pos": 0,
+    "anchor_pos_global": 0,
+    "anchor_ori": 0,
+    "ee_body_pos": 18
+  }
+}

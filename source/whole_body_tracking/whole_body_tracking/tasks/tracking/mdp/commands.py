@@ -983,11 +983,8 @@ class MultiClipMotionCommand(MotionCommand):
             self._current_bin_failed[:] = torch.bincount(fail_bins, minlength=self.bin_count).float()
 
         # Sampling over global timeline (adaptive vs uniform random clip assignment).
-        # Category-balanced sampling takes precedence: it samples category → clip
-        # → frame so rare motion categories keep an equal env share.
-        if self._balanced_category_sampling and self.clip_category is not None:
-            self._assign_random_clips(env_ids_t)
-        elif self._use_adaptive:
+        # _assign_random_clips handles category-balanced sampling internally when enabled.
+        if self._use_adaptive:
             self._adaptive_sampling(env_ids_t)
         else:
             self._assign_random_clips(env_ids_t)

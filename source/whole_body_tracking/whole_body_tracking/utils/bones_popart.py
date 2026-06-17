@@ -425,7 +425,7 @@ class BonesPopArtActorCritic(nn.Module):
         critic_obs_normalization: bool = False,
         actor_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
         critic_hidden_dims: list[int] | tuple[int, ...] = (256, 256, 256),
-        activation: str = "elu",
+        activation: str = "swish",
         init_noise_std: float = 1.0,
         noise_std_type: str = "scalar",
         popart_momentum: float = 0.1,
@@ -1127,6 +1127,7 @@ class BonesPopArtOnPolicyRunner(OnPolicyRunner):
         group_preset = algorithm_cfg.pop("popart_group_preset", "upper_lower")
         popart_momentum = algorithm_cfg.pop("popart_momentum", 0.1)
         popart_epsilon = algorithm_cfg.pop("popart_epsilon", 1.0e-5)
+        algorithm_cfg.pop("category_adv_scaling", None)  # hierarchical-only flag
 
         group_names: list[str] | None = None
         popart_groups: dict[str, list[str]] | None = None

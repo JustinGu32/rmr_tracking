@@ -39,8 +39,8 @@ parser.add_argument("--decimation", type=int, default=None, help="Override decim
 parser.add_argument("--gravity_curriculum", action="store_true", default=False, help="Enable gravity curriculum (ramp from reduced to full gravity).")
 parser.add_argument("--start_gravity", type=float, default=-2.0, help="Starting Z gravity for gravity curriculum (default: -2.0).")
 parser.add_argument("--gravity_ramp_steps", type=int, default=5000, help="Steps to ramp from start to full gravity (default: 5000).")
-parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
-                    help="Activation function for actor/critic networks (default: elu).")
+parser.add_argument("--activation", type=str, default="swish", choices=["elu", "swish"],
+                    help="Activation function for actor/critic networks (default: swish).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
