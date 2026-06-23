@@ -75,6 +75,12 @@ play_run() {
     if [ ${#motions[@]} -eq 0 ]; then
         motions=("${MOTIONS[@]}")
     fi
+    # Set TERRAIN_NOISE=1 before calling play_run to roll out with the matching
+    # random-bump terrain (must match the run's training-time --terrain_noise).
+    local terrain_noise_flag=""
+    if [ "${TERRAIN_NOISE:-0}" = "1" ]; then
+        terrain_noise_flag="--terrain_noise"
+    fi
     local wandb_path="${WANDB_ENTITY}/${WANDB_PROJECT}/${run_id}"
     local video_dir="clip_videos/${video_subdir}/${run_name}"
 
@@ -97,7 +103,8 @@ play_run() {
             --num_envs=1 \
             --headless \
             --video \
-            --categories ${CATEGORIES}
+            --categories ${CATEGORIES} \
+            ${terrain_noise_flag}
     done
 }
 
@@ -120,4 +127,4 @@ play_run() {
 # play_run "mgobz5o0" "adap_trackerror_only" "${VIDEO_SUBDIR}"
 # play_run "kb8ytbig" "adap_catfail_only" "${VIDEO_SUBDIR}"
 
-play_run "w68bc8aj" "terrainNoise" "terrainNoise"
+TERRAIN_NOISE=1 play_run "w68bc8aj" "terrainNoise" "terrainNoiseEnv"

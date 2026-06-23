@@ -45,7 +45,9 @@ parser.add_argument("--include_clip_names_file", type=str, default=None,
                     help="JSON list of clip names. DAgger rolls out only on these.")
 parser.add_argument("--sampling_mode", type=str, default="frame_uniform",
                     choices=["frame_uniform", "balanced", "clip_adaptive",
-                             "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform"],
+                             "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform",
+                             "cat_adaptive_clip_adaptive",
+                             "cat_blend_clip_uniform"],
                     help="Sampling mode during DAgger rollouts. Default frame_uniform "
                          "is safest when the include_clip_names filter leaves some cats empty.")
 
@@ -82,6 +84,33 @@ parser.add_argument("--two_pool", action="store_true",
 parser.add_argument("--failed_pool_frac", type=float, default=0.3,
                     help="(two-pool only) Fraction of envs assigned to the failed-clip pool. "
                          "Default 0.3 → 30%% specialist labels, 70%% baseline labels.")
+# Privileged-expert DAgger (Phase 2): expert reads from a different obs group
+# (with strictly more privileged signals) than the student. Both policies see
+# the same env-step obs TensorDict, but each ActorCritic filters via its own
+# obs_groups mapping. Requires the env cfg to expose the expert obs group.
+parser.add_argument("--expert_obs_group", type=str, default="policy",
+                    help="Which obs group the EXPERT consumes ('policy' = same as "
+                         "student / backward-compatible, 'expert' = privileged "
+                         "Phase-2 group). When 'expert' the expert ActorCritic is "
+                         "built with a separate obs_groups mapping; the student "
+                         "still reads from 'policy'. Only the action dim has to "
+                         "match between the two — it does, since both control the "
+                         "same robot.")
+parser.add_argument("--cat_uniform_prob", type=float, default=None,
+                    help="Probability of UNIFORM sampling at the CATEGORY stage "
+                         "(used by cat-aware modes). 0 = pure adaptive, 1 = uniform. "
+                         "Default in env cfg: 0.5.")
+parser.add_argument("--clip_uniform_prob", type=float, default=None,
+                    help="Probability of UNIFORM sampling at the CLIP stage "
+                         "(used by *_clip_adaptive modes). 0 = pure adaptive, 1 = uniform. "
+                         "Default in env cfg: 0.5.")
+parser.add_argument("--symmetric_augment", action="store_true", default=False,
+                    help="Apply symmetric (y-mirror) augmentation during DAgger rollouts. "
+                         "Wraps the vec env with the same SymmetricAugmentWrapper used in "
+                         "train_bones.py. Both expert and student see reflected obs and "
+                         "produce reflected actions consistently; physics is unchanged.")
+parser.add_argument("--sym_aug_prob", type=float, default=0.5,
+                    help="Probability per env to be in reflected mode after reset.")
 # # `--logger`, `--log_project_name`, `--run_name` are all added by
 # # cli_args.add_rsl_rl_args below. Defining them here triggers argparse
 # # conflicts. Pass them on the CLI (dagger.sh block 3 already does).
@@ -286,7 +315,34 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if isinstance(env.unwrapped, DirectMARLEnv):
         env = multi_agent_to_single_agent(env)
     env = RslRlVecEnvWrapper(env)
+
+    # Optional symmetric augmentation (cleaner-zarr training). Mirrors the
+    # train_bones.py wiring (same wrapper, same op tables).
+    if args_cli.symmetric_augment:
+        from whole_body_tracking.tasks.generalist.mdp.symmetric_augment import SymmetricAugmentWrapper
+        raw_env = env.unwrapped
+        robot = raw_env.scene["robot"]
+        joint_names = list(robot.joint_names)
+        body_subset_names = list(env_cfg.commands.motion.body_names)
+        groups = ["policy", "critic"]
+        for g in ("expert",):
+            if g in raw_env.observation_manager._group_obs_term_names:
+                groups.append(g)
+        env = SymmetricAugmentWrapper(
+            env,
+            joint_names=joint_names,
+            body_subset_names=body_subset_names,
+            sym_aug_prob=args_cli.sym_aug_prob,
+            groups_to_reflect=tuple(groups),
+        )
+
     device = torch.device(agent_cfg.device)
+
+    # ── Optionally route the student's adaptive-sampling uniform-mix probs ──
+    if args_cli.cat_uniform_prob is not None and hasattr(env_cfg.commands.motion, "cat_uniform_prob"):
+        env_cfg.commands.motion.cat_uniform_prob = float(args_cli.cat_uniform_prob)
+    if args_cli.clip_uniform_prob is not None and hasattr(env_cfg.commands.motion, "clip_uniform_prob"):
+        env_cfg.commands.motion.clip_uniform_prob = float(args_cli.clip_uniform_prob)
 
     # ── Build runner; load expert -> snapshot -> load student ──
     if agent_cfg.class_name == "PopArtMotionOnPolicyRunner":
@@ -298,17 +354,54 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     student_path = _resolve_checkpoint(args_cli.student_wandb, args_cli.student_local, "student")
     expert_path = _resolve_checkpoint(args_cli.expert_wandb, args_cli.expert_local, "expert")
 
+    # The STUDENT runner. Its ActorCritic reads from the obs groups in
+    # agent_cfg.obs_groups (defaults: policy="policy", critic="critic").
     runner = _RunnerCls(env, agent_cfg.to_dict(), log_dir=None, device=device.type)
 
-    # Load EXPERT first, snapshot, then load STUDENT into the runner.
-    runner.load(expert_path)
-    expert_policy = copy.deepcopy(runner.alg.policy)
-    for p in expert_policy.parameters():
-        p.requires_grad_(False)
-    expert_policy.eval()
-    if hasattr(expert_policy, "actor_obs_normalizer"):
-        expert_policy.actor_obs_normalizer.eval()
-    print("[DAGGER] expert snapshot taken (frozen).")
+    # ── Expert build ──
+    # If --expert_obs_group=="policy" (default), the expert and student have
+    # identical architectures — reuse the single runner (legacy code path).
+    # Otherwise (e.g. "expert"), build a SECOND runner with obs_groups routed
+    # to that group, load the expert into it, snapshot, then discard the
+    # second runner. The two runners share the env (no contention; we don't
+    # call .learn() on the expert one).
+    if args_cli.expert_obs_group == "policy":
+        # legacy: load expert into the same runner, snapshot
+        runner.load(expert_path)
+        expert_policy = copy.deepcopy(runner.alg.policy)
+        for p in expert_policy.parameters():
+            p.requires_grad_(False)
+        expert_policy.eval()
+        if hasattr(expert_policy, "actor_obs_normalizer"):
+            expert_policy.actor_obs_normalizer.eval()
+        print("[DAGGER] expert snapshot taken (frozen) — shared obs_groups.")
+    else:
+        # privileged path: build a separate runner with the expert's obs_groups.
+        # Verify the requested obs group is actually present in the env.
+        if args_cli.expert_obs_group not in env.unwrapped.observation_manager._group_obs_term_names:
+            raise RuntimeError(
+                f"--expert_obs_group={args_cli.expert_obs_group!r} but the env doesn't "
+                f"expose that group. Have: "
+                f"{list(env.unwrapped.observation_manager._group_obs_term_names.keys())}"
+            )
+        expert_agent_cfg = copy.deepcopy(agent_cfg)
+        expert_agent_cfg.obs_groups = {
+            "policy": [args_cli.expert_obs_group],
+            "critic": [args_cli.expert_obs_group],
+        }
+        expert_runner = _RunnerCls(env, expert_agent_cfg.to_dict(), log_dir=None, device=device.type)
+        expert_runner.load(expert_path)
+        expert_policy = copy.deepcopy(expert_runner.alg.policy)
+        for p in expert_policy.parameters():
+            p.requires_grad_(False)
+        expert_policy.eval()
+        if hasattr(expert_policy, "actor_obs_normalizer"):
+            expert_policy.actor_obs_normalizer.eval()
+        # Don't keep the expert runner around — it would re-write env state
+        # during any subsequent .learn() call.
+        del expert_runner
+        print(f"[DAGGER] expert snapshot taken (frozen) — privileged obs_group="
+              f"{args_cli.expert_obs_group!r}.")
 
     runner.load(student_path)
     student_policy = runner.alg.policy

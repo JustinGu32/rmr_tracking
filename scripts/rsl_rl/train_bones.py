@@ -33,16 +33,16 @@ parser.add_argument("--curriculum", action="store_true", default=False, help="En
 parser.add_argument("--double_step", action="store_true", default=False, help="Enable double-step penalty reward.")
 parser.add_argument("--terrain_noise", action="store_true", default=False, help="Enable ~0.5-1 cm random-bump terrain to discourage foot dragging / double steps.")
 # ── Jump-exploration techniques (popart task; see mdp/jumps.py). All off by default. ──
-parser.add_argument("--jump_airborne_penalty", action="store_true", default=False, help="(R1) Penalize foot-ground contact while the reference is in flight (both feet airborne).")
-parser.add_argument("--jump_flight_bonus", action="store_true", default=False, help="(R2) Reward both feet leaving the ground during reference flight.")
-parser.add_argument("--jump_below_z_penalty", action="store_true", default=False, help="(R3) Asymmetric penalty for pelvis below reference height (jump category only).")
-parser.add_argument("--jump_foot_z_penalty", action="store_true", default=False, help="(R4) Penalize feet lagging far below reference foot height (jump category only).")
-parser.add_argument("--jump_contact_phase", action="store_true", default=False, help="(R5) Reward matching the reference foot contact/swing pattern (all motions).")
-parser.add_argument("--jump_terminate_flight", action="store_true", default=False, help="(T1) Terminate on ground contact during reference flight.")
-parser.add_argument("--jump_terminate_grace", action="store_true", default=False, help="(T2) Terminate on SUSTAINED ground contact (>0.2s) during reference flight.")
+# parser.add_argument("--jump_airborne_penalty", action="store_true", default=False, help="(R1) Penalize foot-ground contact while the reference is in flight (both feet airborne).")
+# parser.add_argument("--jump_flight_bonus", action="store_true", default=False, help="(R2) Reward both feet leaving the ground during reference flight.")
+# parser.add_argument("--jump_below_z_penalty", action="store_true", default=False, help="(R3) Asymmetric penalty for pelvis below reference height (jump category only).")
+# parser.add_argument("--jump_foot_z_penalty", action="store_true", default=False, help="(R4) Penalize feet lagging far below reference foot height (jump category only).")
+# parser.add_argument("--jump_contact_phase", action="store_true", default=False, help="(R5) Reward matching the reference foot contact/swing pattern (all motions).")
+# parser.add_argument("--jump_terminate_flight", action="store_true", default=False, help="(T1) Terminate on ground contact during reference flight.")
+# parser.add_argument("--jump_terminate_grace", action="store_true", default=False, help="(T2) Terminate on SUSTAINED ground contact (>0.2s) during reference flight.")
 parser.add_argument("--jump_tighten_anchor_z", action="store_true", default=False, help="(T3) Terminate when pelvis is far below reference during flight (feeds adaptive sampling).")
-parser.add_argument("--flight_rsi_ratio", type=float, default=0.0, help="(E1) Fraction of resets (clips with a flight phase) that start airborne mid-flight.")
-parser.add_argument("--error_blend_beta", type=float, default=0.0, help="cat_blend_clip_uniform sampling mix: 0=failure-only, 1=tracking-error-only, 0.5=blend.")
+# parser.add_argument("--flight_rsi_ratio", type=float, default=0.0, help="(E1) Fraction of resets (clips with a flight phase) that start airborne mid-flight.")
+# parser.add_argument("--error_blend_beta", type=float, default=0.0, help="cat_blend_clip_uniform sampling mix: 0=failure-only, 1=tracking-error-only, 0.5=blend.")
 parser.add_argument("--motion_joint_pos", action="store_true", default=False, help="Enable motion joint position reward.")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation (physics steps per policy step).")
 parser.add_argument("--future_steps", type=str, default=None, help="Comma-separated future timestep offsets for ref observations (e.g., '5,10,15').")
@@ -77,6 +77,22 @@ parser.add_argument("--categories", type=str, default=None,
                          "include_motion_types=list, and the priority-matching categorizer. "
                          "List order = priority (put more-specific names first). "
                          "Ignored by non-popart tasks.")
+# Phase 5: latent-K-means categorizer (generalist task only). When set,
+# `--categories` and `--categorizer` are ignored; clip→category mapping is
+# loaded from the JSON output of scripts/cluster_motion_latents.py.
+parser.add_argument("--categorizer_mode", type=str, default="keyword",
+                    choices=["keyword", "latent_kmeans"],
+                    help="Categorizer source: 'keyword' (default, uses --categories) "
+                         "or 'latent_kmeans' (uses --latent_centroids_path).")
+parser.add_argument("--latent_centroids_path", type=str, default=None,
+                    help="Path to the latent-kmeans clusters JSON "
+                         "(scripts/cluster_motion_latents.py output). "
+                         "Required when --categorizer_mode=latent_kmeans.")
+parser.add_argument("--unmatched", type=str, default=None, choices=["raise", "default"],
+                    help="How to handle clips the categorizer can't label. 'raise' "
+                         "(env-cfg default) aborts; 'default' buckets them into "
+                         "unmatched_default (category 0). Use 'default' for latent_kmeans "
+                         "runs, whose JSON marks too-short clips with a -1 sentinel.")
 # Opt-in PopArt. Default = vanilla MotionOnPolicyRunner even on the popart task
 # (popart-specific policy fields num_categories / popart_momentum /
 # category_obs_group are stripped from the cfg dict so vanilla ActorCritic
@@ -94,19 +110,77 @@ parser.add_argument("--popart", type=str, default="off", choices=["on", "off"],
 parser.add_argument("--sampling_mode", type=str, default=None,
                     choices=["frame_uniform", "balanced", "clip_adaptive",
                              "cat_uniform_clip_adaptive", "cat_adaptive_clip_uniform",
+                             "cat_adaptive_clip_adaptive",
                              "cat_blend_clip_uniform"],
                     help="Multi-clip clip selection strategy. 'frame_uniform' samples "
                          "uniformly over the global frame timeline (clip-length-weighted, "
                          "current default). 'balanced' samples category uniformly, then "
                          "clip uniformly within cat, then frame. 'clip_adaptive' samples "
                          "clips via a per-clip EMA failure-rate distribution with a uniform "
-                         "floor (clip_adaptive_uniform_ratio), then uniform frame within. "
+                         "uniform mix (clip_uniform_prob), then uniform frame within. "
                          "'cat_uniform_clip_adaptive' samples cat uniformly, then clip "
                          "clipped-adaptively within cat, then uniform frame. "
                          "'cat_adaptive_clip_uniform' samples cat clipped-adaptively (from "
-                         "mean clip failure rate per cat, with cat_adaptive_uniform_ratio "
-                         "floor), then uniform clip in cat, then uniform frame. The four "
-                         "cat-aware / clip-aware modes require --categories.")
+                         "mean clip failure rate per cat, with cat_uniform_prob "
+                         "uniform mix), then uniform clip in cat, then uniform frame. "
+                         "'cat_adaptive_clip_adaptive' is the three-level adaptive sampler "
+                         "used by the generalist task: cat heavy-adaptive (low floor), then "
+                         "clip-in-cat light-adaptive (high floor), then uniform frame. "
+                         "The cat-aware modes require --categories.")
+# Adaptive sampling: per-stage probability of UNIFORM sampling (vs failure-adaptive).
+# p in [0, 1]: 0 = pure failure-adaptive, 1 = fully uniform. Bounded and
+# K-independent. (Replaces the old additive *_adaptive_uniform_ratio floors;
+# relation p = ratio/(N+ratio). See _mix_uniform in generalist/mdp/commands.py.)
+parser.add_argument("--cat_uniform_prob", type=float, default=None,
+                    help="Probability of UNIFORM sampling at the CATEGORY stage "
+                         "(used by cat-aware modes). 0 = concentrate on worst categories, "
+                         "1 = uniform categories. Default in env cfg: 0.5.")
+parser.add_argument("--clip_uniform_prob", type=float, default=None,
+                    help="Probability of UNIFORM sampling at the CLIP stage "
+                         "(used by *_clip_adaptive modes). 0 = pure adaptive, 1 = uniform. "
+                         "Default in env cfg: 0.5.")
+# LEGACY additive-floor flags — restored ONLY so old checkpoints (catRatio*/
+# clipRatio* in their run names) can be resumed with the exact original
+# sampling distribution. When set, these override the corresponding
+# `*_uniform_prob` and switch to the pre-rename formula
+# `probs = (score + ratio/N) / (score.sum() + ratio)`. Do not use for NEW runs.
+parser.add_argument("--cat_adaptive_uniform_ratio", type=float, default=None,
+                    help="LEGACY additive-floor weight at the CATEGORY stage. "
+                         "Mutually exclusive with --cat_uniform_prob. Use only "
+                         "when resuming a pre-rename run trained with this flag.")
+parser.add_argument("--clip_adaptive_uniform_ratio", type=float, default=None,
+                    help="LEGACY additive-floor weight at the CLIP stage. "
+                         "Mutually exclusive with --clip_uniform_prob. Use only "
+                         "when resuming a pre-rename run trained with this flag.")
+# Symmetric augmentation: y-mirror half of envs at episode reset so the policy
+# trains on the cleaner (un-mirrored) zarr without losing the missing direction.
+# Generalist task only — wires up generalist's SymmetricAugmentWrapper.
+parser.add_argument("--symmetric_augment", action="store_true", default=False,
+                    help="Enable left/right symmetric augmentation. Reflects obs on "
+                         "~half the envs per episode (and unreflects actions before "
+                         "physics). Generalist task only; requires the obs cfg to match "
+                         "the op tables in tasks/generalist/mdp/symmetric_augment.py.")
+parser.add_argument("--sym_aug_prob", type=float, default=0.5,
+                    help="Probability per env to be in reflected mode after reset. "
+                         "Default 0.5 (balanced).")
+# Expert-mode (Phase 2): trains the actor + critic on the privileged `expert`
+# obs group, with domain randomization off. Mostly used during hard-negative
+# mining to produce a fast-converging oracle for DAgger distillation.
+parser.add_argument("--expert_mode", action="store_true", default=False,
+                    help="Train the actor + critic on the privileged 'expert' obs "
+                         "group (generalist task only). Turns off domain randomization. "
+                         "Use with --include_clip_names_file to train a specialist on "
+                         "the failed-clip subset.")
+# Observation history (Phase 2): wraps the student policy's proprioceptive
+# obs terms (joint_pos, joint_vel, actions, base_ang_vel) with history of
+# this length. Reference terms (command, motion_anchor_ori_b) are unchanged.
+# Default 0 = no history (backward-compatible). Recommended for the student
+# distilled from a privileged expert: 10.
+parser.add_argument("--history_length", type=int, default=0,
+                    help="If >0, wrap proprioceptive policy obs terms with this history "
+                         "length (Isaac Lab ObsTerm.history_length). Reference terms "
+                         "(command, motion_anchor_ori_b) are NOT wrapped. Default 0 "
+                         "(no history).")
 
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
@@ -130,25 +204,25 @@ if args_cli.double_step:
 if args_cli.terrain_noise:
     os.environ["WBT_TERRAIN_NOISE"] = "1"
 # Jump-exploration flags → env vars read by popart's env cfg / command cfg.
-if args_cli.jump_airborne_penalty:
-    os.environ["WBT_JUMP_AIRBORNE"] = "1"
-if args_cli.jump_flight_bonus:
-    os.environ["WBT_JUMP_FLIGHT_BONUS"] = "1"
-if args_cli.jump_below_z_penalty:
-    os.environ["WBT_JUMP_BELOW_Z"] = "1"
-if args_cli.jump_foot_z_penalty:
-    os.environ["WBT_JUMP_FOOT_Z"] = "1"
-if args_cli.jump_contact_phase:
-    os.environ["WBT_JUMP_CONTACT_PHASE"] = "1"
-if args_cli.jump_terminate_flight:
-    os.environ["WBT_JUMP_TERM_FLIGHT"] = "1"
-if args_cli.jump_terminate_grace:
-    os.environ["WBT_JUMP_TERM_GRACE"] = "1"
+# if args_cli.jump_airborne_penalty:
+#     os.environ["WBT_JUMP_AIRBORNE"] = "1"
+# if args_cli.jump_flight_bonus:
+#     os.environ["WBT_JUMP_FLIGHT_BONUS"] = "1"
+# if args_cli.jump_below_z_penalty:
+#     os.environ["WBT_JUMP_BELOW_Z"] = "1"
+# if args_cli.jump_foot_z_penalty:
+#     os.environ["WBT_JUMP_FOOT_Z"] = "1"
+# if args_cli.jump_contact_phase:
+#     os.environ["WBT_JUMP_CONTACT_PHASE"] = "1"
+# if args_cli.jump_terminate_flight:
+#     os.environ["WBT_JUMP_TERM_FLIGHT"] = "1"
+# if args_cli.jump_terminate_grace:
+#     os.environ["WBT_JUMP_TERM_GRACE"] = "1"
 if args_cli.jump_tighten_anchor_z:
     os.environ["WBT_JUMP_TIGHTEN_Z"] = "1"
-os.environ["WBT_FLIGHT_RSI_RATIO"] = str(args_cli.flight_rsi_ratio)
-os.environ["WBT_ERROR_BLEND_BETA"] = str(args_cli.error_blend_beta)
-if args_cli.motion_joint_pos:
+# os.environ["WBT_FLIGHT_RSI_RATIO"] = str(args_cli.flight_rsi_ratio)
+# os.environ["WBT_ERROR_BLEND_BETA"] = str(args_cli.error_blend_beta)
+# if args_cli.motion_joint_pos:
     os.environ["WBT_MOTION_JOINT_POS"] = "1"
 os.environ["WBT_PPO_OUTPUT"] = args_cli.ppo_output
 # if args_cli.assist_mode is not None:
@@ -400,6 +474,48 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     if args_cli.num_steps_per_env is not None:
         agent_cfg.num_steps_per_env = args_cli.num_steps_per_env
 
+    # ── Phase 2: --expert_mode ───────────────────────────────────────────
+    # When set, route the actor + critic to the privileged `expert` obs group,
+    # turn off domain randomization (push_robot etc.), and verify the env
+    # exposes the expert group. Only meaningful on the generalist task.
+    if args_cli.expert_mode:
+        if not (hasattr(env_cfg.observations, "expert")):
+            raise RuntimeError(
+                "--expert_mode requires the env cfg to define an `expert` obs group "
+                "(generalist task only)."
+            )
+        # Route both actor and critic to the expert obs.
+        agent_cfg.obs_groups = {"policy": ["expert"], "critic": ["expert"]}
+        # Turn off random pushes — the expert is meant to be an oracle.
+        if hasattr(env_cfg.events, "push_robot"):
+            env_cfg.events.push_robot = None
+        if hasattr(env_cfg.events, "force_push_robot"):
+            env_cfg.events.force_push_robot = None
+        # Also disable the body-physics random forces if present.
+        if hasattr(env_cfg.events, "random_body_forces"):
+            env_cfg.events.random_body_forces = None
+        print("[INFO] --expert_mode: actor/critic → 'expert' obs group; "
+              "push_robot/force_push_robot/random_body_forces disabled.")
+
+    # ── Phase 2: --history_length ────────────────────────────────────────
+    # When >0, wrap ONLY proprioceptive terms of the policy obs group with
+    # history. Reference terms (command, motion_anchor_ori_b) are left
+    # unchanged because reference signals don't benefit from past values.
+    if args_cli.history_length and args_cli.history_length > 0:
+        if not hasattr(env_cfg.observations, "policy"):
+            raise RuntimeError("--history_length requires a 'policy' obs group on env_cfg.")
+        policy_group = env_cfg.observations.policy
+        proprio_terms = ("joint_pos", "joint_vel", "actions", "base_ang_vel")
+        wrapped = []
+        for tname in proprio_terms:
+            tcfg = getattr(policy_group, tname, None)
+            if tcfg is not None:
+                tcfg.history_length = args_cli.history_length
+                tcfg.flatten_history_dim = True
+                wrapped.append(tname)
+        print(f"[INFO] --history_length={args_cli.history_length} → "
+              f"wrapped policy proprio terms: {wrapped}")
+
     # Configure future reference motion observations
     if args_cli.future_steps is not None:
         steps = [int(s.strip()) for s in args_cli.future_steps.split(",")]
@@ -439,11 +555,46 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             cats = [s.strip() for s in args_cli.categories.split(",") if s.strip()]
             env_cfg.commands.motion.categories = cats
             print(f"[INFO] PopArt categories (priority order): {cats}")
+        # Phase 5: latent-kmeans categorizer override (generalist task).
+        if args_cli.categorizer_mode != "keyword" and hasattr(env_cfg.commands.motion, "categorizer_mode"):
+            env_cfg.commands.motion.categorizer_mode = args_cli.categorizer_mode
+            env_cfg.commands.motion.latent_centroids_path = args_cli.latent_centroids_path
+            print(f"[INFO] categorizer_mode = {args_cli.categorizer_mode}  "
+                  f"centroids = {args_cli.latent_centroids_path}")
+        # Unmatched-clip policy ('raise' aborts; 'default' buckets into category 0).
+        if args_cli.unmatched is not None and hasattr(env_cfg.commands.motion, "unmatched"):
+            env_cfg.commands.motion.unmatched = args_cli.unmatched
+            print(f"[INFO] unmatched = {args_cli.unmatched}")
         # Sampling-mode override (popart task only — guarded by hasattr so
         # non-popart tasks silently ignore it).
         if args_cli.sampling_mode is not None and hasattr(env_cfg.commands.motion, "sampling_mode"):
             env_cfg.commands.motion.sampling_mode = args_cli.sampling_mode
             print(f"[INFO] sampling_mode = {args_cli.sampling_mode}")
+        # Per-stage probability of UNIFORM sampling (vs failure-adaptive). Only
+        # meaningful for cat-aware / *_clip_adaptive modes.
+        if args_cli.cat_uniform_prob is not None and args_cli.cat_adaptive_uniform_ratio is not None:
+            raise ValueError("Pass at most one of --cat_uniform_prob / --cat_adaptive_uniform_ratio.")
+        if args_cli.clip_uniform_prob is not None and args_cli.clip_adaptive_uniform_ratio is not None:
+            raise ValueError("Pass at most one of --clip_uniform_prob / --clip_adaptive_uniform_ratio.")
+        if args_cli.cat_uniform_prob is not None and hasattr(env_cfg.commands.motion, "cat_uniform_prob"):
+            env_cfg.commands.motion.cat_uniform_prob = float(args_cli.cat_uniform_prob)
+            print(f"[INFO] cat_uniform_prob = {args_cli.cat_uniform_prob}")
+        if args_cli.clip_uniform_prob is not None and hasattr(env_cfg.commands.motion, "clip_uniform_prob"):
+            env_cfg.commands.motion.clip_uniform_prob = float(args_cli.clip_uniform_prob)
+            print(f"[INFO] clip_uniform_prob = {args_cli.clip_uniform_prob}")
+        # LEGACY additive-floor flags (resume-only). When set, override the
+        # corresponding *_uniform_prob and switch _adaptive_probs to the
+        # pre-rename additive-floor formula. See generalist/mdp/commands.py.
+        if args_cli.cat_adaptive_uniform_ratio is not None and hasattr(
+            env_cfg.commands.motion, "cat_adaptive_uniform_ratio"
+        ):
+            env_cfg.commands.motion.cat_adaptive_uniform_ratio = float(args_cli.cat_adaptive_uniform_ratio)
+            print(f"[INFO] cat_adaptive_uniform_ratio = {args_cli.cat_adaptive_uniform_ratio} (LEGACY)")
+        if args_cli.clip_adaptive_uniform_ratio is not None and hasattr(
+            env_cfg.commands.motion, "clip_adaptive_uniform_ratio"
+        ):
+            env_cfg.commands.motion.clip_adaptive_uniform_ratio = float(args_cli.clip_adaptive_uniform_ratio)
+            print(f"[INFO] clip_adaptive_uniform_ratio = {args_cli.clip_adaptive_uniform_ratio} (LEGACY)")
         registry_name = f"zarr:{args_cli.zarr_path}"
     elif args_cli.registry_name is not None:
         # Single-clip training from wandb registry (original path)
@@ -501,6 +652,32 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # wrap around environment for rsl-rl
     env = RslRlVecEnvWrapper(env)
+
+    # ── Symmetric augmentation (generalist task only) ──
+    # Wraps the vec env so ~half of envs train on the y-mirrored task. Lets
+    # the cleaner (un-mirrored) zarr provide effectively-mirrored data without
+    # doubling memory. Op tables in tasks/generalist/mdp/symmetric_augment.py
+    # must match the active obs cfg.
+    if args_cli.symmetric_augment:
+        from whole_body_tracking.tasks.generalist.mdp.symmetric_augment import SymmetricAugmentWrapper
+        # The op tables address `policy` and `critic` (+ `expert` once Phase 2
+        # is enabled). Tracked-body names come from the motion command cfg;
+        # full joint list from the robot articulation.
+        raw_env = env.unwrapped
+        robot = raw_env.scene["robot"]
+        joint_names = list(robot.joint_names)
+        body_subset_names = list(env_cfg.commands.motion.body_names)
+        # If the env has the expert obs group, reflect it too.
+        groups = ["policy", "critic"]
+        if "expert" in raw_env.observation_manager._group_obs_term_names:
+            groups.append("expert")
+        env = SymmetricAugmentWrapper(
+            env,
+            joint_names=joint_names,
+            body_subset_names=body_subset_names,
+            sym_aug_prob=args_cli.sym_aug_prob,
+            groups_to_reflect=tuple(groups),
+        )
 
     # ── Wandb resume: download checkpoint from a previous run ──
     _wandb_resume_path = None

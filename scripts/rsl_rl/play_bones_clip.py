@@ -44,6 +44,10 @@ parser.add_argument("--zarr_path", type=str, default=None, help="Path to Zarr st
 parser.add_argument("--clip_id", type=int, default=None, help="Clip index in the Zarr store.")
 parser.add_argument("--clip_name", type=str, default=None, help="Clip name (substring match).")
 parser.add_argument("--decimation", type=int, default=None, help="Override env decimation.")
+parser.add_argument("--history_length", type=int, default=0,
+                    help="If >0, wrap the policy's proprioceptive obs terms (joint_pos, joint_vel, "
+                         "actions, base_ang_vel) with this history length. MUST match the value used "
+                         "at training time, or the checkpoint's actor input layer will not load.")
 parser.add_argument("--video_dir", type=str, default=None, help="Directory to save video. Default: logs/rsl_rl/temp/videos/clip_play/")
 parser.add_argument("--activation", type=str, default="elu", choices=["elu", "swish"],
                     help="Activation function for actor/critic networks (default: elu).")
@@ -51,6 +55,26 @@ parser.add_argument("--categories", type=str, default=None,
                     help="Comma-separated category names for PopArt tasks "
                          "(e.g. 'stand_up,walk'). Must match the training-time "
                          "categories so the env builds the same K-category command term.")
+# VAE / latent-K-means categorizer (mirrors train_bones.py). When set,
+# `--categories` is ignored and clip→category comes from the clusters JSON.
+parser.add_argument("--categorizer_mode", type=str, default="keyword",
+                    choices=["keyword", "latent_kmeans"],
+                    help="Generalist task only. 'keyword' (default) uses --categories; "
+                         "'latent_kmeans' uses --latent_centroids_path.")
+parser.add_argument("--latent_centroids_path", type=str, default=None,
+                    help="Path to the cluster JSON produced by cluster_motion_latents.py. "
+                         "Required when --categorizer_mode=latent_kmeans.")
+# DEPRECATED no-op aliases: the adaptive-sampling knobs were renamed to
+# --cat_uniform_prob / --clip_uniform_prob (probability of uniform sampling).
+# Single-clip rollout does NOT use adaptive sampling, so these never affected
+# playback anyway — accepted here only so older play commands / in-flight runs
+# launched with the old flag names don't error. They are ignored.
+parser.add_argument("--cat_adaptive_uniform_ratio", type=float, default=None,
+                    help="DEPRECATED, ignored (renamed to --cat_uniform_prob; "
+                         "unused for single-clip rollout).")
+parser.add_argument("--clip_adaptive_uniform_ratio", type=float, default=None,
+                    help="DEPRECATED, ignored (renamed to --clip_uniform_prob; "
+                         "unused for single-clip rollout).")
 # PopArt opt-in. Mirrors scripts/rsl_rl/train_bones.py:69 — must match the
 # training-time choice. Without this flag, vanilla MotionOnPolicyRunner is used
 # even on the popart task (overriding the cfg's class_name default) and
@@ -61,6 +85,11 @@ parser.add_argument("--popart", type=str, default="off", choices=["on", "off"],
                          "Must match the training-time --popart choice — pass "
                          "'on' if the checkpoint was trained with --popart=on, "
                          "'off' (default) otherwise.")
+# Mirrors train_bones.py:--terrain_noise. Sets WBT_TERRAIN_NOISE so the env
+# cfg's __post_init__ builds the same ~0.5-1 cm random-bump terrain used at
+# training time. Match the training-time choice for a faithful rollout.
+parser.add_argument("--terrain_noise", action="store_true", default=False,
+                    help="Enable ~0.5-1 cm random-bump terrain (match training-time --terrain_noise).")
 # append RSL-RL cli arguments
 cli_args.add_rsl_rl_args(parser)
 # append AppLauncher cli args
@@ -69,6 +98,12 @@ args_cli, hydra_args = parser.parse_known_args()
 
 # Normalize --popart on/off → bool so downstream `if args_cli.popart` checks work unchanged.
 args_cli.popart = (args_cli.popart == "on")
+
+# Mirror train_bones.py: export --terrain_noise as an env var so the env cfg's
+# __post_init__ (run during gym.make below) builds the matching random-bump terrain.
+import os  # noqa: E402
+if args_cli.terrain_noise:
+    os.environ["WBT_TERRAIN_NOISE"] = "1"
 
 if args_cli.video:
     args_cli.enable_cameras = True
@@ -109,6 +144,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 import whole_body_tracking.tasks  # noqa: F401
 import whole_body_tracking.tasks.tracking.mdp.commands as _tracking_cmds
 import whole_body_tracking.tasks.popart.mdp.commands as _popart_cmds
+import whole_body_tracking.tasks.generalist.mdp.commands as _generalist_cmds
 
 
 def resolve_clip_id(zarr_path: str, clip_id: int | None, clip_name: str | None, exclude_objects: bool = True) -> tuple[int, str]:
@@ -199,6 +235,11 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
             if hasattr(agent_cfg.policy, k):
                 delattr(agent_cfg.policy, k)
         print("[INFO] --popart not set -> MotionOnPolicyRunner (vanilla)")
+
+    if args_cli.cat_adaptive_uniform_ratio is not None or args_cli.clip_adaptive_uniform_ratio is not None:
+        print("[WARN] --cat/clip_adaptive_uniform_ratio are DEPRECATED and ignored "
+              "(renamed to --cat/clip_uniform_prob; sampling is unused for single-clip "
+              "rollout). Playback is unaffected.")
 
     # --- Resolve clip ---
     zarr_path = args_cli.zarr_path
@@ -334,12 +375,14 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
                   f"name={_clip_name!r}, {L} frames @ {self.fps} fps, "
                   f"{self._body_pos_w.shape[1]} bodies, device={device}")
 
-    # Patch BOTH copies of ZarrMotionLoader. The tracking task and the popart
-    # task each have their own ZarrMotionLoader class in their own module, and
-    # the popart task's MultiClipMotionCommand instantiates the popart copy
-    # (via unqualified `ZarrMotionLoader(...)` in popart/mdp/commands.py:655).
+    # Patch ALL copies of ZarrMotionLoader. The tracking, popart, and generalist
+    # tasks each have their own ZarrMotionLoader class in their own module, and
+    # each task's MultiClipMotionCommand instantiates its own copy (via
+    # unqualified `ZarrMotionLoader(...)`), so each module attribute must be
+    # rebound before gym.make() instantiates the env.
     _tracking_cmds.ZarrMotionLoader = _SingleClipLoader
     _popart_cmds.ZarrMotionLoader = _SingleClipLoader
+    _generalist_cmds.ZarrMotionLoader = _SingleClipLoader
 
     # PopArt-task `categories` override (mirrors train_bones.py): single source
     # of truth driving num_categories + the priority categorizer + the include
@@ -350,9 +393,37 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
         env_cfg.commands.motion.categories = cats
         print(f"[INFO] PopArt categories (priority order): {cats}")
 
+    # Latent-kmeans categorizer override (mirrors train_bones.py). Must match
+    # the training-time categorizer so the checkpoint's K-head critic and
+    # category-conditioned policy see the same clip→category mapping.
+    if args_cli.categorizer_mode != "keyword" and hasattr(env_cfg.commands.motion, "categorizer_mode"):
+        env_cfg.commands.motion.categorizer_mode = args_cli.categorizer_mode
+        env_cfg.commands.motion.latent_centroids_path = args_cli.latent_centroids_path
+        print(f"[INFO] categorizer_mode = {args_cli.categorizer_mode}  "
+              f"centroids = {args_cli.latent_centroids_path}")
+
     # Apply decimation override before computing fps so episode_length_s is sized correctly
     if args_cli.decimation is not None:
         env_cfg.decimation = args_cli.decimation
+
+    # Mirror train_bones.py:--history_length so the policy obs dim matches a
+    # checkpoint trained with history. Only the policy group's proprio terms are
+    # wrapped (exactly as in training); the critic is unused at rollout time.
+    # MUST match the training value or the actor's first layer won't load.
+    if args_cli.history_length and args_cli.history_length > 0:
+        if not hasattr(env_cfg.observations, "policy"):
+            raise RuntimeError("--history_length requires a 'policy' obs group on env_cfg.")
+        policy_group = env_cfg.observations.policy
+        proprio_terms = ("joint_pos", "joint_vel", "actions", "base_ang_vel")
+        wrapped = []
+        for tname in proprio_terms:
+            tcfg = getattr(policy_group, tname, None)
+            if tcfg is not None:
+                tcfg.history_length = args_cli.history_length
+                tcfg.flatten_history_dim = True
+                wrapped.append(tname)
+        print(f"[INFO] --history_length={args_cli.history_length} → "
+              f"wrapped policy proprio terms: {wrapped}")
 
     # Set episode length long enough for the full clip (with margin)
     fps = 50.0  # default; overridden below if available

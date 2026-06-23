@@ -50,6 +50,7 @@ MOTIONS=(
     "walk_sideway_090_loop_001__A024"
     "walk_backward_stop_004__A022"
     "turn_start_walk_0090_005__A024"
+    "walk_ff_stop_270_R_very_slow_001__A444_M"
     # jump variants — basic, backward, high, jump+sit (requested), heavy landing
     "Jump_002__A017"
     "jump_backward_002__A021"
@@ -123,9 +124,9 @@ play_run() {
 #     "frame_uniform_standup_walk_jump_p6ztldda"
 
 # # (2) balanced — uniform cat → uniform clip → uniform frame.
-# play_run "ia5mxune" \
-#     "2026-05-15_17-22-00_balanced_standup_walk_jump" \
-#     "balanced_standup_walk_jump_ia5mxune"
+play_run "ia5mxune" \
+    "2026-05-15_17-22-00_balanced_standup_walk_jump" \
+    "balanced_standup_walk_jump_ia5mxune"
 
 # # (3) clip_adaptive — clipped-adaptive over all clips, uniform frame.
 # play_run "y253ux77" \
@@ -155,11 +156,11 @@ play_run() {
 # Run twice for the DAgger student: once on the diverse hand-picked set
 # (same as the 5 baseline runs above, for apples-to-apples comparison), and
 # once on the baseline-failure subset (where DAgger should visibly improve).
-play_run "9nit9er3" \
-    "dagger_student_ia5mxune_30iter_umqm6zt1" \
-    "dagger_student_30iter_umqm6zt1"
+# play_run "9nit9er3" \
+#     "dagger_student_ia5mxune_30iter_umqm6zt1" \
+#     "dagger_student_30iter_umqm6zt1"
 
-play_run "9nit9er3" \
-    "dagger_student_ia5mxune_30iter_umqm6zt1_baseline_failures" \
-    "dagger_student_30iter_umqm6zt1_baseline_failures" \
-    "${FAILED_MOTIONS[@]}"
+# play_run "9nit9er3" \
+#     "dagger_student_ia5mxune_30iter_umqm6zt1_baseline_failures" \
+#     "dagger_student_30iter_umqm6zt1_baseline_failures" \
+#     "${FAILED_MOTIONS[@]}"
