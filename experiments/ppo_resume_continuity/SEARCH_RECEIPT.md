@@ -3,7 +3,7 @@
 - Hypothesis: E011's scheduler synchronization prevents catastrophic forgetting
   beyond the first minibatch and keeps the retained short gait through one
   complete native PPO update; it may or may not acquire any exact-long suffix.
-- Acceptance signal: the E012 step-one package is nested-tensor identical to
+- Acceptance signal: the successor step-one package is nested-tensor identical to
   E011's verified restored-Adam/synchronized-scheduler package, and every
   preregistered short checkpoint through step 20 categorically completes all
   three strict episodes. Exact-long step 20 is reported independently.

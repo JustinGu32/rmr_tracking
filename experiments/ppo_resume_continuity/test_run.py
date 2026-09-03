@@ -79,7 +79,7 @@ def test_step_one_bridge_requires_equal_package_and_telemetry(tmp_path: Path):
 
     _package(expected, 2.0)
     bridge, errors = _bridge_to_e011(probe, branch, expected)
-    assert errors == ["E012 step one differs from E011 synchronized package"]
+    assert errors == ["continuity step one differs from E011 synchronized package"]
     assert bridge["equal"] is False
 
 
@@ -355,7 +355,7 @@ def test_fake_end_to_end_preserves_all_registered_checkpoints(tmp_path: Path):
             "--training-log-root",
             str(logs),
             "--run-name",
-            "E012_fake",
+            "continuity_fake",
             "--headless",
             "--test-mode",
         ],

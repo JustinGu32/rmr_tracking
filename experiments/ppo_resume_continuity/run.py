@@ -314,7 +314,7 @@ def _bridge_to_e011(
     }
     step1_path = Path(str(records.get(1, {}).get("path", ""))).resolve()
     if not step1_path.is_file():
-        return {"equal": False}, ["E012 step-one checkpoint is missing"]
+        return {"equal": False}, ["continuity step-one checkpoint is missing"]
     observed = torch.load(step1_path, map_location="cpu", weights_only=False)
     expected = torch.load(e011_checkpoint, map_location="cpu", weights_only=False)
     fields = (
@@ -328,7 +328,7 @@ def _bridge_to_e011(
         for field in fields
     }
     if not all(field_equal.values()):
-        errors.append("E012 step one differs from E011 synchronized package")
+        errors.append("continuity step one differs from E011 synchronized package")
 
     trace = probe_result.get("optimizer_trace", [])
     first = trace[0] if trace else {}
@@ -363,7 +363,7 @@ def _bridge_to_e011(
     }
     if not all(comparisons.values()):
         errors.append(
-            "E012 first update telemetry differs from E011 synchronized branch"
+            "continuity first update telemetry differs from E011 synchronized branch"
         )
     return {
         "equal": not errors,
