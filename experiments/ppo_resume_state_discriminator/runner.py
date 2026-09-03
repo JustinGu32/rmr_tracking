@@ -43,6 +43,9 @@ EXPECTED_REFERENCE_STATES = 272
 EXPECTED_FRESH_SCHEDULER_LR = 1.0e-3
 EXPECTED_RESTORED_OPTIMIZER_LR = 2.25e-5
 EXPECTED_RESTORED_OPTIMIZER_STEP = 10020
+EXPECTED_DESIRED_KL = 0.01
+EXPECTED_CLIP_PARAM = 0.2
+EXPECTED_MAX_GRAD_NORM = 1.0
 
 
 def _capture_rng_state() -> dict[str, Any]:
@@ -109,6 +112,7 @@ class _FirstStepFactorial:
             name: parameter.detach().clone()
             for name, parameter in self.named_parameters
         }
+        self.baseline_parameter_norms = _norms_from_tensors(self.named_parameters)
         self.baseline_model = copy.deepcopy(self.policy.state_dict())
         self.baseline_optimizer = copy.deepcopy(self.alg.optimizer.state_dict())
         self.baseline_fresh_scheduler_lr = float(self.alg.learning_rate)
@@ -238,13 +242,12 @@ class _FirstStepFactorial:
             (name, parameter.detach() - self.baseline_parameters[name])
             for name, parameter in self.named_parameters
         ]
-        baseline_norms = _norms_from_tensors(self.named_parameters)
         norms = _norms_from_tensors(differences)
         return {
             "l2": norms,
             "relative_l2": {
-                group: norms[group] / baseline_norms[group]
-                if baseline_norms[group] > 0.0
+                group: norms[group] / self.baseline_parameter_norms[group]
+                if self.baseline_parameter_norms[group] > 0.0
                 else None
                 for group in norms
             },
@@ -298,8 +301,30 @@ class _FirstStepFactorial:
         assert self.current_log_prob is not None
         assert self.current_mu is not None
         assert self.current_sigma is not None
+        assert self.current_entropy is not None
+        assert self.current_value is not None
         log_ratio = self.current_log_prob - old_log_prob
         ratio = torch.exp(log_ratio)
+        surrogate = -advantages * ratio
+        surrogate_clipped = -advantages * torch.clamp(
+            ratio, 1.0 - self.alg.clip_param, 1.0 + self.alg.clip_param
+        )
+        surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+        target_values = self.storage.values.flatten(0, 1)[indices]
+        returns = self.storage.returns.flatten(0, 1)[indices]
+        value_clipped = target_values + (self.current_value - target_values).clamp(
+            -self.alg.clip_param, self.alg.clip_param
+        )
+        value_loss = torch.max(
+            (self.current_value - returns).pow(2),
+            (value_clipped - returns).pow(2),
+        ).mean()
+        entropy = self.current_entropy.mean()
+        total_loss = (
+            surrogate_loss
+            + self.alg.value_loss_coef * value_loss
+            - self.alg.entropy_coef * entropy
+        )
         analytic_kl = torch.sum(
             torch.log(self.current_sigma / old_sigma + 1.0e-5)
             + (old_sigma.square() + (old_mu - self.current_mu).square())
@@ -330,6 +355,19 @@ class _FirstStepFactorial:
             "clipped_fraction": float(
                 ((ratio - 1.0).abs() > self.alg.clip_param).float().mean().item()
             ),
+            "forward_sha256": {
+                "log_probability": _sha256_tensor(self.current_log_prob),
+                "mean": _sha256_tensor(self.current_mu),
+                "sigma": _sha256_tensor(self.current_sigma),
+                "entropy": _sha256_tensor(self.current_entropy),
+                "value": _sha256_tensor(self.current_value),
+            },
+            "loss": {
+                "surrogate": float(surrogate_loss.item()),
+                "value": float(value_loss.item()),
+                "entropy": float(entropy.item()),
+                "total": float(total_loss.item()),
+            },
             "applied_learning_rate": self._single_optimizer_lr(),
             "scheduler_learning_rate": float(self.alg.learning_rate),
             "optimizer_state_steps_before": _optimizer_steps(self.alg.optimizer),
@@ -501,10 +539,12 @@ class _FirstStepFactorial:
             "analytic_kl",
             "approximate_kl",
             "clipped_fraction",
+            "forward_sha256",
+            "loss",
             "gradient",
         )
         reference = branch_results[0]["pre_step"]
-        for branch in branch_results[1:]:
+        for branch in branch_results:
             candidate = branch["pre_step"]
             if any(candidate[key] != reference[key] for key in common_keys):
                 raise RuntimeError(
@@ -514,6 +554,92 @@ class _FirstStepFactorial:
                 raise RuntimeError(
                     f"baseline identity differs for {branch['arm']['name']}"
                 )
+            name = branch["arm"]["name"]
+            synchronize = bool(branch["arm"]["synchronize_scheduler"])
+            reset_adam = bool(branch["arm"]["reset_adam"])
+            expected_scheduler_start = (
+                self.baseline_restored_optimizer_lr
+                if synchronize
+                else self.baseline_fresh_scheduler_lr
+            )
+            expected_applied_rate = expected_scheduler_start * 1.5
+            if not math.isclose(
+                float(candidate["applied_learning_rate"]),
+                expected_applied_rate,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            ) or not math.isclose(
+                float(candidate["scheduler_learning_rate"]),
+                expected_applied_rate,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            ):
+                raise RuntimeError(f"adaptive learning-rate application drift: {name}")
+            expected_before = [] if reset_adam else [EXPECTED_RESTORED_OPTIMIZER_STEP]
+            expected_after = (
+                [1] if reset_adam else [EXPECTED_RESTORED_OPTIMIZER_STEP + 1]
+            )
+            if (
+                candidate["optimizer_state_steps_before"] != expected_before
+                or candidate["optimizer_state_steps_after"] != expected_after
+            ):
+                raise RuntimeError(f"Adam state accounting drift: {name}")
+            intervention = branch["intervention"]
+            expected_entries = (
+                0
+                if reset_adam
+                else intervention["optimizer_state_entries_before_intervention"]
+            )
+            if (
+                intervention["optimizer_state_entries_after_intervention"]
+                != expected_entries
+            ):
+                raise RuntimeError(f"Adam state intervention drift: {name}")
+            for component in ("model", "actor_normalizer", "critic_normalizer"):
+                if (
+                    branch["post_intervention_identity"][component]
+                    != self.baseline_identity[component]
+                ):
+                    raise RuntimeError(
+                        f"non-optimizer state changed before Adam for {name}: {component}"
+                    )
+
+        kl_mean = float(reference["analytic_kl"]["mean"])
+        if not 0.0 < kl_mean < float(self.alg.desired_kl) / 2.0:
+            raise RuntimeError(
+                f"first-batch KL did not select the registered low-positive branch: {kl_mean}"
+            )
+        if float(reference["clipped_fraction"]) != 0.0:
+            raise RuntimeError("unchanged first-batch policy was unexpectedly clipped")
+        if (
+            len(
+                {
+                    json.dumps(branch["post_step_rng"], sort_keys=True)
+                    for branch in branch_results
+                }
+            )
+            != 1
+        ):
+            raise RuntimeError("post-step RNG differs across counterfactual branches")
+        if (
+            len(
+                {
+                    json.dumps(
+                        branch["native_codepath_loss_dict_divided_by_configured_20"],
+                        sort_keys=True,
+                    )
+                    for branch in branch_results
+                }
+            )
+            != 1
+        ):
+            raise RuntimeError("native loss dictionary differs across branches")
+        final_rng = _rng_digest(_capture_rng_state())
+        native_branch = branch_results[-1]
+        if self._state_identity() != native_branch["post_step_identity"]:
+            raise RuntimeError("retained outer state differs from native branch")
+        if final_rng != native_branch["post_step_rng"]:
+            raise RuntimeError("retained outer RNG differs from native branch")
 
         result = {
             "schema_version": 1,
@@ -532,6 +658,11 @@ class _FirstStepFactorial:
             "branches": branch_results,
             "retained_outer_state_arm": NATIVE_ARM,
             "final_state_identity": self._state_identity(),
+            "retained_outer_scheduler_learning_rate": float(self.alg.learning_rate),
+            "retained_outer_optimizer_learning_rates": [
+                float(group["lr"]) for group in self.alg.optimizer.param_groups
+            ],
+            "retained_outer_rng": final_rng,
         }
         _write_json(self.output_dir / "factorial_result.json", result)
         return branch_results[-1]["native_codepath_loss_dict_divided_by_configured_20"]
@@ -566,6 +697,32 @@ class ResumeStateDiscriminatorMotionOnPolicyRunner(
         ):
             raise RuntimeError(
                 "PPO structure differs from the registered feed-forward 5x4 update"
+            )
+        if (
+            self.alg.schedule != "adaptive"
+            or self.alg.desired_kl is None
+            or not math.isclose(
+                float(self.alg.desired_kl),
+                EXPECTED_DESIRED_KL,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            )
+            or not self.alg.use_clipped_value_loss
+            or not math.isclose(
+                float(self.alg.clip_param),
+                EXPECTED_CLIP_PARAM,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            )
+            or not math.isclose(
+                float(self.alg.max_grad_norm),
+                EXPECTED_MAX_GRAD_NORM,
+                rel_tol=0.0,
+                abs_tol=1.0e-15,
+            )
+        ):
+            raise RuntimeError(
+                "PPO trust-region settings differ from the registered adaptive-KL update"
             )
 
         output_value = os.environ.get(OUTPUT_DIRECTORY_ENV)
@@ -645,6 +802,39 @@ class ResumeStateDiscriminatorMotionOnPolicyRunner(
             "actor": int(self.obs_normalizer.count.detach().cpu().item()),
             "critic": int(self.privileged_obs_normalizer.count.detach().cpu().item()),
         }
+        payload["outer_state_after_super"] = {
+            "model": _state_digest(self.alg.policy.state_dict()),
+            "optimizer": _state_digest(self.alg.optimizer.state_dict()),
+            "actor_normalizer": _state_digest(self.obs_normalizer.state_dict()),
+            "critic_normalizer": _state_digest(
+                self.privileged_obs_normalizer.state_dict()
+            ),
+            "scheduler_learning_rate": float(self.alg.learning_rate),
+            "optimizer_learning_rates": [
+                float(group["lr"]) for group in self.alg.optimizer.param_groups
+            ],
+            "optimizer_steps": _optimizer_steps(self.alg.optimizer),
+            "rng": _rng_digest(_capture_rng_state()),
+        }
+        if {
+            key: payload["outer_state_after_super"][key]
+            for key in (
+                "model",
+                "optimizer",
+                "actor_normalizer",
+                "critic_normalizer",
+            )
+        } != payload["final_state_identity"]:
+            raise RuntimeError(
+                "outer runner changed native state after factorial update"
+            )
+        if not math.isclose(
+            payload["outer_state_after_super"]["scheduler_learning_rate"],
+            payload["retained_outer_scheduler_learning_rate"],
+            rel_tol=0.0,
+            abs_tol=1.0e-15,
+        ):
+            raise RuntimeError("outer runner changed native scheduler state")
         _write_json(result_path, payload)
         print(
             f"[RESUME-STATE-DISCRIMINATOR] complete result={result_path}",

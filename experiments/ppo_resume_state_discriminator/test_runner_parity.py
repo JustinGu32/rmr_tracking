@@ -33,6 +33,7 @@ class _FakeRunner:
                 "obs_norm_state_dict": self.obs_normalizer.state_dict(),
                 "privileged_obs_norm_state_dict": self.privileged_obs_normalizer.state_dict(),
                 "iter": 500,
+                "infos": None,
             },
             path,
         )
@@ -202,6 +203,45 @@ def test_factorial_uses_identical_batch_and_retains_exact_native_first_step(
     }
     indices = {branch["pre_step"]["indices_sha256"] for branch in result["branches"]}
     assert len(gradients) == len(indices) == 1
+    assert (
+        len(
+            {
+                json.dumps(branch["pre_step"]["forward_sha256"], sort_keys=True)
+                for branch in result["branches"]
+            }
+        )
+        == 1
+    )
+    assert (
+        len(
+            {
+                json.dumps(branch["pre_step"]["loss"], sort_keys=True)
+                for branch in result["branches"]
+            }
+        )
+        == 1
+    )
+    assert (
+        len(
+            {
+                json.dumps(branch["post_step_rng"], sort_keys=True)
+                for branch in result["branches"]
+            }
+        )
+        == 1
+    )
+    assert (
+        len(
+            {
+                json.dumps(
+                    branch["native_codepath_loss_dict_divided_by_configured_20"],
+                    sort_keys=True,
+                )
+                for branch in result["branches"]
+            }
+        )
+        == 1
+    )
     by_name = {branch["arm"]["name"]: branch for branch in result["branches"]}
     assert (
         by_name["restored_adam__synced_scheduler"]["pre_step"]["applied_learning_rate"]
@@ -223,3 +263,19 @@ def test_factorial_uses_identical_batch_and_retains_exact_native_first_step(
     assert by_name["restored_adam__fresh_scheduler"]["pre_step"][
         "optimizer_state_steps_after"
     ] == [10021]
+    assert result["retained_outer_rng"] == by_name[NATIVE_ARM]["post_step_rng"]
+    assert result["final_state_identity"] == by_name[NATIVE_ARM]["post_step_identity"]
+    native_package = torch.load(
+        by_name[NATIVE_ARM]["checkpoint"]["path"],
+        map_location="cpu",
+        weights_only=False,
+    )
+    expected_package = {
+        "model_state_dict": observed.policy.state_dict(),
+        "optimizer_state_dict": observed.optimizer.state_dict(),
+        "obs_norm_state_dict": {},
+        "privileged_obs_norm_state_dict": {},
+        "iter": 500,
+        "infos": None,
+    }
+    _assert_nested_equal(expected_package, native_package)
