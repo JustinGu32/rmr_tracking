@@ -1,9 +1,9 @@
 """Resume a competent short-reference PPO package on the exact long reference.
 
 The runner keeps the stable trainer unchanged.  It evaluates the immutable
-source package on both strict gates, performs one fixed 500-update resume with
-only the motion file changed, and evaluates the first and final saved packages
-on the same gates.
+source package on both strict gates, performs one fixed 500-update resume whose
+only configured task change is the motion file, and evaluates the first and
+final saved packages on the same gates.
 """
 
 from __future__ import annotations
@@ -640,9 +640,22 @@ def _finalize(
         },
         "training_contract": {
             "task": args.task,
-            "motion_change_only": True,
+            "configured_task_change_only": "motion_file",
             "long_motion_file": str(args.long_motion_file),
-            "resume_full_native_checkpoint": True,
+            "resume_native_checkpoint_package": True,
+            "restored_checkpoint_state": [
+                "actor_and_critic_weights",
+                "action_standard_deviation",
+                "actor_observation_normalizer",
+                "privileged_observation_normalizer",
+                "optimizer",
+                "learning_iteration",
+            ],
+            "reinitialized_runtime_state": [
+                "environment",
+                "rollout_storage",
+                "pseudorandom_generators_from_train_seed",
+            ],
             "optimizer_state_loaded_by_native_runner": True,
             "updates": args.training_updates,
             "num_envs": args.num_envs,
@@ -681,6 +694,8 @@ def _finalize(
             "This fixed native-source audit tests whether switching a verified "
             "short-reference PPO package to the exact long reference preserves "
             "strict phase-zero short competence while learning the long task. It "
+            "recreates the environment and seeded runtime rather than resuming an "
+            "unserialized rollout or random-number-generator state. It "
             "does not isolate which PPO gradient component causes any measured "
             "change, establish sim-to-real transfer, or retain a deployment policy."
         ),
