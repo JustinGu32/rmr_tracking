@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from pathlib import Path
 from typing import Any
@@ -14,7 +13,7 @@ from experiments.ppo_first_update_probe.runner import (
     _write_json,
 )
 
-from .design import EXPECTED_FIRST_APPLIED_LR, synchronize_resume_scheduler
+from .design import synchronize_resume_scheduler
 
 
 class ResumeContinuityMotionOnPolicyRunner(FirstUpdateProbeMotionOnPolicyRunner):
@@ -46,14 +45,12 @@ class ResumeContinuityMotionOnPolicyRunner(FirstUpdateProbeMotionOnPolicyRunner)
         payload = json.loads(result_path.read_text(encoding="utf-8"))
         trace = payload.get("optimizer_trace", [])
         first_rate = float(trace[0]["learning_rate"]) if trace else None
-        if first_rate is None or not math.isclose(
-            first_rate,
-            EXPECTED_FIRST_APPLIED_LR,
-            rel_tol=0.0,
-            abs_tol=1.0e-15,
-        ):
+        expected_first_rate = float(
+            intervention["expected_first_applied_learning_rate"]
+        )
+        if first_rate is None or first_rate != expected_first_rate:
             raise RuntimeError(
-                f"first adaptive-KL rate drift: {first_rate} != {EXPECTED_FIRST_APPLIED_LR}"
+                f"first adaptive-KL rate drift: {first_rate} != {expected_first_rate}"
             )
         payload["resume_scheduler_intervention"] = intervention
         payload["continuity_runner_completed"] = True

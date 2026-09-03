@@ -356,9 +356,9 @@ def _bridge_to_e011(
         ),
         "applied_learning_rate": math.isclose(
             float(first.get("learning_rate", math.nan)),
-            EXPECTED_FIRST_APPLIED_LR,
+            float(expected_pre.get("applied_learning_rate", math.nan)),
             rel_tol=0.0,
-            abs_tol=1.0e-15,
+            abs_tol=0.0,
         ),
     }
     if not all(comparisons.values()):
@@ -452,15 +452,30 @@ def _finalize(
     ):
         errors.append("continuity runner did not complete")
     intervention = (probe_result or {}).get("resume_scheduler_intervention", {})
+    scheduler_before = float(
+        intervention.get("scheduler_learning_rate_before", math.nan)
+    )
+    scheduler_after = float(intervention.get("scheduler_learning_rate_after", math.nan))
+    groups_before = intervention.get("optimizer_group_learning_rates_before", [])
+    groups_after = intervention.get("optimizer_group_learning_rates_after", [])
     if (
-        intervention.get("scheduler_learning_rate_before")
-        != EXPECTED_FRESH_SCHEDULER_LR
-        or intervention.get("scheduler_learning_rate_after")
-        != EXPECTED_RESTORED_OPTIMIZER_LR
-        or intervention.get("optimizer_group_learning_rates_before")
-        != [EXPECTED_RESTORED_OPTIMIZER_LR]
-        or intervention.get("optimizer_group_learning_rates_after")
-        != [EXPECTED_RESTORED_OPTIMIZER_LR]
+        not math.isclose(
+            scheduler_before,
+            EXPECTED_FRESH_SCHEDULER_LR,
+            rel_tol=0.0,
+            abs_tol=1.0e-15,
+        )
+        or not math.isclose(
+            scheduler_after,
+            EXPECTED_RESTORED_OPTIMIZER_LR,
+            rel_tol=0.0,
+            abs_tol=1.0e-15,
+        )
+        or not groups_before
+        or groups_before != groups_after
+        or scheduler_after != groups_before[0]
+        or intervention.get("expected_first_applied_learning_rate")
+        != scheduler_after * 1.5
         or intervention.get("optimizer_state_entries_before")
         != intervention.get("optimizer_state_entries_after")
     ):

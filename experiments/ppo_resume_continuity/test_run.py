@@ -69,6 +69,7 @@ def test_step_one_bridge_requires_equal_package_and_telemetry(tmp_path: Path):
     branch = {
         "pre_step": {
             **common,
+            "applied_learning_rate": 3.375e-5,
             "parameter_drift": {"relative_l2": {"actor": 0.000276866}},
         }
     }
@@ -161,6 +162,7 @@ probe_result = {
         "causal_change": "PPO.learning_rate only",
         "scheduler_learning_rate_before": 1e-3,
         "scheduler_learning_rate_after": 2.25e-5,
+        "expected_first_applied_learning_rate": 3.375e-5,
         "optimizer_group_learning_rates_before": [2.25e-5],
         "optimizer_group_learning_rates_after": [2.25e-5],
         "optimizer_state_entries_before": 2,
@@ -292,6 +294,7 @@ def test_fake_end_to_end_preserves_all_registered_checkpoints(tmp_path: Path):
                         },
                         "pre_step": {
                             **common,
+                            "applied_learning_rate": 3.375e-5,
                             "parameter_drift": {"relative_l2": {"actor": 0.000276866}},
                         },
                     }

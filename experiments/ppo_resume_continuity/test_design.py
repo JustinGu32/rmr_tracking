@@ -27,6 +27,15 @@ def test_synchronization_changes_only_scheduler_scalar():
     assert record["causal_change"] == "PPO.learning_rate only"
 
 
+def test_synchronization_copies_exact_group_float_instead_of_nominal_constant():
+    exact_group_rate = 2.2500000000000008e-5
+    algorithm = _algorithm(group=exact_group_rate)
+    record = synchronize_resume_scheduler(algorithm)
+    assert algorithm.learning_rate == exact_group_rate
+    assert record["scheduler_learning_rate_after"] == exact_group_rate
+    assert record["expected_first_applied_learning_rate"] == (exact_group_rate * 1.5)
+
+
 @pytest.mark.parametrize(
     "algorithm",
     [_algorithm(scheduler=5.0e-4), _algorithm(group=1.0e-4)],

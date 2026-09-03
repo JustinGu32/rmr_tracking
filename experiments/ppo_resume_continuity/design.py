@@ -40,7 +40,8 @@ def synchronize_resume_scheduler(algorithm: Any) -> dict[str, object]:
         )
 
     state_entries_before = len(algorithm.optimizer.state)
-    algorithm.learning_rate = EXPECTED_RESTORED_OPTIMIZER_LR
+    restored_group_rate = group_rates_before[0]
+    algorithm.learning_rate = restored_group_rate
     group_rates_after = [
         float(group["lr"]) for group in algorithm.optimizer.param_groups
     ]
@@ -53,6 +54,7 @@ def synchronize_resume_scheduler(algorithm: Any) -> dict[str, object]:
         "causal_change": "PPO.learning_rate only",
         "scheduler_learning_rate_before": scheduler_before,
         "scheduler_learning_rate_after": float(algorithm.learning_rate),
+        "expected_first_applied_learning_rate": restored_group_rate * 1.5,
         "optimizer_group_learning_rates_before": group_rates_before,
         "optimizer_group_learning_rates_after": group_rates_after,
         "optimizer_state_entries_before": state_entries_before,

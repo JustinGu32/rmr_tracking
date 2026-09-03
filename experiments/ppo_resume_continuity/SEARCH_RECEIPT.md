@@ -17,7 +17,11 @@
   two passed local audits expose the cheapest decisive seam more faithfully
   than reimplementing PPO from a paper or another release.
 - Minimal delta: subclass E010's runner, change only `PPO.learning_rate` to the
-  restored optimizer rate, then delegate its exact rollout, permutation, native
-  20-step update, package saves, and evaluator. Preserve Adam and task state.
+  exact serialized restored optimizer-group rate, then delegate its exact
+  rollout, permutation, native 20-step update, package saves, and evaluator.
+  Preserve Adam and task state. E012 showed that assigning the nominal Python
+  literal instead produces the same model update but fails exact optimizer-
+  metadata parity by one floating-point representation quantum; the successor
+  copies the group value directly.
 - Verdict: adapt the proven E010 seam for one final bounded PPO control; retain
   no checkpoint and transfer only the verified continuity constraint to AHAC.
