@@ -1,4 +1,4 @@
-"""Evaluate one exact-long PPO checkpoint in its native Isaac/PhysX task.
+"""Evaluate one PPO checkpoint on a fixed reference in its native Isaac task.
 
 This evaluator intentionally lives in an experiment namespace.  It uses the
 training task (not the permissive Play task), starts every episode at exact
@@ -38,6 +38,12 @@ parser.add_argument("--checkpoint-path", required=True)
 parser.add_argument("--output-dir", required=True)
 parser.add_argument("--episodes", type=int, default=3)
 parser.add_argument("--eval-seed", type=int, default=0)
+parser.add_argument(
+    "--outcome-label-set",
+    default="exact-long",
+    choices=("exact-long", "short-control"),
+    help="Select explicit scientific outcome names without changing rollout logic.",
+)
 parser.add_argument(
     "--ppo-output",
     default="delta-all",
@@ -95,18 +101,17 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 import whole_body_tracking.tasks  # noqa: F401
+from contract import (
+    apply_nominal_phase_zero_contract,
+    classify_episodes,
+    reset_episode_in_inference_mode,
+)
 from isaaclab.envs import ManagerBasedRLEnvCfg
 from isaaclab.utils.math import quat_apply, quat_inv, quat_mul, yaw_quat
 from isaaclab_rl.rsl_rl import RslRlOnPolicyRunnerCfg, RslRlVecEnvWrapper
 from isaaclab_tasks.utils.hydra import hydra_task_config
 from PIL import Image, ImageDraw
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner
-
-from contract import (
-    apply_nominal_phase_zero_contract,
-    classify_episodes,
-    reset_episode_in_inference_mode,
-)
 
 EXPECTED_TERMINATIONS = [
     "time_out",
@@ -565,7 +570,9 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
         )
 
     classification = classify_episodes(
-        episode_records, reference_states=reference_states
+        episode_records,
+        reference_states=reference_states,
+        outcome_label_set=args_cli.outcome_label_set,
     )
 
     episodes_path = output_dir_cli / "episodes.json"
@@ -677,6 +684,7 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
         "evaluation_contract": {
             **config_audit,
             "episodes_requested": args_cli.episodes,
+            "outcome_label_set": args_cli.outcome_label_set,
             "eval_seed_reapplied_before_each_episode": args_cli.eval_seed,
             "ppo_output": args_cli.ppo_output,
             "source_backend": "Isaac Lab / PhysX GPU",

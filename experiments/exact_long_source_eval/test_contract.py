@@ -4,7 +4,6 @@ import unittest
 from types import SimpleNamespace
 
 import torch
-
 from contract import (
     apply_nominal_phase_zero_contract,
     classify_episodes,
@@ -206,6 +205,36 @@ class EpisodeClassificationTest(unittest.TestCase):
 
         self.assertEqual(result["outcome"], "invalid-execution")
         self.assertFalse(result["contract_valid"])
+
+    def test_short_control_uses_explicit_outcome_labels(self) -> None:
+        episodes = [
+            {
+                "steps": 125,
+                "final_reference_phase": 124,
+                "terminated": False,
+                "timed_out": True,
+                "all_numeric_finite": True,
+            }
+            for _ in range(3)
+        ]
+
+        result = classify_episodes(
+            episodes,
+            reference_states=125,
+            outcome_label_set="short-control",
+        )
+
+        self.assertEqual(result["outcome"], "short-source-completes")
+        self.assertEqual(result["outcome_label_set"], "short-control")
+        self.assertEqual(result["expected_source_policy_steps"], 125)
+
+    def test_unknown_outcome_label_set_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown outcome label set"):
+            classify_episodes(
+                [],
+                reference_states=125,
+                outcome_label_set="typo",
+            )
 
 
 if __name__ == "__main__":

@@ -5,6 +5,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+OUTCOME_LABELS = {
+    "exact-long": {
+        "complete": "source-completes-exact-long",
+        "mixed": "mixed-source-competence",
+        "fail": "source-fails-exact-long",
+    },
+    "short-control": {
+        "complete": "short-source-completes",
+        "mixed": "mixed-short-source-competence",
+        "fail": "short-source-fails",
+    },
+}
+
 
 def _zero_ranges(
     ranges: dict[str, tuple[float, float]],
@@ -93,8 +106,12 @@ def classify_episodes(
     episodes: Sequence[dict[str, object]],
     *,
     reference_states: int,
+    outcome_label_set: str = "exact-long",
 ) -> dict[str, object]:
     """Classify repeated phase-zero episodes without tuning a survival threshold."""
+    if outcome_label_set not in OUTCOME_LABELS:
+        raise ValueError(f"unknown outcome label set: {outcome_label_set}")
+    labels = OUTCOME_LABELS[outcome_label_set]
     expected_transitions = reference_states - 1
     # Isaac Lab checks ``my_time_out`` before MotionCommand advances its phase.
     # Starting at phase zero therefore takes one policy action at every reference
@@ -135,14 +152,15 @@ def classify_episodes(
     if not valid:
         outcome = "invalid-execution"
     elif all(completion):
-        outcome = "source-completes-exact-long"
+        outcome = labels["complete"]
     elif any(completion):
-        outcome = "mixed-source-competence"
+        outcome = labels["mixed"]
     else:
-        outcome = "source-fails-exact-long"
+        outcome = labels["fail"]
 
     return {
         "outcome": outcome,
+        "outcome_label_set": outcome_label_set,
         "contract_valid": valid,
         "reference_states": reference_states,
         "expected_transition_count": expected_transitions,
