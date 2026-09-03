@@ -102,7 +102,11 @@ from isaaclab_tasks.utils.hydra import hydra_task_config
 from PIL import Image, ImageDraw
 from whole_body_tracking.utils.my_on_policy_runner import MotionOnPolicyRunner
 
-from contract import apply_nominal_phase_zero_contract, classify_episodes
+from contract import (
+    apply_nominal_phase_zero_contract,
+    classify_episodes,
+    reset_episode_in_inference_mode,
+)
 
 EXPECTED_TERMINATIONS = [
     "time_out",
@@ -404,9 +408,12 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
     max_steps = reference_states + 1
 
     for episode_index in range(args_cli.episodes):
-        env.seed(args_cli.eval_seed)
-        obs, _ = env.reset()
-        _refresh_relative_reference(motion_command)
+        obs = reset_episode_in_inference_mode(
+            env,
+            motion_command,
+            seed=args_cli.eval_seed,
+            refresh_reference=_refresh_relative_reference,
+        )
         if int(motion_command.time_steps[0].item()) != 0:
             raise RuntimeError(
                 "manual episode reset did not produce reference phase zero"

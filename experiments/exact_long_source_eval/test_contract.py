@@ -3,7 +3,13 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from contract import apply_nominal_phase_zero_contract, classify_episodes
+import torch
+
+from contract import (
+    apply_nominal_phase_zero_contract,
+    classify_episodes,
+    reset_episode_in_inference_mode,
+)
 
 
 def _fake_env_cfg() -> SimpleNamespace:
@@ -34,7 +40,7 @@ def _fake_env_cfg() -> SimpleNamespace:
         scene=SimpleNamespace(num_envs=4096),
         commands=SimpleNamespace(motion=motion),
         observations=SimpleNamespace(policy=SimpleNamespace(enable_corruption=True)),
-        events=SimpleNamespace(push_robot=object()),
+        events=SimpleNamespace(physics_material=object(), push_robot=object()),
         curriculum=SimpleNamespace(adr=object()),
         terminations=SimpleNamespace(anchor_pos=object()),
     )
@@ -44,6 +50,8 @@ class NominalPhaseZeroContractTest(unittest.TestCase):
     def test_disables_randomness_but_preserves_terminations(self) -> None:
         cfg = _fake_env_cfg()
         termination_cfg = cfg.terminations
+        event_cfg = cfg.events
+        curriculum_cfg = cfg.curriculum
 
         audit = apply_nominal_phase_zero_contract(
             cfg,
@@ -70,11 +78,57 @@ class NominalPhaseZeroContractTest(unittest.TestCase):
         self.assertEqual(cfg.commands.motion.joint_position_range, (0.0, 0.0))
         self.assertFalse(cfg.commands.motion.debug_vis)
         self.assertFalse(cfg.observations.policy.enable_corruption)
-        self.assertIsNone(cfg.events)
-        self.assertIsNone(cfg.curriculum)
+        self.assertIs(cfg.events, event_cfg)
+        self.assertIs(cfg.curriculum, curriculum_cfg)
+        self.assertTrue(all(value is None for value in vars(cfg.events).values()))
+        self.assertTrue(all(value is None for value in vars(cfg.curriculum).values()))
         self.assertIs(cfg.terminations, termination_cfg)
         self.assertEqual(audit["start_phase"], 0)
+        self.assertEqual(
+            audit["disabled_event_terms"], ["physics_material", "push_robot"]
+        )
+        self.assertEqual(audit["disabled_curriculum_terms"], ["adr"])
         self.assertTrue(audit["hard_terminations_preserved"])
+
+
+class InferenceResetContractTest(unittest.TestCase):
+    def test_reset_and_reference_refresh_run_inside_inference_mode(self) -> None:
+        calls: list[tuple[str, object]] = []
+
+        class FakeEnv:
+            def seed(self, seed: int) -> None:
+                calls.append(("seed", (seed, torch.is_inference_mode_enabled())))
+
+            def reset(self) -> tuple[torch.Tensor, dict[str, object]]:
+                calls.append(("reset", torch.is_inference_mode_enabled()))
+                return torch.zeros(1, 3), {}
+
+        motion_command = object()
+
+        def refresh(value: object) -> None:
+            calls.append(
+                (
+                    "refresh",
+                    (value is motion_command, torch.is_inference_mode_enabled()),
+                )
+            )
+
+        obs = reset_episode_in_inference_mode(
+            FakeEnv(),
+            motion_command,
+            seed=17,
+            refresh_reference=refresh,
+        )
+
+        self.assertEqual(obs.shape, (1, 3))
+        self.assertEqual(
+            calls,
+            [
+                ("seed", (17, True)),
+                ("reset", True),
+                ("refresh", (True, True)),
+            ],
+        )
 
 
 class EpisodeClassificationTest(unittest.TestCase):

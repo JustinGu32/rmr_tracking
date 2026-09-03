@@ -12,6 +12,19 @@ def _zero_ranges(
     return {name: (0.0, 0.0) for name in ranges}
 
 
+def _disable_config_terms(config: Any) -> list[str]:
+    """Disable manager terms while retaining the config object Isaac callbacks need."""
+    if config is None:
+        return []
+    disabled: list[str] = []
+    for name, value in vars(config).items():
+        if name.startswith("_") or value is None:
+            continue
+        setattr(config, name, None)
+        disabled.append(name)
+    return disabled
+
+
 def apply_nominal_phase_zero_contract(
     env_cfg: Any,
     *,
@@ -25,6 +38,8 @@ def apply_nominal_phase_zero_contract(
         raise ValueError("motion_file must be nonempty")
 
     termination_cfg = env_cfg.terminations
+    event_cfg = env_cfg.events
+    curriculum_cfg = env_cfg.curriculum
     motion_cfg = env_cfg.commands.motion
     env_cfg.scene.num_envs = num_envs
     motion_cfg.motion_file = motion_file
@@ -37,8 +52,8 @@ def apply_nominal_phase_zero_contract(
         motion_cfg.debug_vis = False
 
     env_cfg.observations.policy.enable_corruption = False
-    env_cfg.events = None
-    env_cfg.curriculum = None
+    disabled_event_terms = _disable_config_terms(event_cfg)
+    disabled_curriculum_terms = _disable_config_terms(curriculum_cfg)
 
     return {
         "num_envs": num_envs,
@@ -48,8 +63,30 @@ def apply_nominal_phase_zero_contract(
         "observation_corruption_disabled": True,
         "all_events_disabled": True,
         "curriculum_disabled": True,
+        "disabled_event_terms": disabled_event_terms,
+        "disabled_curriculum_terms": disabled_curriculum_terms,
+        "manager_config_objects_preserved": (
+            env_cfg.events is event_cfg and env_cfg.curriculum is curriculum_cfg
+        ),
         "hard_terminations_preserved": env_cfg.terminations is termination_cfg,
     }
+
+
+def reset_episode_in_inference_mode(
+    env: Any,
+    motion_command: Any,
+    *,
+    seed: int,
+    refresh_reference: Any,
+) -> Any:
+    """Reset tensors in the same inference context used by source rollout steps."""
+    import torch
+
+    with torch.inference_mode():
+        env.seed(seed)
+        obs, _ = env.reset()
+        refresh_reference(motion_command)
+    return obs
 
 
 def classify_episodes(
