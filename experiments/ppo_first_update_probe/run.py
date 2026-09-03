@@ -18,7 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from contract import classify_checkpoint_sweep
+
+try:
+    from .contract import classify_checkpoint_sweep
+except ImportError:
+    # Direct script execution keeps the experiment directory on sys.path.
+    from contract import classify_checkpoint_sweep
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = Path(__file__).resolve().parent
