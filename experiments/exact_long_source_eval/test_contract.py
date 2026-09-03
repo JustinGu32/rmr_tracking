@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import torch
 from contract import (
+    apply_actor_normalizer_state,
     apply_nominal_phase_zero_contract,
     classify_episodes,
     reset_episode_in_inference_mode,
@@ -128,6 +129,32 @@ class InferenceResetContractTest(unittest.TestCase):
                 ("refresh", (True, True)),
             ],
         )
+
+
+class ActorNormalizerOverrideTest(unittest.TestCase):
+    def test_replaces_only_actor_normalizer_state(self) -> None:
+        calls: list[tuple[dict[str, torch.Tensor], bool]] = []
+
+        class FakeNormalizer:
+            def load_state_dict(
+                self,
+                state: dict[str, torch.Tensor],
+                *,
+                strict: bool,
+            ) -> None:
+                calls.append((state, strict))
+
+        runner = SimpleNamespace(obs_normalizer=FakeNormalizer())
+        state = {
+            "_mean": torch.ones(1, 154),
+            "_std": torch.full((1, 154), 2.0),
+        }
+
+        audit = apply_actor_normalizer_state(runner, state)
+
+        self.assertEqual(calls, [(state, True)])
+        self.assertEqual(audit["normalizer_class"], "FakeNormalizer")
+        self.assertEqual(audit["state_keys"], ["_mean", "_std"])
 
 
 class EpisodeClassificationTest(unittest.TestCase):

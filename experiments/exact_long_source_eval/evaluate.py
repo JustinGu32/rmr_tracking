@@ -35,6 +35,10 @@ parser = argparse.ArgumentParser(
 parser.add_argument("--task", default="Tracking-Flat-G1-v0")
 parser.add_argument("--motion-file", required=True)
 parser.add_argument("--checkpoint-path", required=True)
+parser.add_argument(
+    "--normalizer-checkpoint-path",
+    help="Optional checkpoint supplying only the actor observation normalizer.",
+)
 parser.add_argument("--output-dir", required=True)
 parser.add_argument("--episodes", type=int, default=3)
 parser.add_argument("--eval-seed", type=int, default=0)
@@ -63,11 +67,21 @@ if args_cli.episodes < 1:
 
 motion_path_cli = Path(args_cli.motion_file).expanduser().resolve()
 checkpoint_path_cli = Path(args_cli.checkpoint_path).expanduser().resolve()
+normalizer_checkpoint_path_cli = (
+    Path(args_cli.normalizer_checkpoint_path).expanduser().resolve()
+    if args_cli.normalizer_checkpoint_path
+    else checkpoint_path_cli
+)
 output_dir_cli = Path(args_cli.output_dir).expanduser().resolve()
 if not motion_path_cli.is_file():
     parser.error(f"--motion-file does not exist: {motion_path_cli}")
 if not checkpoint_path_cli.is_file():
     parser.error(f"--checkpoint-path does not exist: {checkpoint_path_cli}")
+if not normalizer_checkpoint_path_cli.is_file():
+    parser.error(
+        "--normalizer-checkpoint-path does not exist: "
+        f"{normalizer_checkpoint_path_cli}"
+    )
 if (output_dir_cli / "result.json").exists():
     parser.error(
         f"refusing to overwrite completed result: {output_dir_cli / 'result.json'}"
@@ -102,6 +116,7 @@ import numpy as np
 import torch
 import whole_body_tracking.tasks  # noqa: F401
 from contract import (
+    apply_actor_normalizer_state,
     apply_nominal_phase_zero_contract,
     classify_episodes,
     reset_episode_in_inference_mode,
@@ -377,6 +392,24 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
         device=agent_cfg.device,
     )
     runner.load(str(checkpoint_path_cli))
+    normalizer_override_applied = normalizer_checkpoint_path_cli != checkpoint_path_cli
+    normalizer_override_audit: dict[str, object] | None = None
+    if normalizer_override_applied:
+        normalizer_checkpoint = torch.load(
+            normalizer_checkpoint_path_cli,
+            map_location=raw_env.device,
+            weights_only=False,
+        )
+        if not isinstance(normalizer_checkpoint, dict) or not isinstance(
+            normalizer_checkpoint.get("obs_norm_state_dict"), dict
+        ):
+            raise RuntimeError(
+                "normalizer checkpoint has no obs_norm_state_dict mapping"
+            )
+        normalizer_override_audit = apply_actor_normalizer_state(
+            runner,
+            normalizer_checkpoint["obs_norm_state_dict"],
+        )
     policy = runner.get_inference_policy(device=raw_env.device)
 
     # Capture the real post-physics terminal state inside the reset seam.  Isaac
@@ -698,6 +731,8 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
             "action_term_class": type(action_term).__name__,
             "wrapper_action_clip": env.clip_actions,
             "processed_action_clip": action_term.cfg.clip,
+            "normalizer_override_applied": normalizer_override_applied,
+            "normalizer_override_audit": normalizer_override_audit,
             "initial_qpos_identical": len(set(initial_qpos_hashes)) == 1,
             "initial_qvel_identical": len(set(initial_qvel_hashes)) == 1,
             "initial_policy_observation_identical": len(set(initial_obs_hashes)) == 1,
@@ -706,6 +741,10 @@ def main(env_cfg: ManagerBasedRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg) -> No
             "checkpoint": {
                 "path": str(checkpoint_path_cli),
                 "sha256": _sha256_file(checkpoint_path_cli),
+            },
+            "normalizer_checkpoint": {
+                "path": str(normalizer_checkpoint_path_cli),
+                "sha256": _sha256_file(normalizer_checkpoint_path_cli),
             },
             "motion": {
                 "path": str(motion_path_cli),

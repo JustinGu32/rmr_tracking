@@ -102,6 +102,26 @@ def reset_episode_in_inference_mode(
     return obs
 
 
+def apply_actor_normalizer_state(
+    runner_or_policy: Any,
+    state: dict[str, Any],
+) -> dict[str, object]:
+    """Replace only the actor observation normalizer used for inference."""
+    if hasattr(runner_or_policy, "obs_normalizer"):
+        normalizer = runner_or_policy.obs_normalizer
+    elif hasattr(runner_or_policy, "obs_normalizers"):
+        normalizer = runner_or_policy.obs_normalizers["actor"]
+    else:
+        normalizer = getattr(runner_or_policy, "actor_obs_normalizer", None)
+    if normalizer is None:
+        raise ValueError("loaded runner or policy has no actor observation normalizer")
+    normalizer.load_state_dict(state, strict=True)
+    return {
+        "normalizer_class": type(normalizer).__name__,
+        "state_keys": sorted(state),
+    }
+
+
 def classify_episodes(
     episodes: Sequence[dict[str, object]],
     *,
