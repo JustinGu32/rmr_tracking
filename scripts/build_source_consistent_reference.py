@@ -312,6 +312,7 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         "--headless",
         "--device",
         args.device,
+        "--immediate-exit-after-output",
     ]
     _run_and_capture(
         converter_argv,

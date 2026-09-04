@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
+import sys
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +69,11 @@ parser.add_argument("--input-sha256", required=True)
 parser.add_argument("--input-fps", type=int, default=30)
 parser.add_argument("--output-fps", type=int, default=50)
 parser.add_argument("--output-path", type=Path, required=True)
+parser.add_argument(
+    "--immediate-exit-after-output",
+    action="store_true",
+    help="Flush files and bypass known-hanging Omniverse teardown for one-shot jobs.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -388,7 +396,19 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    finally:
-        simulation_app.close()
+    if args_cli.immediate_exit_after_output:
+        try:
+            main()
+        except Exception:  # noqa: BLE001 - child must return before hanging teardown
+            traceback.print_exc()
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os._exit(1)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
+    else:
+        try:
+            main()
+        finally:
+            simulation_app.close()
