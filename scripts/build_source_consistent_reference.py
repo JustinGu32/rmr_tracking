@@ -256,6 +256,14 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
     converter = verify_file(
         args.converter_path, args.converter_sha256, "Isaac converter"
     )
+    robot_config = verify_file(
+        args.robot_config_path, args.robot_config_sha256, "Isaac robot config"
+    )
+    urdf = verify_file(args.urdf_path, args.urdf_sha256, "G1 URDF")
+    usd = verify_file(args.usd_path, args.usd_sha256, "cached G1 USD")
+    usd_config = verify_file(
+        args.usd_config_path, args.usd_config_sha256, "cached USD config"
+    )
     exporter = verify_file(
         Path(__file__).with_name("export_npz_motion_window_csv.py"),
         args.exporter_sha256,
@@ -387,6 +395,18 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
             "device": args.device,
             "mode": "exact-named-reference-state-no-resampling",
         },
+        "isaac_asset": {
+            "robot_config": {
+                "path": str(robot_config),
+                "sha256": args.robot_config_sha256,
+            },
+            "urdf": {"path": str(urdf), "sha256": args.urdf_sha256},
+            "cached_usd": {"path": str(usd), "sha256": args.usd_sha256},
+            "cached_usd_config": {
+                "path": str(usd_config),
+                "sha256": args.usd_config_sha256,
+            },
+        },
         "repository_identity": repository_identity,
         "joint_names": list(joint_names),
         "body_names": list(body_names),
@@ -466,6 +486,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--converter-path", type=Path, required=True)
     parser.add_argument("--converter-sha256", required=True)
     parser.add_argument("--exporter-sha256", required=True)
+    parser.add_argument("--robot-config-path", type=Path, required=True)
+    parser.add_argument("--robot-config-sha256", required=True)
+    parser.add_argument("--urdf-path", type=Path, required=True)
+    parser.add_argument("--urdf-sha256", required=True)
+    parser.add_argument("--usd-path", type=Path, required=True)
+    parser.add_argument("--usd-sha256", required=True)
+    parser.add_argument("--usd-config-path", type=Path, required=True)
+    parser.add_argument("--usd-config-sha256", required=True)
     parser.add_argument("--isaac-python", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--maximum-replay-state-error", type=float, required=True)
