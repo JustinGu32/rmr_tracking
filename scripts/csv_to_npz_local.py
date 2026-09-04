@@ -10,13 +10,10 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 from pathlib import Path
 
 import numpy as np
-
 from isaaclab.app import AppLauncher
-
 
 CSV_JOINT_NAMES = (
     "left_hip_pitch_joint",
@@ -87,9 +84,8 @@ if args_cli.input_fps <= 0 or args_cli.output_fps <= 0:
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-import torch
-
 import isaaclab.sim as sim_utils
+import torch
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationContext
@@ -100,7 +96,6 @@ from isaaclab.utils.math import (
     quat_mul,
     quat_slerp,
 )
-
 from whole_body_tracking.robots.g1 import G1_CYLINDER_CFG
 
 

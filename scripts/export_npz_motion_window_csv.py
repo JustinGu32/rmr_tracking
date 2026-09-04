@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 
-
 G1_JOINT_NAMES = (
     "left_hip_pitch_joint",
     "left_hip_roll_joint",
