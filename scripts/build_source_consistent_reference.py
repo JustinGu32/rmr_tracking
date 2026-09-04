@@ -25,6 +25,12 @@ RAW_KEYS = (
     "body_lin_vel_w",
     "body_ang_vel_w",
 )
+BODY_KEYS = (
+    "body_pos_w",
+    "body_quat_w",
+    "body_lin_vel_w",
+    "body_ang_vel_w",
+)
 
 
 def sha256_file(path: Path, block_size: int = 1024 * 1024) -> str:
@@ -96,6 +102,92 @@ def compare_exact_prefix(
     }
 
 
+def assemble_corrected_reference(
+    source_path: Path,
+    fk_path: Path,
+    output_path: Path,
+    *,
+    prefix_frames: int,
+    body_names: tuple[str, ...],
+) -> dict[str, object]:
+    """Preserve every source field except non-root body state in the suffix."""
+    if output_path.exists():
+        raise FileExistsError(output_path)
+    with np.load(source_path, allow_pickle=False) as archive:
+        source = {name: np.array(archive[name], copy=True) for name in archive.files}
+    fk = _load_raw(fk_path)
+    missing = sorted(set(RAW_KEYS).difference(source))
+    if missing:
+        raise ValueError(f"load-bearing source missing arrays: {missing}")
+    frames = int(np.asarray(source["joint_pos"]).shape[0])
+    if not 0 < prefix_frames < frames or len(body_names) <= 1:
+        raise ValueError("invalid prefix or body count for corrected reference")
+    for name in RAW_KEYS:
+        if np.asarray(source[name]).shape != np.asarray(fk[name]).shape:
+            raise ValueError(f"source and Isaac FK shapes differ for {name}")
+
+    output = {name: np.array(value, copy=True) for name, value in source.items()}
+    for name in BODY_KEYS:
+        output[name][prefix_frames:, 1:] = fk[name][prefix_frames:, 1:]
+    output["body_names"] = np.asarray(body_names)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    try:
+        with temporary.open("wb") as stream:
+            np.savez(stream, **output)
+        temporary.replace(output_path)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+        raise
+
+    with np.load(output_path, allow_pickle=False) as archive:
+        exact_prefix = all(
+            np.array_equal(archive[name][:prefix_frames], source[name][:prefix_frames])
+            for name in RAW_KEYS
+            if name != "fps"
+        )
+        load_bearing = all(
+            np.array_equal(archive[name], source[name])
+            for name in ("fps", "joint_pos", "joint_vel")
+        ) and all(
+            np.array_equal(archive[name][:, 0], source[name][:, 0])
+            for name in BODY_KEYS
+        )
+    if not exact_prefix or not load_bearing:
+        raise ValueError("corrected reference changed protected source state")
+    return {
+        "frames": frames,
+        "prefix_frames": prefix_frames,
+        "exact_prefix_preserved": exact_prefix,
+        "load_bearing_arrays_preserved": load_bearing,
+        "replaced_fields": [f"{name}[{prefix_frames}:,1:]" for name in BODY_KEYS],
+    }
+
+
+def replay_state_errors(
+    source_path: Path, fk_path: Path
+) -> dict[str, float]:
+    """Measure Isaac write/read drift before retaining only its body FK."""
+    source = _load_raw(source_path)
+    fk = _load_raw(fk_path)
+    if any(source[name].shape != fk[name].shape for name in RAW_KEYS):
+        raise ValueError("source and Isaac FK arrays have incompatible shapes")
+    errors = {
+        "joint_pos_max_abs": float(
+            np.max(np.abs(source["joint_pos"] - fk["joint_pos"]))
+        ),
+        "joint_vel_max_abs": float(
+            np.max(np.abs(source["joint_vel"] - fk["joint_vel"]))
+        ),
+    }
+    for name in BODY_KEYS:
+        errors[f"root_{name}_max_abs"] = float(
+            np.max(np.abs(source[name][:, 0] - fk[name][:, 0]))
+        )
+    return errors
+
+
 def _run_and_capture(
     argv: list[str],
     *,
@@ -144,7 +236,6 @@ def _git_identity(root: Path, expected_commit: str) -> dict[str, object]:
 
 def build_reference(args: argparse.Namespace) -> dict[str, object]:
     rmr_root = Path(__file__).resolve().parents[1]
-    prepare_root = Path(args.prepare_code_root).resolve()
     source = verify_file(args.source_path, args.source_sha256, "source motion")
     baseline_csv = verify_file(
         args.baseline_csv_path, args.baseline_csv_sha256, "baseline CSV"
@@ -153,6 +244,11 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         args.baseline_prefix_path,
         args.baseline_prefix_sha256,
         "baseline prefix reference",
+    )
+    load_bearing_reference = verify_file(
+        args.load_bearing_reference_path,
+        args.load_bearing_reference_sha256,
+        "load-bearing long reference",
     )
     controller = verify_file(
         args.controller_path, args.controller_sha256, "controller"
@@ -165,22 +261,17 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         args.exporter_sha256,
         "CSV exporter",
     )
-    prepare_tool = verify_file(
-        args.prepare_tool_path, args.prepare_tool_sha256, "reference preparer"
-    )
-    repository_identity = {
-        "rmr": _git_identity(rmr_root, args.rmr_code_commit),
-        "prepare": _git_identity(prepare_root, args.prepare_code_commit),
-    }
+    repository_identity = {"rmr": _git_identity(rmr_root, args.rmr_code_commit)}
 
     output_dir = Path(args.output_dir).resolve()
     if output_dir.exists():
         raise FileExistsError(output_dir)
     output_dir.mkdir(parents=True)
     csv_path = output_dir / "lafan_walk_win137_300.csv"
-    raw_path = output_dir / "lafan_walk_win137_300_isaac_raw.npz"
+    raw_path = output_dir / "lafan_walk_win137_300_exact_state_isaac_fk.npz"
     named_path = output_dir / "lafan_walk_win137_300_source_consistent_named.npz"
     source_metadata_path = output_dir / "source_metadata.json"
+    reference_manifest_path = output_dir / "reference_manifest.json"
 
     csv_manifest = export_window(
         source,
@@ -191,19 +282,21 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
     )
     baseline_lines = baseline_csv.read_bytes().splitlines(keepends=True)
     candidate_lines = csv_path.read_bytes().splitlines(keepends=True)
-    csv_prefix_exact = b"".join(candidate_lines[: len(baseline_lines)]) == baseline_csv.read_bytes()
+    csv_prefix_exact = (
+        b"".join(candidate_lines[: len(baseline_lines)]) == baseline_csv.read_bytes()
+    )
     if not csv_prefix_exact:
-        raise ValueError("extended source CSV does not preserve the exact baseline CSV prefix")
+        raise ValueError(
+            "extended source CSV does not preserve the exact baseline CSV prefix"
+        )
 
     converter_argv = [
         str(Path(args.isaac_python).resolve()),
         str(converter),
-        "--input-file",
-        str(csv_path),
+        "--reference-input-path",
+        str(load_bearing_reference),
         "--input-sha256",
-        str(csv_manifest["output_sha256"]),
-        "--input-fps",
-        "30",
+        args.load_bearing_reference_sha256,
         "--output-fps",
         "50",
         "--output-path",
@@ -225,9 +318,12 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
             f"expected {args.expected_output_frames} converted frames, got "
             f"{raw['joint_pos'].shape}"
         )
-    exact_prefix = compare_exact_prefix(
-        raw_path, baseline_prefix, prefix_frames=args.prefix_frames
-    )
+    state_errors = replay_state_errors(load_bearing_reference, raw_path)
+    if max(state_errors.values()) > args.maximum_replay_state_error:
+        raise ValueError(
+            "Isaac state write/read drift exceeds the registered bound: "
+            f"{state_errors}"
+        )
 
     joint_names_path = Path(str(raw_path) + ".joint_names.npy")
     body_names_path = Path(str(raw_path) + ".body_names.npy")
@@ -239,6 +335,17 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("Isaac joint order differs from the pinned controller order")
     if len(body_names) != 30 or len(set(body_names)) != 30 or body_names[0] != "pelvis":
         raise ValueError("Isaac body order is not the expected 30-body pelvis-rooted G1")
+
+    repair = assemble_corrected_reference(
+        load_bearing_reference,
+        raw_path,
+        named_path,
+        prefix_frames=args.prefix_frames,
+        body_names=body_names,
+    )
+    exact_prefix = compare_exact_prefix(
+        named_path, baseline_prefix, prefix_frames=args.prefix_frames
+    )
 
     source_metadata = {
         "protocol": PROTOCOL,
@@ -258,17 +365,27 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
             "prefix_frames": args.prefix_frames,
             "exact_raw_array_prefix": True,
         },
+        "load_bearing_long_reference": {
+            "path": str(load_bearing_reference),
+            "sha256": args.load_bearing_reference_sha256,
+            "preserved_fields": [
+                "fps",
+                "joint_pos",
+                "joint_vel",
+                "body_pos_w[:,0]",
+                "body_quat_w[:,0]",
+                "body_lin_vel_w[:,0]",
+                "body_ang_vel_w[:,0]",
+            ],
+        },
         "exporter": {"path": str(exporter), "sha256": args.exporter_sha256},
+        "source_csv_manifest": csv_manifest,
         "isaac_converter": {
             "path": str(converter),
             "sha256": args.converter_sha256,
             "python": str(Path(args.isaac_python).resolve()),
             "device": args.device,
-        },
-        "reference_preparer": {
-            "path": str(prepare_tool),
-            "sha256": args.prepare_tool_sha256,
-            "python": str(Path(args.prepare_python).resolve()),
+            "mode": "exact-named-reference-state-no-resampling",
         },
         "repository_identity": repository_identity,
         "joint_names": list(joint_names),
@@ -277,28 +394,18 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
     source_metadata_path.write_text(
         json.dumps(source_metadata, indent=2, sort_keys=True) + "\n"
     )
-
-    prepare_argv = [
-        str(Path(args.prepare_python).resolve()),
-        "-m",
-        "tools.prepare_g1_rmr_reference",
-        "--input-path",
-        str(raw_path),
-        "--output-path",
-        str(named_path),
-        "--controller-path",
-        str(controller),
-        "--source-metadata-json",
-        str(source_metadata_path),
-    ]
-    prepare_environment = dict(os.environ)
-    prepare_environment["PYTHONPATH"] = "."
-    _run_and_capture(
-        prepare_argv,
-        cwd=prepare_root,
-        environment=prepare_environment,
-        stdout=output_dir / "prepare_stdout.log",
-        stderr=output_dir / "prepare_stderr.log",
+    reference_manifest = {
+        "format": "rmr_named_reference_v1_source_consistent_suffix_repair",
+        "output_path": str(named_path),
+        "output_sha256": sha256_file(named_path),
+        "repair": repair,
+        "exact_short_prefix": exact_prefix,
+        "isaac_replay_state_errors": state_errors,
+        "source_metadata_path": str(source_metadata_path),
+        "source_metadata_sha256": sha256_file(source_metadata_path),
+    }
+    reference_manifest_path.write_text(
+        json.dumps(reference_manifest, indent=2, sort_keys=True) + "\n"
     )
 
     completion: dict[str, object] = {
@@ -307,7 +414,9 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         "output_frames": args.expected_output_frames,
         "input_source_frames": args.end_frame_inclusive - args.start_frame + 1,
         "csv_prefix_exact": csv_prefix_exact,
-        "raw_prefix_comparison": exact_prefix,
+        "final_prefix_comparison": exact_prefix,
+        "load_bearing_repair": repair,
+        "isaac_replay_state_errors": state_errors,
         "repository_identity": repository_identity,
         "outputs": {},
         "joint_names": list(joint_names),
@@ -324,11 +433,9 @@ def build_reference(args: argparse.Namespace) -> dict[str, object]:
         body_names_path,
         source_metadata_path,
         named_path,
-        named_path.with_suffix(".npz.manifest.json"),
+        reference_manifest_path,
         output_dir / "isaac_converter_stdout.log",
         output_dir / "isaac_converter_stderr.log",
-        output_dir / "prepare_stdout.log",
-        output_dir / "prepare_stderr.log",
     )
     completion["outputs"] = {
         path.name: {"path": str(path), "sha256": sha256_file(path)}
@@ -347,6 +454,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baseline-csv-sha256", required=True)
     parser.add_argument("--baseline-prefix-path", type=Path, required=True)
     parser.add_argument("--baseline-prefix-sha256", required=True)
+    parser.add_argument("--load-bearing-reference-path", type=Path, required=True)
+    parser.add_argument("--load-bearing-reference-sha256", required=True)
     parser.add_argument("--controller-path", type=Path, required=True)
     parser.add_argument("--controller-sha256", required=True)
     parser.add_argument("--start-frame", type=int, required=True)
@@ -359,11 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exporter-sha256", required=True)
     parser.add_argument("--isaac-python", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--prepare-code-root", type=Path, required=True)
-    parser.add_argument("--prepare-code-commit", required=True)
-    parser.add_argument("--prepare-tool-path", type=Path, required=True)
-    parser.add_argument("--prepare-tool-sha256", required=True)
-    parser.add_argument("--prepare-python", type=Path, required=True)
+    parser.add_argument("--maximum-replay-state-error", type=float, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser
 

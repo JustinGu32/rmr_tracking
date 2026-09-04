@@ -1,9 +1,11 @@
-"""Replay a G1 motion CSV through Isaac FK and save a local full-body NPZ.
+"""Replay a G1 motion source through Isaac FK and save a local full-body NPZ.
 
 CSV columns are pelvis position, pelvis quaternion in XYZW order, and the 29
 joint positions in ``CSV_JOINT_NAMES`` order.  Unlike the original W&B
 converter, this bounded variant writes directly to ``--output-path`` and saves
-the resolved articulation joint/body orders as sidecars.
+the resolved articulation joint/body orders as sidecars.  A named-reference
+input can instead carry exact 50 Hz root and joint state through the same FK
+path without resampling.
 """
 
 from __future__ import annotations
@@ -57,7 +59,9 @@ def sha256_file(path: Path, block_size: int = 1024 * 1024) -> str:
 
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--input-file", type=Path, required=True)
+input_group = parser.add_mutually_exclusive_group(required=True)
+input_group.add_argument("--input-file", type=Path)
+input_group.add_argument("--reference-input-path", type=Path)
 parser.add_argument("--input-sha256", required=True)
 parser.add_argument("--input-fps", type=int, default=30)
 parser.add_argument("--output-fps", type=int, default=50)
@@ -65,11 +69,13 @@ parser.add_argument("--output-path", type=Path, required=True)
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
-args_cli.input_file = args_cli.input_file.resolve()
+input_path = args_cli.input_file or args_cli.reference_input_path
+assert input_path is not None
+input_path = input_path.resolve()
 args_cli.output_path = args_cli.output_path.resolve()
-if not args_cli.input_file.is_file():
-    parser.error(f"input file does not exist: {args_cli.input_file}")
-if sha256_file(args_cli.input_file) != args_cli.input_sha256:
+if not input_path.is_file():
+    parser.error(f"input file does not exist: {input_path}")
+if sha256_file(input_path) != args_cli.input_sha256:
     parser.error("input file SHA-256 does not match --input-sha256")
 for candidate in (
     args_cli.output_path,
@@ -123,6 +129,7 @@ class MotionLoader:
         self.input_dt = 1.0 / input_fps
         self.output_dt = 1.0 / output_fps
         self.current_idx = 0
+        self.joint_names = CSV_JOINT_NAMES
         motion = torch.from_numpy(np.loadtxt(motion_file, delimiter=","))
         if motion.ndim != 2 or motion.shape[1] != 36 or motion.shape[0] < 2:
             raise ValueError("motion CSV must have shape (T >= 2, 36)")
@@ -204,17 +211,105 @@ class MotionLoader:
         return state, finished
 
 
+class ReferenceMotionLoader:
+    """Carry exact named-reference state through Isaac without interpolation."""
+
+    def __init__(self, path: Path, output_fps: int, device: torch.device) -> None:
+        with np.load(path, allow_pickle=False) as archive:
+            required = {
+                "fps",
+                "joint_pos",
+                "joint_vel",
+                "body_pos_w",
+                "body_quat_w",
+                "body_lin_vel_w",
+                "body_ang_vel_w",
+                "joint_names",
+                "root_body_name",
+                "root_body_index",
+            }
+            missing = sorted(required.difference(archive.files))
+            if missing:
+                raise ValueError(f"named reference missing arrays: {missing}")
+            fps = np.asarray(archive["fps"]).reshape(-1)
+            root_name = str(np.asarray(archive["root_body_name"]).item())
+            root_index = int(np.asarray(archive["root_body_index"]).item())
+            self.joint_names = tuple(map(str, archive["joint_names"]))
+            joint_pos = np.asarray(archive["joint_pos"])
+            joint_vel = np.asarray(archive["joint_vel"])
+            body_pos = np.asarray(archive["body_pos_w"])
+            body_quat = np.asarray(archive["body_quat_w"])
+            body_lin_vel = np.asarray(archive["body_lin_vel_w"])
+            body_ang_vel = np.asarray(archive["body_ang_vel_w"])
+        if fps.size != 1 or float(fps[0]) != float(output_fps):
+            raise ValueError("named-reference fps must equal --output-fps")
+        if root_name != "pelvis" or root_index != 0:
+            raise ValueError("named-reference root must be pelvis at index zero")
+        frames = joint_pos.shape[0]
+        if joint_pos.shape != (frames, 29) or joint_vel.shape != (frames, 29):
+            raise ValueError("named-reference joint arrays must have shape (T, 29)")
+        bodies = body_pos.shape[1] if body_pos.ndim == 3 else 0
+        expected = (
+            (body_pos, (frames, bodies, 3)),
+            (body_quat, (frames, bodies, 4)),
+            (body_lin_vel, (frames, bodies, 3)),
+            (body_ang_vel, (frames, bodies, 3)),
+        )
+        if frames <= 0 or bodies <= 1 or len(self.joint_names) != 29:
+            raise ValueError("named reference has invalid frame, body, or joint count")
+        if any(value.shape != shape for value, shape in expected):
+            raise ValueError("named-reference rigid-body arrays have incompatible shapes")
+        values = (
+            joint_pos,
+            joint_vel,
+            body_pos,
+            body_quat,
+            body_lin_vel,
+            body_ang_vel,
+        )
+        if not all(np.isfinite(value).all() for value in values):
+            raise ValueError("named-reference state must be finite")
+        self.current_idx = 0
+        self.output_frames = frames
+        self.base_pos = torch.from_numpy(body_pos[:, root_index]).to(device)
+        self.base_quat = torch.from_numpy(body_quat[:, root_index]).to(device)
+        self.base_lin_vel = torch.from_numpy(body_lin_vel[:, root_index]).to(device)
+        self.base_ang_vel = torch.from_numpy(body_ang_vel[:, root_index]).to(device)
+        self.joint_pos = torch.from_numpy(joint_pos).to(device)
+        self.joint_vel = torch.from_numpy(joint_vel).to(device)
+
+    def next_state(self) -> tuple[tuple[torch.Tensor, ...], bool]:
+        index = self.current_idx
+        state = (
+            self.base_pos[index : index + 1],
+            self.base_quat[index : index + 1],
+            self.base_lin_vel[index : index + 1],
+            self.base_ang_vel[index : index + 1],
+            self.joint_pos[index : index + 1],
+            self.joint_vel[index : index + 1],
+        )
+        self.current_idx += 1
+        return state, self.current_idx >= self.output_frames
+
+
 def run_simulator(sim: SimulationContext, scene: InteractiveScene) -> None:
-    motion = MotionLoader(
-        args_cli.input_file,
-        args_cli.input_fps,
-        args_cli.output_fps,
-        sim.device,
-    )
+    if args_cli.reference_input_path is not None:
+        motion = ReferenceMotionLoader(
+            input_path,
+            args_cli.output_fps,
+            sim.device,
+        )
+    else:
+        motion = MotionLoader(
+            input_path,
+            args_cli.input_fps,
+            args_cli.output_fps,
+            sim.device,
+        )
     robot = scene["robot"]
-    joint_indices = robot.find_joints(CSV_JOINT_NAMES, preserve_order=True)[0]
-    if len(joint_indices) != len(CSV_JOINT_NAMES):
-        raise ValueError("Isaac articulation does not contain all CSV joints")
+    joint_indices = robot.find_joints(motion.joint_names, preserve_order=True)[0]
+    if len(joint_indices) != len(motion.joint_names):
+        raise ValueError("Isaac articulation does not contain all input joints")
     log: dict[str, list[np.ndarray] | np.ndarray] = {
         "fps": np.asarray([args_cli.output_fps], dtype=np.int64),
         "joint_pos": [],
